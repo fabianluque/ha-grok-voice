@@ -1,5 +1,5 @@
 name: Grok Voice Agent
-version: "0.2.0"
+version: "0.2.1"
 slug: grok_voice_agent
 description: Full-duplex Grok Voice Think Fast 2.0 in a browser or Kiosk Satellite dashboard. Home Assistant tools run through the local MCP server.
 url: https://github.com/fabianluque/ha-grok-voice

@@ -3,11 +3,13 @@
 import asyncio
 from pathlib import Path
 
+import aiohttp
 import httpx
-from websockets.asyncio.server import serve
+from websockets.asyncio.client import connect
 from websockets.datastructures import Headers
 from websockets.http11 import Request
 
+from app.server import drop_empty_content_length, voice_serve
 from app.static import FALLBACK_HTML, http_file_response, process_http_request
 
 
@@ -79,7 +81,7 @@ def test_live_get_returns_html_on_the_voice_port(tmp_path: Path):
         async def process_request(_connection, request):
             return process_http_request(request, tmp_path)
 
-        async with serve(handler, "127.0.0.1", 0, process_request=process_request) as server:
+        async with voice_serve(handler, "127.0.0.1", 0, process_request) as server:
             sockets = list(server.sockets or [])
             port = sockets[0].getsockname()[1]
             async with httpx.AsyncClient() as client:
@@ -91,6 +93,97 @@ def test_live_get_returns_html_on_the_voice_port(tmp_path: Path):
     assert content_type is not None and "html" in content_type
     assert "Start talking" in text
     assert "Grok Voice agent" not in text
+
+
+def test_drop_empty_content_length_keeps_other_headers():
+    raw = (
+        b"GET /ui.js HTTP/1.1\r\n"
+        b"Host: 172.30.32.1:8099\r\n"
+        b"X-Ingress-Path: /api/hassio_ingress/token\r\n"
+        b"Content-Length: 0\r\n"
+        b"Accept: */*\r\n"
+    )
+    rewritten = drop_empty_content_length(raw)
+    assert b"Content-Length" not in rewritten
+    assert b"GET /ui.js HTTP/1.1" in rewritten
+    assert b"X-Ingress-Path: /api/hassio_ingress/token" in rewritten
+    assert b"Accept: */*" in rewritten
+
+
+def test_nonzero_content_length_is_left_intact():
+    raw = b"POST / HTTP/1.1\r\nContent-Length: 4\r\n"
+    assert drop_empty_content_length(raw) == raw
+
+
+def test_ingress_get_with_content_length_zero_returns_the_mic_page(tmp_path: Path):
+    """Supervisor's aiohttp proxy sends Content-Length: 0 on the iframe GET."""
+    (tmp_path / "index.html").write_text(
+        "<!DOCTYPE html><title>Grok Voice</title><button>Start talking</button>",
+        encoding="utf-8",
+    )
+    (tmp_path / "ui.js").write_text("window.GrokVoiceUI = true;", encoding="utf-8")
+
+    async def run():
+        async def handler(websocket):
+            await websocket.recv()
+            await websocket.send("pong")
+
+        async def process_request(_connection, request):
+            return process_http_request(request, tmp_path)
+
+        async with voice_serve(handler, "127.0.0.1", 0, process_request) as server:
+            port = list(server.sockets or [])[0].getsockname()[1]
+            timeout = aiohttp.ClientTimeout(total=5)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(
+                    f"http://127.0.0.1:{port}/",
+                    allow_redirects=False,
+                    data=b"",
+                    skip_auto_headers={"Content-Type"},
+                    headers={
+                        "X-Hass-Source": "core.ingress",
+                        "X-Ingress-Path": "/api/hassio_ingress/token",
+                    },
+                ) as page:
+                    page_body = await page.read()
+                    page_status = page.status
+                    page_type = page.headers.get("Content-Type")
+                    frame_options = page.headers.get("X-Frame-Options")
+                async with session.get(
+                    f"http://127.0.0.1:{port}/ui.js",
+                    allow_redirects=False,
+                    data=b"",
+                    skip_auto_headers={"Content-Type"},
+                ) as script:
+                    script_status = script.status
+                    script_type = script.headers.get("Content-Type")
+                    script_body = await script.read()
+            async with connect(f"ws://127.0.0.1:{port}/") as websocket:
+                await websocket.send("ping")
+                echoed = await websocket.recv()
+            return (
+                page_status,
+                page_type,
+                page_body,
+                frame_options,
+                script_status,
+                script_type,
+                script_body,
+                echoed,
+            )
+
+    status, content_type, body, frame_options, script_status, script_type, script_body, echoed = (
+        asyncio.run(run())
+    )
+    assert status == 200
+    assert content_type is not None and content_type.startswith("text/html")
+    assert b"<!DOCTYPE html>" in body
+    assert b"Start talking" in body
+    assert frame_options is None
+    assert script_status == 200
+    assert script_type is not None and "javascript" in script_type
+    assert b"GrokVoiceUI" in script_body
+    assert echoed == "pong"
 
 
 def test_packaged_www_is_the_mic_ui():
