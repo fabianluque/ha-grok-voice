@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - name: Python tests
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r grok_voice_agent/requirements.txt pytest aiohttp
+          python -m pytest
+      - name: Client tests
+        run: |
+          npm ci
+          npm test
+        working-directory: client
+
+  image:
+    name: Build image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - name: Build amd64 image
+        uses: docker/build-push-action@v6
+        with:
+          context: grok_voice_agent
+          push: false
+          tags: grok-voice-agent:ci
