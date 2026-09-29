@@ -62,9 +62,12 @@ The debug page talks to `ws://<that-host>:8080/` with the same `{ "type": "auth"
 
 ## Kiosk Satellite
 
-1. On that tablet, turn off the native Assist answer path so this script is the only wake-word listener.
-2. Build `client/dist/grok-voice.js` (`npm test` then `npm run build` inside `client/`).
-3. Paste that file into Kiosk Satellite's **Inject JavaScript on the HA dashboard** field and reload.
-4. The tablet user must be able to open this add-on's ingress. An administrator can.
+Leave Voice Satellite's wake word on. Kiosk Satellite only detects a wake word while that detection is enabled; do not set it to Disabled. The injected script replaces Voice Satellite's `kiosksatellite:wakeword` listener, so Assist does not start. Grok opens the duplex session instead.
+
+1. In `client/`, run `npm test` then `npm run build:kiosk`. That writes `client/dist/grok-voice.js`.
+2. On the tablet, open Kiosk Satellite **Settings → Browser → Inject JavaScript on the HA dashboard**.
+3. Replace that field with the entire contents of `client/dist/grok-voice.js` (the whole minified file).
+4. Reload the dashboard.
+5. The tablet user must be able to open this add-on's ingress. An administrator can.
 
 The microphone stays open while Grok is speaking. Talking over a reply flushes playback in the browser. The wake word is armed again only when the session ends.
