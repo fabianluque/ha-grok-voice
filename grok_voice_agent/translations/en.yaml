@@ -1,34 +1,36 @@
 configuration:
   xai_api_key:
     name: xAI API key
-    description: Key used only by this add-on. It is never sent to the tablet.
+    description: Used only inside this add-on to open Grok Voice. It is never sent to the browser, tablet, or Kiosk Satellite script.
   instructions:
     name: Instructions
-    description: Spoken system prompt. Keep it short.
+    description: Spoken system prompt. Keep it short so replies stay conversational.
   voice:
     name: Voice
-    description: Grok Voice name.
+    description: Grok Voice speaker (eve, ara, rex, sal, or leo).
   model:
     name: Model
-    description: Pin a versioned model. grok-voice-think-fast-2.0 is the current voice model.
+    description: Pin a versioned Grok Voice model. grok-voice-think-fast-2.0 is the current voice model.
   reasoning_effort:
     name: Reasoning effort
     description: none keeps turns short. high thinks longer before speaking.
   enable_web_search:
     name: Web search
-    description: Let Grok search the web inside the voice session.
+    description: Allow Grok to search the web during a voice session.
   enable_x_search:
     name: X search
-    description: Let Grok search X inside the voice session.
+    description: Allow Grok to search X during a voice session.
   ha_mcp_url:
     name: Home Assistant MCP URL
-    description: Leave blank to use http://supervisor/core/api/mcp.
+    description: Leave blank to use http://supervisor/core/api/mcp with the add-on token.
   longlived_token:
     name: Long-lived token
-    description: Leave blank to use the add-on supervisor token. Paste one here only if MCP returns 401.
+    description: Leave blank to use the add-on supervisor token for MCP. Paste a Home Assistant long-lived token only if MCP returns HTTP 401. This is not the xAI key.
   mcp_tool_allowlist:
     name: MCP tool allowlist
-    description: Comma-separated tool names. Blank uses the Assist control set. * allows every tool the MCP server offers.
+    description: Comma-separated MCP tool names. Blank uses HassTurnOn, HassTurnOff, HassLightSet, GetLiveContext, and GetDateTime. * allows every tool the MCP server offers.
   idle_timeout_seconds:
     name: Idle timeout
-    description: Seconds of silence before the voice session ends and the wake word is re-armed.
+    description: Seconds of silence before the voice session ends (browser or kiosk). On Kiosk Satellite the wake word is re-armed after this.
+network:
+  8080/tcp: Debug mic Web UI (optional LAN access; use a secure context)

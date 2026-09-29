@@ -2,6 +2,8 @@
 
 Home Assistant add-on that talks to Grok Voice Think Fast 2.0 and runs Assist tools through the local MCP server. Open the add-on page in a browser (Mac, tablet, or the attic Kiosk Satellite dashboard). The xAI key stays in the add-on.
 
+The add-on store listing and a short install path are in the repository [README](https://github.com/fabianluque/ha-grok-voice/blob/main/README.md). This page is the full operations guide.
+
 ## Install from the Add-on store
 
 Home Assistant clones this GitHub URL as a store repository. The repo root has `repository.yaml`; the add-on itself is the `grok_voice_agent/` folder (`config.yaml`, `Dockerfile`, …).
@@ -25,6 +27,17 @@ The add-on serves the mic UI on dashboard ingress (port 8099, **Open Web UI**) a
 ## Local `/addons` (optional, for development)
 
 To iterate without the GitHub store, copy `grok_voice_agent/` into Home Assistant’s local add-ons directory as `/addons/grok_voice_agent` (Samba share `addons`, SSH, or similar). Local add-ons do not use `repository.yaml`. Rebuild with `ha apps rebuild` / reinstall after you change the add-on or the packaged UI.
+
+## Cut a release
+
+Supervisor offers a new store version from `grok_voice_agent/config.yaml` `version` on the default git branch (`main`), not from GHCR. Tagging still runs tests, builds images, and creates a GitHub Release.
+
+1. Bump `version` in `grok_voice_agent/config.yaml` (keep it a quoted string).
+2. If the Web UI changed, from `client/` run `npm test && npm run build` and commit `grok_voice_agent/www`.
+3. Merge to `main`.
+4. Tag that commit with a matching `v` prefix and push it (`0.3.0` in config.yaml → `git tag v0.3.0 && git push origin v0.3.0`). The Release workflow fails if they differ.
+5. Wait for **Release** on GitHub Actions. It publishes `ghcr.io/fabianluque/ha-grok-voice/grok-voice-agent:<version>` (optional; the store still builds from this repo’s Dockerfile until `image:` is set in `config.yaml`).
+6. In Home Assistant, reload this add-on repository (store → ⋮ → check for updates). **Grok Voice Agent** should show the new version.
 
 ## Test from a Mac browser
 

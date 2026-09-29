@@ -1,0 +1,161 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  packages: write
+  actions: write
+
+jobs:
+  version:
+    name: Match tag to config.yaml
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: check
+        name: Require vX.Y.Z to equal grok_voice_agent/config.yaml version
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import os
+          import re
+
+          raw_tag = os.environ["GITHUB_REF_NAME"]
+          tag = raw_tag[1:] if raw_tag.startswith("v") else raw_tag
+          text = Path("grok_voice_agent/config.yaml").read_text(encoding="utf-8")
+          match = re.search(r"^version:\s*[\"']?([^\"'\s]+)", text, re.M)
+          if not match:
+              raise SystemExit("config.yaml is missing version")
+          version = match.group(1)
+          if tag != version:
+              raise SystemExit(
+                  f"git tag {raw_tag} does not match config.yaml version {version}. "
+                  "Bump version in grok_voice_agent/config.yaml, merge, then tag v{version}."
+              )
+          output = Path(os.environ["GITHUB_OUTPUT"])
+          with output.open("a", encoding="utf-8") as handle:
+              handle.write(f"version={version}\n")
+          print(f"Releasing {version}")
+          PY
+
+  lint:
+    name: Lint add-on config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: frenck/action-addon-linter@v2
+        with:
+          path: ./grok_voice_agent
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pytest httpx "websockets>=14,<16"
+      - run: python -m pytest -q
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - working-directory: client
+        run: |
+          npm ci
+          npm test
+
+  images:
+    name: Build and push ${{ matrix.arch }}
+    needs: [version, lint, test]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            base: ghcr.io/home-assistant/amd64-base-python:3.12-alpine3.21
+          - arch: aarch64
+            platform: linux/arm64
+            base: ghcr.io/home-assistant/aarch64-base-python:3.12-alpine3.21
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push ${{ matrix.arch }}
+        uses: docker/build-push-action@v6
+        with:
+          context: grok_voice_agent
+          file: grok_voice_agent/Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: true
+          provenance: false
+          build-args: |
+            BUILD_FROM=${{ matrix.base }}
+          tags: ghcr.io/${{ github.repository }}/grok-voice-agent:${{ needs.version.outputs.version }}-${{ matrix.arch }}
+          labels: |
+            io.hass.arch=${{ matrix.arch }}
+            io.hass.type=addon
+            io.hass.name=Grok Voice Agent
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.version.outputs.version }}
+          cache-from: type=gha,scope=addon-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=addon-${{ matrix.arch }}
+
+  manifest:
+    name: Multi-arch manifest
+    needs: [version, images]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create version and latest manifests
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}/grok-voice-agent
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          docker buildx imagetools create \
+            -t "${IMAGE}:${VERSION}" \
+            -t "${IMAGE}:latest" \
+            "${IMAGE}:${VERSION}-amd64" \
+            "${IMAGE}:${VERSION}-aarch64"
+
+  github-release:
+    name: GitHub Release
+    needs: [version, manifest]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: Grok Voice Agent ${{ needs.version.outputs.version }}
+          generate_release_notes: true
+          body: |
+            Home Assistant store install still reads `grok_voice_agent/config.yaml` from git (this tag must be on `main`).
+
+            After the workflow finishes, reload the add-on store repository. Supervisor offers **Update** when it sees version `${{ needs.version.outputs.version }}`.
+
+            Optional container images:
+
+            `ghcr.io/${{ github.repository }}/grok-voice-agent:${{ needs.version.outputs.version }}`

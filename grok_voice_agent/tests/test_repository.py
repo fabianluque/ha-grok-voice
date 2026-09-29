@@ -20,3 +20,20 @@ def test_store_discovers_grok_voice_agent_from_the_repo_root():
     assert (ADDON / "Dockerfile").is_file()
     assert (ADDON / "build.yaml").is_file()
     assert "COPY www /app/www" in (ADDON / "Dockerfile").read_text(encoding="utf-8")
+    assert "Grok Voice" in (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "xAI" in (ADDON / "README.md").read_text(encoding="utf-8")
+
+
+def test_github_actions_lint_test_and_release_the_addon():
+    ci = (ROOT / ".github/workflows/ci.yaml").read_text(encoding="utf-8")
+    release = (ROOT / ".github/workflows/release.yaml").read_text(encoding="utf-8")
+    assert "frenck/action-addon-linter" in ci
+    assert "path: ./grok_voice_agent" in ci
+    assert "python -m pytest" in ci
+    assert "npm test" in ci
+    assert "grok_voice_agent/Dockerfile" in ci
+    assert 'tags:\n      - "v*.*.*"' in release
+    assert "config.yaml version" in release
+    assert "action-gh-release" in release
+    translations = (ADDON / "translations/en.yaml").read_text(encoding="utf-8")
+    assert "8080/tcp" in translations
