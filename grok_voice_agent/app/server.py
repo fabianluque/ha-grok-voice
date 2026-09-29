@@ -8,7 +8,7 @@ import json
 import logging
 
 from websockets.asyncio.client import connect as connect_grok
-from websockets.asyncio.server import serve
+from websockets.asyncio.server import ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
 
 from app.auth import HaAuth, redact
@@ -195,6 +195,66 @@ async def _end(websocket, reason: str) -> None:
         await websocket.close()
 
 
+def drop_empty_content_length(header_block: bytes) -> bytes:
+    """Remove ``Content-Length: 0`` from an HTTP/1.1 header block.
+
+    Supervisor's ingress handler forwards the browser GET with
+    ``data=await request.read()``. That body is empty, so aiohttp writes
+    ``Content-Length: 0``. ``websockets`` rejects every Content-Length
+    before ``process_request`` and aborts the socket, which Supervisor
+    surfaces as ``502: Bad Gateway``. The Open Web UI treats that page as
+    not ready. A direct browser GET has no Content-Length, so port 8080
+    still serves the mic page.
+    """
+    lines = header_block.split(b"\r\n")
+    kept = [lines[0]]
+    for line in lines[1:]:
+        name, separator, value = line.partition(b":")
+        if separator and name.lower() == b"content-length" and value.strip() == b"0":
+            continue
+        kept.append(line)
+    return b"\r\n".join(kept)
+
+
+class IngressServerConnection(ServerConnection):
+    """WebSocket connection that still answers Supervisor's ingress GET."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._ingress_pending = b""
+        self._ingress_headers_done = False
+
+    def data_received(self, data: bytes) -> None:
+        if self._ingress_headers_done:
+            super().data_received(data)
+            return
+        self._ingress_pending += data
+        separator = self._ingress_pending.find(b"\r\n\r\n")
+        if separator == -1:
+            if len(self._ingress_pending) > 65536:
+                self._ingress_headers_done = True
+                pending = self._ingress_pending
+                self._ingress_pending = b""
+                super().data_received(pending)
+            return
+        head = self._ingress_pending[:separator]
+        rest = self._ingress_pending[separator + 4 :]
+        self._ingress_pending = b""
+        self._ingress_headers_done = True
+        super().data_received(drop_empty_content_length(head) + b"\r\n\r\n" + rest)
+
+
+def voice_serve(handler, host: str, port: int, process_request):
+    """Listen on one voice port, accepting ingress probes and WebSockets."""
+    return serve(
+        handler,
+        host,
+        port,
+        process_request=process_request,
+        create_connection=IngressServerConnection,
+    )
+
+
 async def serve_voice(settings, http) -> None:
     async def handler(websocket):
         await handle_socket(websocket, settings, http)
@@ -203,8 +263,8 @@ async def serve_voice(settings, http) -> None:
         return process_http_request(request)
 
     servers = [
-        await serve(handler, "0.0.0.0", settings.ingress_port, process_request=process_request),
-        await serve(handler, "0.0.0.0", settings.debug_port, process_request=process_request),
+        await voice_serve(handler, "0.0.0.0", settings.ingress_port, process_request),
+        await voice_serve(handler, "0.0.0.0", settings.debug_port, process_request),
     ]
     log.info(
         "listening for dashboard ingress on %s and debug on %s",
