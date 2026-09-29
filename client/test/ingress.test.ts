@@ -6,6 +6,7 @@ import {
   pageVoiceSocketUrl,
   readHassTokens,
   resolveAccessToken,
+  resolveVoiceSocketUrl,
   saveDebugToken,
   savedDebugToken,
   shouldOfferTokenField,
@@ -44,6 +45,32 @@ describe("voice socket URLs", () => {
     expect(pageVoiceSocketUrl("https:", "homeassistant.local:8123", "/api/hassio_ingress/abc/")).toBe(
       "wss://homeassistant.local:8123/api/hassio_ingress/abc/",
     );
+  });
+
+  it("turns a Home Assistant callWS object reject into an Error", async () => {
+    await expect(
+      resolveVoiceSocketUrl(
+        {
+          callWS: async () => {
+            throw { code: "unknown_error", message: "Connection lost" };
+          },
+        },
+        "https:",
+        "homeassistant.local:8123",
+      ),
+    ).rejects.toThrow('Grok Voice ingress lookup failed: {"code":"unknown_error","message":"Connection lost"}');
+  });
+
+  it("builds the voice socket URL from the supervisor ingress entry", async () => {
+    await expect(
+      resolveVoiceSocketUrl(
+        {
+          callWS: async () => ({ data: { ingress_entry: "/api/hassio_ingress/abc" } }),
+        },
+        "https:",
+        "homeassistant.local:8123",
+      ),
+    ).resolves.toBe("wss://homeassistant.local:8123/api/hassio_ingress/abc/");
   });
 });
 
