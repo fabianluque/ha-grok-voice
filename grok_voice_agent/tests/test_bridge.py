@@ -4,7 +4,7 @@ import asyncio
 import json
 
 from app.config import Settings
-from app.grok_session import GrokBridge, build_session
+from app.grok_session import GrokBridge, build_session, xai_realtime_error_log, xai_session_tools_log
 from app.tools import ToolGateway
 
 
@@ -67,6 +67,32 @@ def test_uplink_continues_while_audio_is_playing():
     payload = bridge.client_audio(b"\x01\x02")
     assert payload["type"] == "input_audio_buffer.append"
     assert payload["audio"]
+
+
+def test_session_update_echo_and_rejection_are_logged():
+    registered = xai_session_tools_log(
+        {
+            "type": "session.updated",
+            "session": {
+                "tools": [
+                    {"type": "function", "name": "intent__HassTurnOn"},
+                    {"type": "function", "name": "homeassistant__GetLiveContext"},
+                    {"type": "web_search"},
+                ]
+            },
+        }
+    )
+    assert registered == (
+        "xAI session tools count=3 names="
+        "intent__HassTurnOn,homeassistant__GetLiveContext,web_search"
+    )
+    assert xai_realtime_error_log({"type": "response.created"}) is None
+    assert (
+        xai_realtime_error_log(
+            {"type": "error", "error": {"message": "tool schema rejected"}}
+        )
+        == "xAI realtime error: tool schema rejected"
+    )
 
 
 def test_session_is_full_duplex_server_vad():

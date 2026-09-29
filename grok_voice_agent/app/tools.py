@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from app.config import DEFAULT_ALLOWLIST
+from app.mcp_client import tool_allowed
 
 
 class ToolGateway:
@@ -13,7 +14,7 @@ class ToolGateway:
         self.allowlist = frozenset(allowlist) if allowlist is not None else frozenset(DEFAULT_ALLOWLIST)
 
     def allowed(self, name: str) -> bool:
-        return "*" in self.allowlist or name in self.allowlist
+        return tool_allowed(name, self.allowlist)
 
     async def execute(self, name: str, arguments: dict) -> str:
         if not self.allowed(name):
