@@ -1,3 +1,12 @@
 #!/bin/sh
+# s6-overlay starts services with a minimal environment, so Docker's
+# SUPERVISOR_TOKEN is invisible unless with-contenv imports it. The Python
+# process also reads s6's container_environment files if this exec is skipped.
 cd /app
+if [ -x /usr/bin/with-contenv ]; then
+  exec /usr/bin/with-contenv python3 -m app.main
+fi
+if [ -x /command/with-contenv ]; then
+  exec /command/with-contenv python3 -m app.main
+fi
 exec python3 -m app.main

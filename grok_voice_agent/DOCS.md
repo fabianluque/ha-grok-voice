@@ -13,7 +13,7 @@ The GitHub repository must be **public**. The add-on store does not log into Git
 3. On the store page, open **Grok Voice Agent** and install it. Home Assistant builds the image locally from the Dockerfile.
 4. Open the add-on **Configuration**, set **xAI API key**, and save. Do not put that key in the browser UI.
 5. Install the official **Model Context Protocol Server** integration and expose the entities Assist may control.
-6. Leave the MCP URL blank. It uses `http://supervisor/core/api/mcp` with the add-on token. Paste a long-lived token only if the log shows MCP HTTP 401.
+6. Leave the MCP URL blank. It uses `http://supervisor/core/api/mcp` with the Supervisor add-on token (`SUPERVISOR_TOKEN`). Leave the long-lived token blank too. Paste a long-lived token only if the log shows MCP HTTP 401. A blank token is not sent. The startup log should say `mcp_auth=supervisor`.
 7. Start the add-on.
 
 A blank tool allowlist is `HassTurnOn`, `HassTurnOff`, `HassLightSet`, `GetLiveContext`, and `GetDateTime`. Set `*` to offer every MCP tool.

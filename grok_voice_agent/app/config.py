@@ -18,6 +18,14 @@ SUPERVISOR_MCP_URL = "http://supervisor/core/api/mcp"
 # host_network, so the published Home Assistant port is on loopback.
 # Supervisor's ``/core/api`` proxy accepts only the add-on token.
 HOME_ASSISTANT_API_URL = "http://127.0.0.1:8123"
+# s6-overlay keeps Docker's environment here and does not export it into a
+# service started with a plain ``#!/bin/sh`` script. Supervisor still writes
+# SUPERVISOR_TOKEN (and the legacy HASSIO_TOKEN alias) into that directory.
+S6_CONTAINER_ENV_DIRS = (
+    Path("/run/s6/container_environment"),
+    Path("/var/run/s6/container_environment"),
+)
+_ADDON_TOKEN_NAMES = ("SUPERVISOR_TOKEN", "HASSIO_TOKEN")
 
 
 @dataclass(frozen=True)
@@ -36,6 +44,7 @@ class Settings:
     ha_api_url: str
     ingress_port: int = 8099
     debug_port: int = 8080
+    mcp_token_source: str = "missing"
 
 
 def parse_allowlist(raw: str | None) -> frozenset[str]:
@@ -47,15 +56,56 @@ def parse_allowlist(raw: str | None) -> frozenset[str]:
     return frozenset(names)
 
 
-def load_settings(path: str | Path = "/data/options.json") -> Settings:
-    options_path = Path(path)
-    options = json.loads(options_path.read_text()) if options_path.exists() else {}
-    long_lived = str(options.get("longlived_token") or "")
-    supervisor_token = ""
-    # Imported lazily so tests can load settings without the add-on env.
+def clean_token(value: object) -> str:
+    return str(value or "").replace("\x00", "").strip()
+
+
+def read_container_env(name: str, directories: tuple[Path, ...] = S6_CONTAINER_ENV_DIRS) -> str:
+    """Return one container variable from the process or from s6's env dir."""
     import os
 
-    supervisor_token = os.environ.get("SUPERVISOR_TOKEN", "")
+    from_process = clean_token(os.environ.get(name))
+    if from_process:
+        return from_process
+    for directory in directories:
+        path = directory / name
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        token = clean_token(text)
+        if token:
+            return token
+    return ""
+
+
+def supervisor_access_token(directories: tuple[Path, ...] = S6_CONTAINER_ENV_DIRS) -> str:
+    """Add-on token Supervisor injects for homeassistant_api."""
+    for name in _ADDON_TOKEN_NAMES:
+        token = read_container_env(name, directories)
+        if token:
+            return token
+    return ""
+
+
+def load_settings(
+    path: str | Path = "/data/options.json",
+    env_dirs: tuple[Path, ...] | None = None,
+) -> Settings:
+    options_path = Path(path)
+    options = json.loads(options_path.read_text()) if options_path.exists() else {}
+    long_lived = clean_token(options.get("longlived_token"))
+    directories = S6_CONTAINER_ENV_DIRS if env_dirs is None else env_dirs
+    addon_token = supervisor_access_token(directories)
+    if long_lived:
+        mcp_token = long_lived
+        mcp_token_source = "long-lived"
+    elif addon_token:
+        mcp_token = addon_token
+        mcp_token_source = "supervisor"
+    else:
+        mcp_token = ""
+        mcp_token_source = "missing"
     mcp_url = str(options.get("ha_mcp_url") or "").strip() or SUPERVISOR_MCP_URL
     return Settings(
         xai_api_key=str(options.get("xai_api_key") or ""),
@@ -66,8 +116,9 @@ def load_settings(path: str | Path = "/data/options.json") -> Settings:
         enable_web_search=bool(options.get("enable_web_search", True)),
         enable_x_search=bool(options.get("enable_x_search", False)),
         ha_mcp_url=mcp_url,
-        mcp_token=long_lived or supervisor_token,
+        mcp_token=mcp_token,
         allowlist=parse_allowlist(options.get("mcp_tool_allowlist")),
         idle_timeout_seconds=int(options.get("idle_timeout_seconds") or 20),
         ha_api_url=HOME_ASSISTANT_API_URL,
+        mcp_token_source=mcp_token_source,
     )
