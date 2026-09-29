@@ -1,0 +1,217 @@
+# Ship the add-on.
+#
+# Actions → Release → Run workflow (from main) bumps config.yaml, or a push
+# to main that changes that version publishes it as-is. One run tests, commits,
+# builds GHCR images, pushes vX.Y.Z, and opens the GitHub Release.
+# The tag is pushed with GITHUB_TOKEN, which does not start another workflow,
+# so publish stays in this file. No extra token or API key.
+
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "current publishes config.yaml as-is. patch, minor, and major bump it first."
+        type: choice
+        required: true
+        default: patch
+        options:
+          - patch
+          - minor
+          - major
+          - current
+  push:
+    branches:
+      - main
+    paths:
+      - grok_voice_agent/config.yaml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+env:
+  ARCHITECTURES: '["amd64", "aarch64"]'
+  IMAGE_NAME: grok-voice-agent
+
+jobs:
+  prepare:
+    name: Version and test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: read
+    outputs:
+      released: ${{ steps.meta.outputs.released }}
+      version: ${{ steps.meta.outputs.version }}
+      sha: ${{ steps.meta.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          ref: main
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - name: Prepare release
+        id: meta
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_BUMP: ${{ github.event_name == 'workflow_dispatch' && inputs.bump || 'current' }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: bash .github/scripts/prepare-release.sh
+
+  matrix:
+    name: Image matrix
+    needs: prepare
+    if: needs.prepare.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - name: Architectures
+        id: matrix
+        uses: home-assistant/builder/actions/prepare-multi-arch-matrix@2026.03.2
+        with:
+          architectures: ${{ env.ARCHITECTURES }}
+          image-name: ${{ env.IMAGE_NAME }}
+
+  build:
+    name: Build ${{ matrix.arch }}
+    needs: [prepare, matrix]
+    if: needs.prepare.outputs.released == 'true'
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.matrix.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+      - name: Base image for this architecture
+        id: base
+        run: |
+          image="$(python3 .github/scripts/release_version.py build-from --build grok_voice_agent/build.yaml --arch "${{ matrix.arch }}")"
+          echo "image=${image}" >> "$GITHUB_OUTPUT"
+      - name: Build and push
+        uses: home-assistant/builder/actions/build-image@2026.03.2
+        with:
+          arch: ${{ matrix.arch }}
+          context: grok_voice_agent
+          container-registry-password: ${{ secrets.GITHUB_TOKEN }}
+          image: ${{ matrix.image }}
+          image-tags: |
+            ${{ needs.prepare.outputs.version }}
+            latest
+          build-args: |
+            BUILD_FROM=${{ steps.base.outputs.image }}
+          labels: |
+            io.hass.type=addon
+            io.hass.name=Grok Voice Agent
+            io.hass.description=Full-duplex Grok Voice for Home Assistant
+            io.hass.url=https://github.com/fabianluque/ha-grok-voice
+          cosign: "false"
+          push: "true"
+          version: ${{ needs.prepare.outputs.version }}
+
+  manifest:
+    name: Publish multi-arch manifest
+    needs: [prepare, build]
+    if: needs.prepare.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - name: Publish manifest
+        uses: home-assistant/builder/actions/publish-multi-arch-manifest@2026.03.2
+        with:
+          architectures: ${{ env.ARCHITECTURES }}
+          container-registry-password: ${{ secrets.GITHUB_TOKEN }}
+          image-name: ${{ env.IMAGE_NAME }}
+          image-tags: |
+            ${{ needs.prepare.outputs.version }}
+            latest
+          cosign: "false"
+
+  github-release:
+    name: GitHub Release
+    needs: [prepare, manifest]
+    if: needs.prepare.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          ref: ${{ needs.prepare.outputs.sha }}
+      - name: Closed issues since the previous tag
+        id: issues
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          previous="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | grep -v "^v${VERSION}$" | head -n 1 || true)"
+          since=""
+          if [ -n "$previous" ]; then
+            since="$(git log -1 --format=%cI "$previous")"
+          fi
+          if ! gh issue list --state closed --limit 100 --json number,title,closedAt > "$RUNNER_TEMP/issues.json"; then
+            echo '[]' > "$RUNNER_TEMP/issues.json"
+          fi
+          count="$(python3 .github/scripts/release_version.py format-issues \
+            --issues "$RUNNER_TEMP/issues.json" \
+            --since "$since" \
+            --output "$RUNNER_TEMP/closed-issues.md")"
+          echo "count=${count}" >> "$GITHUB_OUTPUT"
+
+      - name: Tag release
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          SHA: ${{ needs.prepare.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null; then
+            echo "Tag v${VERSION} already exists."
+          else
+            git tag -a "v${VERSION}" "$SHA" -m "Release v${VERSION}"
+            git push origin "v${VERSION}"
+          fi
+
+      - name: Create GitHub Release
+        if: steps.issues.outputs.count == '0'
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: v${{ needs.prepare.outputs.version }}
+          target_commitish: ${{ needs.prepare.outputs.sha }}
+          name: v${{ needs.prepare.outputs.version }}
+          generate_release_notes: true
+          make_latest: true
+
+      - name: Create GitHub Release with closed issues
+        if: steps.issues.outputs.count != '0'
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: v${{ needs.prepare.outputs.version }}
+          target_commitish: ${{ needs.prepare.outputs.sha }}
+          name: v${{ needs.prepare.outputs.version }}
+          body_path: ${{ runner.temp }}/closed-issues.md
+          generate_release_notes: true
+          make_latest: true
