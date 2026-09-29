@@ -93,12 +93,36 @@ export function pageVoiceSocketUrl(pageProtocol: string, host: string, pathname:
   return `${proto}//${host}${path}`;
 }
 
+/** Home Assistant rejects websocket calls with a plain `{code, message}` object. */
+export function formatUnknown(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message ? `${error.name}: ${error.message}` : error.name;
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  try {
+    const json = JSON.stringify(error);
+    if (json && json !== "{}") {
+      return json;
+    }
+  } catch {
+    // Circular values fall through to String().
+  }
+  return String(error);
+}
+
 export async function resolveVoiceSocketUrl(hass: HassLike, pageProtocol: string, host: string): Promise<string> {
-  const info = await hass.callWS({
-    type: "supervisor/api",
-    endpoint: "/addons/grok_voice_agent/info",
-    method: "get",
-  });
+  let info: IngressInfo;
+  try {
+    info = await hass.callWS({
+      type: "supervisor/api",
+      endpoint: "/addons/grok_voice_agent/info",
+      method: "get",
+    });
+  } catch (error) {
+    throw new Error(`Home Assistant websocket failed: ${formatUnknown(error)}`);
+  }
   const entry = info.data?.ingress_entry || info.ingress_entry;
   if (!entry) {
     throw new Error("Grok Voice ingress is not available for this user");

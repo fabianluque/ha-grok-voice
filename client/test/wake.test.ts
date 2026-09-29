@@ -278,6 +278,8 @@ describe("kiosk wake handoff", () => {
     events.dispatchEvent(new Event(WAKE_EVENT));
     await flush();
     expect(log).toHaveBeenCalledWith("[Grok Voice] Cancelled native Assist via esphome.ks_attic_dashboard_vs_cancel");
+    expect(log).toHaveBeenCalledWith("[Grok Voice] Dashboard websocket resumed");
+    expect(log).toHaveBeenCalledWith("[Grok Voice] Duplex session open");
 
     expect(callService).toHaveBeenCalledTimes(1);
     expect(callService).toHaveBeenCalledWith("esphome", "ks_attic_dashboard_vs_cancel", {});
@@ -334,5 +336,51 @@ describe("kiosk wake handoff", () => {
     kept.finish("idle");
     await flush();
     expect(kiosk.setInteractionActive).toHaveBeenLastCalledWith(false, "voice");
+  });
+
+  it("retries after a Home Assistant error object and does not release the session", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const events = wakeTarget();
+    let created = 0;
+    let kept!: VoiceSession;
+    const openSession = vi.fn(async () => {
+      created += 1;
+      if (created < 3) {
+        throw { code: "unknown_error", message: "websocket closed" };
+      }
+      kept = new VoiceSession(
+        () => ({ stop() {} }),
+        () => ({ send() {}, close() {} }),
+      );
+      return kept;
+    });
+    const kiosk: KioskApi = {
+      platform: "kiosksatellite",
+      setInteractionActive: vi.fn(async () => true),
+      setWakeWordActive: vi.fn(async (active: boolean) => {
+        if (!active) {
+          throw { code: "unavailable", message: "paused" };
+        }
+        return true;
+      }),
+    };
+    installGrokVoice({ kiosk, events, openSession });
+    events.dispatchEvent(new Event(WAKE_EVENT));
+    await flush();
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    await flush();
+
+    expect(log).toHaveBeenCalledWith(
+      '[Grok Voice] Duplex session failed: {"code":"unknown_error","message":"websocket closed"}',
+    );
+    expect(log).toHaveBeenCalledWith('[Grok Voice] setWakeWordActive failed: {"code":"unavailable","message":"paused"}');
+    expect(log).toHaveBeenCalledWith("[Grok Voice] Duplex session open");
+    expect(kept.captureActive).toBe(true);
+    expect(kiosk.setInteractionActive).not.toHaveBeenCalledWith(false, "voice");
+    kept.finish("idle");
+    await flush();
+    expect(kiosk.setInteractionActive).toHaveBeenLastCalledWith(false, "voice");
+    expect(log).not.toHaveBeenCalledWith(expect.stringContaining("Wake failed"));
+    log.mockRestore();
   });
 });

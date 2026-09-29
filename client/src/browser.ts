@@ -89,13 +89,29 @@ export interface BrowserSessionOptions {
   onServerText?: (message: ServerMessage) => void;
 }
 
+export async function resumeAudioContext(
+  context: { state: string; resume(): Promise<void> },
+  attempts = 3,
+): Promise<void> {
+  for (let attempt = 0; attempt < attempts && context.state === "suspended"; attempt += 1) {
+    try {
+      await context.resume();
+    } catch (error) {
+      if (attempt === attempts - 1) {
+        throw error;
+      }
+      await new Promise((resolve) => {
+        setTimeout(resolve, 200);
+      });
+    }
+  }
+}
+
 export async function createBrowserSession(
   options: BrowserSessionOptions,
 ): Promise<{ session: VoiceSession }> {
   const context = new AudioContext({ sampleRate: SAMPLE_RATE });
-  if (context.state === "suspended") {
-    await context.resume();
-  }
+  await resumeAudioContext(context);
   const nextTime = { t: 0 };
   let mic: { stop(): void } | null = null;
   let closed = false;

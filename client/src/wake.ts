@@ -1,3 +1,4 @@
+import { formatUnknown } from "./ingress";
 import { cancelNativeAssist, resolveNativeCancelService, type NativeAssistHass } from "./native-assist";
 import type { VoiceSession } from "./session";
 
@@ -253,6 +254,8 @@ export function claimWakeEvent(target: WakeEventTarget, handler: (event: Event) 
 }
 
 const QUICK_CLOSE_MS = 800;
+const RETRIES = 8;
+const RETRY_MS = 300;
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -261,34 +264,70 @@ function wait(ms: number): Promise<void> {
 }
 
 /**
+ * vs_cancel returns before the dashboard WebView has left Assist's pause.
+ * `hass.callWS` rejects with `{code, message}` until that pause lifts.
+ */
+async function waitForDashboard(deps: WakeDeps): Promise<void> {
+  const hass = deps.hass?.();
+  if (!hass?.callWS) {
+    await wait(600);
+    console.log("[Grok Voice] Dashboard settle finished");
+    return;
+  }
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    try {
+      await hass.callWS({ type: "ping" });
+      console.log("[Grok Voice] Dashboard websocket resumed");
+      return;
+    } catch (error) {
+      console.log(`[Grok Voice] Dashboard websocket not ready: ${formatUnknown(error)}`);
+      await wait(400);
+    }
+  }
+  console.log("[Grok Voice] Dashboard websocket still failing, opening the session anyway");
+}
+
+/**
  * Native Assist pauses the dashboard as soon as its overlay is up, which
- * closes the duplex socket in about 100ms. Retry that collapse. A real end
- * (`idle`, `end`) returns immediately.
+ * used to close the duplex socket before the page had resumed. Retry that
+ * collapse. A real end (`idle`, `end`) returns immediately.
  */
 async function runDuplex(open: () => Promise<VoiceSession>): Promise<void> {
   let last: unknown;
-  for (let attempt = 0; attempt < 4; attempt += 1) {
+  for (let attempt = 0; attempt < RETRIES; attempt += 1) {
     const started = Date.now();
+    let stayTimer: ReturnType<typeof setTimeout> | undefined;
     try {
       const session = await open();
+      console.log("[Grok Voice] Duplex session open");
       const reason = await new Promise<string>((resolve) => {
+        stayTimer = setTimeout(() => {
+          console.log("[Grok Voice] Duplex session stayed open");
+        }, QUICK_CLOSE_MS);
         session.onEnd((endReason) => resolve(endReason));
         void session.start();
       });
+      clearTimeout(stayTimer);
       const collapsed = reason === "closed" && Date.now() - started < QUICK_CLOSE_MS;
-      if (!collapsed || attempt === 3) {
+      if (!collapsed) {
+        console.log(`[Grok Voice] Duplex session ended: ${reason}`);
         return;
       }
+      console.log("[Grok Voice] Duplex session closed early, retrying");
     } catch (error) {
+      if (stayTimer) {
+        clearTimeout(stayTimer);
+      }
       last = error;
-      if (attempt === 3) {
-        throw error;
+      console.log(`[Grok Voice] Duplex session failed: ${formatUnknown(error)}`);
+      if (attempt === RETRIES - 1) {
+        throw error instanceof Error ? error : new Error(formatUnknown(error));
       }
     }
-    await wait(250);
+    await wait(RETRY_MS);
   }
   if (last) {
-    throw last;
+    throw last instanceof Error ? last : new Error(formatUnknown(last));
   }
 }
 
@@ -324,7 +363,11 @@ function holdNativeWakeOff(kiosk: KioskApi): () => void {
     if (stopped) {
       return;
     }
-    void kiosk.setWakeWordActive(false);
+    void Promise.resolve()
+      .then(() => kiosk.setWakeWordActive(false))
+      .catch((error: unknown) => {
+        console.log(`[Grok Voice] setWakeWordActive failed: ${formatUnknown(error)}`);
+      });
     timer = setTimeout(poke, 200);
   };
   poke();
@@ -353,29 +396,47 @@ export function installGrokVoice(deps: WakeDeps): { installed: boolean } {
       return;
     }
     active = true;
-    blockAssistWake(deps.host?.__vsSession);
-    const service = await nativeCancel;
-    const cancelled = await cancelNativeAssist(deps.hass?.() ?? null, service);
-    if (cancelled && service) {
-      console.log(`[Grok Voice] Cancelled native Assist via esphome.${service}`);
-    } else if (service) {
-      console.log(`[Grok Voice] Native Assist cancel failed for esphome.${service}`);
-    } else {
-      console.log("[Grok Voice] Native Assist cancel skipped; no esphome vs_cancel matched this kiosk");
-    }
-    const releaseWake = holdNativeWakeOff(deps.kiosk!);
-    await deps.kiosk!.setInteractionActive(true, "voice");
+    let releaseWake = () => {};
+    let held = false;
     try {
+      blockAssistWake(deps.host?.__vsSession);
+      const service = await nativeCancel;
+      const cancelled = await cancelNativeAssist(deps.hass?.() ?? null, service);
+      if (cancelled && service) {
+        console.log(`[Grok Voice] Cancelled native Assist via esphome.${service}`);
+      } else if (service) {
+        console.log(`[Grok Voice] Native Assist cancel failed for esphome.${service}`);
+      } else {
+        console.log("[Grok Voice] Native Assist cancel skipped; no esphome vs_cancel matched this kiosk");
+      }
+      releaseWake = holdNativeWakeOff(deps.kiosk!);
+      await deps.kiosk!.setInteractionActive(true, "voice");
+      held = true;
+      if (cancelled) {
+        await waitForDashboard(deps);
+      }
       await runDuplex(deps.openSession);
+    } catch (error) {
+      console.log(`[Grok Voice] Wake session stopped: ${formatUnknown(error)}`);
     } finally {
       releaseWake();
       active = false;
-      await deps.kiosk!.setWakeWordActive(true);
-      await deps.kiosk!.setInteractionActive(false, "voice");
+      if (held) {
+        try {
+          await deps.kiosk!.setWakeWordActive(true);
+          await deps.kiosk!.setInteractionActive(false, "voice");
+        } catch (error) {
+          console.log(`[Grok Voice] Could not re-arm wake word: ${formatUnknown(error)}`);
+        }
+      }
     }
   };
 
-  claimWakeEvent(deps.events, onWake as (event: Event) => void);
+  claimWakeEvent(deps.events, () => {
+    void onWake().catch((error: unknown) => {
+      console.log(`[Grok Voice] Wake failed: ${formatUnknown(error)}`);
+    });
+  });
   console.log("[Grok Voice] Installed Kiosk Satellite wake override");
   return { installed: true };
 }

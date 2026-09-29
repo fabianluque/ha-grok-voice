@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   accessToken,
   authHandshake,
+  formatUnknown,
   isOpenWebUiPath,
   pageVoiceSocketUrl,
   readHassTokens,
   resolveAccessToken,
+  resolveVoiceSocketUrl,
   saveDebugToken,
   savedDebugToken,
   shouldOfferTokenField,
@@ -44,6 +46,28 @@ describe("voice socket URLs", () => {
     expect(pageVoiceSocketUrl("https:", "homeassistant.local:8123", "/api/hassio_ingress/abc/")).toBe(
       "wss://homeassistant.local:8123/api/hassio_ingress/abc/",
     );
+  });
+});
+
+describe("home assistant websocket errors", () => {
+  it("stringifies a plain Home Assistant error object", () => {
+    expect(formatUnknown({ code: "unknown_error", message: "websocket closed" })).toBe(
+      '{"code":"unknown_error","message":"websocket closed"}',
+    );
+  });
+
+  it("wraps a rejected callWS so the wake log is not an opaque object", async () => {
+    await expect(
+      resolveVoiceSocketUrl(
+        {
+          callWS: async () => {
+            throw { code: "unknown_error", message: "websocket closed" };
+          },
+        },
+        "https:",
+        "homeassistant.local:8123",
+      ),
+    ).rejects.toThrow('Home Assistant websocket failed: {"code":"unknown_error","message":"websocket closed"}');
   });
 });
 
