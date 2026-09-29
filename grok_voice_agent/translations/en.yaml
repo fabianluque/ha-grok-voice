@@ -1,0 +1,34 @@
+configuration:
+  xai_api_key:
+    name: xAI API key
+    description: Key used only by this add-on. It is never sent to the tablet.
+  instructions:
+    name: Instructions
+    description: Spoken system prompt. Keep it short.
+  voice:
+    name: Voice
+    description: Grok Voice name.
+  model:
+    name: Model
+    description: Pin a versioned model. grok-voice-think-fast-2.0 is the current voice model.
+  reasoning_effort:
+    name: Reasoning effort
+    description: none keeps turns short. high thinks longer before speaking.
+  enable_web_search:
+    name: Web search
+    description: Let Grok search the web inside the voice session.
+  enable_x_search:
+    name: X search
+    description: Let Grok search X inside the voice session.
+  ha_mcp_url:
+    name: Home Assistant MCP URL
+    description: Leave blank to use http://supervisor/core/api/mcp.
+  longlived_token:
+    name: Long-lived token
+    description: Leave blank to use the add-on supervisor token. Paste one here only if MCP returns 401.
+  mcp_tool_allowlist:
+    name: MCP tool allowlist
+    description: Comma-separated tool names. Blank uses the Assist control set. * allows every tool the MCP server offers.
+  idle_timeout_seconds:
+    name: Idle timeout
+    description: Seconds of silence before the voice session ends and the wake word is re-armed.

@@ -1,0 +1,3 @@
+#!/bin/sh
+cd /app
+exec python3 -m app.main

@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Shell(npm)",
+      "Shell(npm *)",
+      "Shell(npx)",
+      "Shell(npx *)",
+      "Shell(node)",
+      "Shell(node *)",
+      "Shell(npm test)",
+      "Shell(npm run test)",
+      "Shell(npm run *)",
+      "Shell(vitest)",
+      "Shell(vitest *)",
+      "Shell(pytest)",
+      "Shell(pytest *)",
+      "Shell(python -m pytest)",
+      "Shell(python -m pytest *)",
+      "Shell(python3 -m pytest)",
+      "Shell(python3 -m pytest *)"
+    ],
+    "deny": []
+  }
+}
