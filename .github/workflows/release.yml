@@ -5,6 +5,8 @@
 # builds GHCR images, pushes vX.Y.Z, and opens the GitHub Release.
 # The tag is pushed with GITHUB_TOKEN, which does not start another workflow,
 # so publish stays in this file. No extra token or API key.
+# gh refuses to run in Actions unless the job sets GH_TOKEN. Use github.token
+# (the same built-in token). Do not add a PAT or other secret.
 
 name: Release
 
@@ -45,6 +47,8 @@ jobs:
     permissions:
       contents: write
       issues: read
+    env:
+      GH_TOKEN: ${{ github.token }}
     outputs:
       released: ${{ steps.meta.outputs.released }}
       version: ${{ steps.meta.outputs.version }}
@@ -154,6 +158,8 @@ jobs:
     permissions:
       contents: write
       issues: read
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v5
         with:
