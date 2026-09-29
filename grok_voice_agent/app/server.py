@@ -14,6 +14,7 @@ from websockets.exceptions import ConnectionClosed
 from app.auth import HaAuth, redact
 from app.grok_session import GrokBridge, build_session
 from app.mcp_client import McpHttpClient, function_tools
+from app.static import process_http_request
 from app.tools import ToolGateway
 
 log = logging.getLogger("grok_voice")
@@ -198,11 +199,8 @@ async def serve_voice(settings, http) -> None:
     async def handler(websocket):
         await handle_socket(websocket, settings, http)
 
-    async def process_request(connection, request):
-        upgrade = request.headers.get("Upgrade")
-        if upgrade is None or str(upgrade).lower() != "websocket":
-            return connection.respond(200, "Grok Voice agent\n")
-        return None
+    async def process_request(_connection, request):
+        return process_http_request(request)
 
     servers = [
         await serve(handler, "0.0.0.0", settings.ingress_port, process_request=process_request),
