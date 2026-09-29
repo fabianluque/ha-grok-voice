@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   accessToken,
+  authHandshake,
+  isOpenWebUiPath,
   pageVoiceSocketUrl,
   readHassTokens,
   resolveAccessToken,
   saveDebugToken,
   savedDebugToken,
+  shouldOfferTokenField,
   tokenFromHassConnection,
   voiceSocketUrl,
 } from "../src/ingress";
@@ -94,5 +97,25 @@ describe("browser access tokens", () => {
         hassConnection: Promise.resolve({ auth: { accessToken: "local-token" } }),
       }),
     ).resolves.toBe("local-token");
+  });
+});
+
+describe("Open Web UI session", () => {
+  it("treats the ingress iframe as a signed-in session and hides the token field", () => {
+    const path = "/api/hassio_ingress/OMwnLs6XGmfQ-r0Fn5pc_Fblx9OpR8BUERKIrvOBLuA/";
+    expect(isOpenWebUiPath(path)).toBe(true);
+    expect(isOpenWebUiPath("/")).toBe(false);
+    expect(shouldOfferTokenField({ pathname: path, authFailed: false })).toBe(false);
+    expect(shouldOfferTokenField({ pathname: path, authFailed: true })).toBe(true);
+    expect(shouldOfferTokenField({ pathname: "/", authFailed: false })).toBe(true);
+    expect(authHandshake({ ingress: true, token: "" })).toEqual({ type: "auth", via: "ingress" });
+    expect(authHandshake({ ingress: true, token: "long-lived" })).toEqual({
+      type: "auth",
+      token: "long-lived",
+    });
+    expect(authHandshake({ ingress: false, token: "long-lived" })).toEqual({
+      type: "auth",
+      token: "long-lived",
+    });
   });
 });

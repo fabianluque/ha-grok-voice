@@ -14,7 +14,10 @@ DEFAULT_ALLOWLIST = (
     "GetDateTime",
 )
 SUPERVISOR_MCP_URL = "http://supervisor/core/api/mcp"
-SUPERVISOR_API_URL = "http://supervisor/core"
+# User access tokens are checked against Core on the host. This add-on sets
+# host_network, so the published Home Assistant port is on loopback.
+# Supervisor's ``/core/api`` proxy accepts only the add-on token.
+HOME_ASSISTANT_API_URL = "http://127.0.0.1:8123"
 
 
 @dataclass(frozen=True)
@@ -66,5 +69,5 @@ def load_settings(path: str | Path = "/data/options.json") -> Settings:
         mcp_token=long_lived or supervisor_token,
         allowlist=parse_allowlist(options.get("mcp_tool_allowlist")),
         idle_timeout_seconds=int(options.get("idle_timeout_seconds") or 20),
-        ha_api_url=SUPERVISOR_API_URL,
+        ha_api_url=HOME_ASSISTANT_API_URL,
     )

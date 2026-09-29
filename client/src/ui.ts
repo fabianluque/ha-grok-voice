@@ -2,9 +2,11 @@ import { createBrowserSession } from "./browser";
 import {
   DEBUG_TOKEN_KEY,
   discoverHass,
+  isOpenWebUiPath,
   pageVoiceSocketUrl,
   resolveAccessToken,
   saveDebugToken,
+  shouldOfferTokenField,
   tokenFromHassConnection,
   type HassLike,
   type TokenSource,
@@ -25,6 +27,7 @@ const secureEl = document.getElementById("secure-note") as HTMLParagraphElement;
 let active: { session: { finish(reason: string): void } } | null = null;
 let autoToken = "";
 let autoSource: TokenSource = "none";
+let tokenRequired = false;
 
 function setStatus(text: string, tone: "idle" | "live" | "talk" | "error" = "idle"): void {
   statusEl.textContent = text;
@@ -38,6 +41,8 @@ function setError(text: string): void {
 
 function describeSource(source: TokenSource): string {
   switch (source) {
+    case "ingress":
+      return "Using your signed-in Home Assistant session.";
     case "hass":
       return "Using the Home Assistant session from this page.";
     case "hassConnection":
@@ -61,25 +66,39 @@ function appendLine(role: string, text: string): void {
   logEl.scrollTop = logEl.scrollHeight;
 }
 
+function onOpenWebUi(): boolean {
+  return isOpenWebUiPath(location.pathname);
+}
+
 function currentToken(): { token: string; source: TokenSource } {
   const explicit = tokenInput.value.trim();
   if (explicit) {
     return { token: explicit, source: "explicit" };
   }
+  if (onOpenWebUi()) {
+    return { token: "", source: "ingress" };
+  }
   if (autoToken) {
     return { token: autoToken, source: autoSource };
   }
-  const resolved = resolveAccessToken({
+  return resolveAccessToken({
     hass: discoverHass(),
     storage: localStorage,
   });
-  return resolved;
 }
 
 function refreshTokenUi(): void {
   const resolved = currentToken();
-  sourceEl.textContent = describeSource(resolved.source);
-  tokenPanel.hidden = resolved.source === "hass" || resolved.source === "hassConnection" || resolved.source === "hassTokens";
+  if (tokenRequired && resolved.source === "ingress") {
+    sourceEl.textContent =
+      "Signed-in session was rejected. Paste a long-lived token, or press Start talking to try the session again.";
+  } else {
+    sourceEl.textContent = describeSource(resolved.source);
+  }
+  tokenPanel.hidden = !shouldOfferTokenField({
+    pathname: location.pathname,
+    authFailed: tokenRequired,
+  });
   if (!window.isSecureContext) {
     secureEl.hidden = false;
   }
@@ -121,6 +140,10 @@ function onServerText(message: ServerMessage): void {
 }
 
 async function loadToken(): Promise<void> {
+  if (onOpenWebUi()) {
+    refreshTokenUi();
+    return;
+  }
   const hass: HassLike | null = discoverHass();
   const fromConnection = await tokenFromHassConnection(window);
   const resolved = resolveAccessToken({
@@ -144,9 +167,11 @@ async function loadToken(): Promise<void> {
 async function start(): Promise<void> {
   setError("");
   const { token, source } = currentToken();
-  if (!token) {
+  const ingress = source === "ingress";
+  if (!token && !ingress) {
+    tokenRequired = true;
     setError("Add a Home Assistant long-lived access token first.");
-    tokenPanel.hidden = false;
+    refreshTokenUi();
     tokenInput.focus();
     return;
   }
@@ -161,6 +186,7 @@ async function start(): Promise<void> {
     const { session } = await createBrowserSession({
       url,
       token,
+      ingress,
       onTranscript: (role, text) => appendLine(role, text),
       onServerText,
     });
@@ -169,6 +195,14 @@ async function start(): Promise<void> {
       active = null;
       startBtn.disabled = false;
       stopBtn.disabled = true;
+      if (reason === "unauthorized") {
+        tokenRequired = true;
+        refreshTokenUi();
+        tokenInput.focus();
+        setError(
+          "Home Assistant rejected this token. Paste a long-lived access token below and press Start talking again.",
+        );
+      }
       const tone = reason === "unauthorized" || reason === "error" ? "error" : "idle";
       setStatus(endReasonText(reason), tone);
     });

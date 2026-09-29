@@ -11,7 +11,7 @@ from websockets.asyncio.client import connect as connect_grok
 from websockets.asyncio.server import ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
 
-from app.auth import HaAuth, redact
+from app.auth import HaAuth, redact, trusted_ingress_user
 from app.grok_session import GrokBridge, build_session
 from app.mcp_client import McpHttpClient, function_tools
 from app.static import process_http_request
@@ -28,12 +28,31 @@ class VoiceConnection:
         self.grok_connect = grok_connect or _default_grok_connect
         self.grok = None
 
+    async def open_grok(self) -> None:
+        if self.grok is None:
+            self.grok = await self.grok_connect(self.settings)
+
     async def authenticate(self, token: str) -> bool:
         auth = HaAuth(self.settings.ha_api_url, self.http)
         if not await auth.validate(token):
             return False
-        self.grok = await self.grok_connect(self.settings)
+        await self.open_grok()
         return True
+
+
+def ingress_user_from_socket(websocket, ingress_port: int) -> str | None:
+    """Signed-in ingress user, only on the ingress port.
+
+    The debug port keeps the long-lived token check even if a client copies
+    ingress headers onto that socket.
+    """
+    local = getattr(websocket, "local_address", None)
+    local_port = local[1] if isinstance(local, tuple) and len(local) > 1 else None
+    if local_port != ingress_port:
+        return None
+    request = getattr(websocket, "request", None)
+    headers = getattr(request, "headers", None) if request is not None else None
+    return trusted_ingress_user(headers, getattr(websocket, "remote_address", None))
 
 
 async def _default_grok_connect(settings):
@@ -58,8 +77,9 @@ def install_redacting_logs(secrets: list[str]) -> None:
     logging.getLogger().addFilter(_Redact())
 
 
-async def handle_socket(websocket, settings, http) -> None:
-    connection = VoiceConnection(settings, http)
+async def handle_socket(websocket, settings, http, grok_connect=None) -> None:
+    connection = VoiceConnection(settings, http, grok_connect)
+    ingress_user = ingress_user_from_socket(websocket, settings.ingress_port)
     try:
         raw = await asyncio.wait_for(websocket.recv(), timeout=10)
     except (asyncio.TimeoutError, ConnectionClosed):
@@ -78,7 +98,11 @@ async def handle_socket(websocket, settings, http) -> None:
         await _end(websocket, "unauthorized")
         return
     try:
-        authorized = await connection.authenticate(str(token or ""))
+        if ingress_user:
+            await connection.open_grok()
+            authorized = True
+        else:
+            authorized = await connection.authenticate(str(token or ""))
     except Exception as exc:
         log.error("voice session failed before it was ready: %s", type(exc).__name__)
         await _end(websocket, "error")
@@ -88,7 +112,10 @@ async def handle_socket(websocket, settings, http) -> None:
         await _end(websocket, "unauthorized")
         return
 
-    log.info("voice session authenticated")
+    if ingress_user:
+        log.info("voice session authenticated via ingress")
+    else:
+        log.info("voice session authenticated")
     gateway = ToolGateway(
         McpHttpClient(settings.ha_mcp_url, settings.mcp_token, http),
         settings.allowlist,

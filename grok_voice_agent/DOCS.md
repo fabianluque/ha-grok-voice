@@ -20,7 +20,7 @@ A blank tool allowlist is `HassTurnOn`, `HassTurnOff`, `HassLightSet`, `GetLiveC
 
 After a client UI change, run `npm run build` in `client/` so `grok_voice_agent/www` is current, then update/rebuild the add-on so `/app/www` is in the image.
 
-The add-on serves the mic UI on dashboard ingress (port 8099, **Open Web UI**) and on the debug port (`8080/tcp`). Voice still authenticates with a Home Assistant access token on the first WebSocket message; that handshake is unchanged.
+The add-on serves the mic UI on dashboard ingress (port 8099, **Open Web UI**) and on the debug port (`8080/tcp`). Open Web UI uses the signed-in Home Assistant ingress session, so it does not ask for a token. The debug port still sends an optional long-lived access token on the first WebSocket message.
 
 ## Local `/addons` (optional, for development)
 
@@ -33,10 +33,12 @@ The UI needs a **secure context** for `getUserMedia` (HTTPS, or `localhost`). `h
 ### Home Assistant Open Web UI / ingress
 
 1. Start **Grok Voice Agent**.
-2. Open the add-on and choose **Open Web UI**, or open **Grok Voice** in the sidebar.
-3. If the page asks for a token, the iframe could not read the HA session. Use a user who can open this add-on's ingress (an administrator can).
-4. Click **Start talking** and allow the microphone.
-5. If the HA sidebar iframe blocks the mic, open the ingress URL in its own tab (same origin as Home Assistant). Same-origin pages can reuse `hassTokens` / the parent `hass` connection automatically.
+2. Stay signed in to Home Assistant and choose **Open Web UI**, or open **Grok Voice** in the sidebar. That panel creates the ingress session, then loads the add-on. Do not paste a token.
+3. Click **Start talking** and allow the microphone.
+4. If the page says the session was rejected, a long-lived token field appears. Paste a token there, or open **Open Web UI** again.
+5. If the sidebar iframe blocks the mic, use **Open Web UI** so Home Assistant opens the panel itself.
+
+Opening `https://<your-nabu-casa-host>/api/hassio_ingress/<token>/` directly returns Supervisor **401: Unauthorized** when the browser has no live `ingress_session` cookie. Signing in to Nabu Casa does not create that cookie. Use **Open Web UI** (it opens `/app/<add-on slug>` and sets the cookie) instead of a bookmarked ingress link. The cookie lasts about 15 minutes unless that panel keeps it alive.
 
 Prefer this path when Home Assistant itself is HTTPS (Nabu Casa or a local certificate). The WebSocket stays on the ingress URL; no extra port on the tablet.
 

@@ -11,7 +11,7 @@ interface IngressInfo {
 
 export const DEBUG_TOKEN_KEY = "grok-voice-ha-token";
 
-export type TokenSource = "hass" | "hassConnection" | "hassTokens" | "saved" | "explicit" | "none";
+export type TokenSource = "ingress" | "hass" | "hassConnection" | "hassTokens" | "saved" | "explicit" | "none";
 
 export interface ResolvedToken {
   token: string;
@@ -51,6 +51,27 @@ export function discoverHass(win: Window = window): HassLike | null {
     return null;
   }
   return null;
+}
+
+export function isOpenWebUiPath(pathname: string): boolean {
+  return pathname.includes("/api/hassio_ingress/");
+}
+
+export function authHandshake(options: {
+  ingress: boolean;
+  token: string;
+}): { type: "auth"; via?: "ingress"; token?: string } {
+  if (options.ingress && !options.token.trim()) {
+    return { type: "auth", via: "ingress" };
+  }
+  return { type: "auth", token: options.token };
+}
+
+export function shouldOfferTokenField(input: { pathname: string; authFailed: boolean }): boolean {
+  if (input.authFailed) {
+    return true;
+  }
+  return !isOpenWebUiPath(input.pathname);
 }
 
 export function voiceSocketUrl(pageProtocol: string, host: string, ingressEntry: string): string {
