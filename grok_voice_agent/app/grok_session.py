@@ -22,6 +22,35 @@ TRANSCRIPT_ROLES = {
 }
 
 
+def xai_session_tools_log(event: dict) -> str | None:
+    """Log line when xAI echoes the tools registered on the voice session."""
+    if event.get("type") != "session.updated":
+        return None
+    session = event.get("session")
+    if not isinstance(session, dict) or "tools" not in session:
+        return None
+    tools = session.get("tools")
+    if not isinstance(tools, list):
+        tools = []
+    names = []
+    for tool in tools:
+        if isinstance(tool, dict):
+            names.append(str(tool.get("name") or tool.get("type") or "unknown"))
+    return f"xAI session tools count={len(names)} names={','.join(names)}"
+
+
+def xai_realtime_error_log(event: dict) -> str | None:
+    """Log line when xAI rejects session.update, including a bad tool schema."""
+    if event.get("type") != "error":
+        return None
+    error = event.get("error")
+    if isinstance(error, dict):
+        detail = error.get("message") or error.get("type") or error
+    else:
+        detail = error or event.get("message") or event
+    return f"xAI realtime error: {detail}"
+
+
 def build_session(settings, function_tools: list[dict]) -> dict:
     tools: list[dict] = list(function_tools)
     if settings.enable_web_search:

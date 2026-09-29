@@ -12,8 +12,8 @@ from websockets.asyncio.server import ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
 
 from app.auth import HaAuth, redact, trusted_ingress_user
-from app.grok_session import GrokBridge, build_session
-from app.mcp_client import McpHttpClient, function_tools
+from app.grok_session import GrokBridge, build_session, xai_realtime_error_log, xai_session_tools_log
+from app.mcp_client import McpHttpClient, function_tools, voice_tool_log
 from app.static import process_http_request
 from app.tools import ToolGateway
 
@@ -122,10 +122,12 @@ async def handle_socket(websocket, settings, http, grok_connect=None) -> None:
     )
     try:
         listed = await gateway.mcp.list_tools()
-    except Exception:
-        log.exception("MCP tool list failed")
+    except Exception as exc:
+        log.exception("MCP tools/list failed: %s", exc)
         listed = []
     grok_tools = function_tools(listed, settings.allowlist)
+    level, message = voice_tool_log(listed, grok_tools)
+    getattr(log, level)(message)
     await connection.grok.send(json.dumps(build_session(settings, grok_tools)))
     await websocket.send(json.dumps({"type": "ready", "sampleRate": 24000}))
 
@@ -158,6 +160,12 @@ async def handle_socket(websocket, settings, http, grok_connect=None) -> None:
                 await websocket.send(incoming)
                 continue
             event = json.loads(incoming)
+            error_line = xai_realtime_error_log(event)
+            if error_line:
+                log.error("%s", error_line)
+            session_line = xai_session_tools_log(event)
+            if session_line:
+                log.info("%s", session_line)
             if event.get("type") == "response.function_call_arguments.done":
                 output = await bridge.handle_function_call(event)
                 denied = "tool_not_allowed" in output["item"]["output"]

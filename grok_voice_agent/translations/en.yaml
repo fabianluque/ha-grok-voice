@@ -28,7 +28,7 @@ configuration:
     description: Leave blank to use the add-on supervisor token. Paste one here only if MCP returns 401.
   mcp_tool_allowlist:
     name: MCP tool allowlist
-    description: Comma-separated tool names. Blank uses the Assist control set. * allows every tool the MCP server offers.
+    description: Comma-separated tool names. Blank uses the Assist control set and also matches Home Assistant 2026.9 names such as intent__HassTurnOn. * allows every tool the MCP server offers.
   idle_timeout_seconds:
     name: Idle timeout
     description: Seconds of silence before the voice session ends and the wake word is re-armed.

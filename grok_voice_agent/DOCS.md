@@ -16,7 +16,7 @@ The GitHub repository must be **public**. The add-on store does not log into Git
 6. Leave the MCP URL blank. It uses `http://supervisor/core/api/mcp` with the Supervisor add-on token (`SUPERVISOR_TOKEN`). Leave the long-lived token blank too. Paste a long-lived token only if the log shows MCP HTTP 401. A blank token is not sent. The startup log should say `mcp_auth=supervisor`.
 7. Start the add-on.
 
-A blank tool allowlist is `HassTurnOn`, `HassTurnOff`, `HassLightSet`, `GetLiveContext`, and `GetDateTime`. Set `*` to offer every MCP tool.
+A blank tool allowlist is `HassTurnOn`, `HassTurnOff`, `HassLightSet`, `GetLiveContext`, and `GetDateTime`. Home Assistant 2026.9 prefixes those with the integration domain (`intent__HassTurnOn`, `intent__HassTurnOff`, `light__HassLightSet`, `homeassistant__GetLiveContext`). The blank allowlist matches the bare name and the prefixed name, and the voice-session log reports the names that were attached. Set `*` to offer every MCP tool.
 
 After a client UI change, run `npm run build` in `client/` so `grok_voice_agent/www` is current, then update/rebuild the add-on so `/app/www` is in the image.
 
