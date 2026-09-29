@@ -1,6 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { VoiceSession } from "../src/session";
-import { installGrokVoice, WAKE_EVENT, type KioskApi } from "../src/wake";
+import { installGrokVoice, restoreWakeClaim, WAKE_EVENT, type KioskApi } from "../src/wake";
 
 function pcm(size: number): ArrayBuffer {
   return new ArrayBuffer(size);
@@ -17,6 +17,10 @@ async function flush(): Promise<void> {
 }
 
 describe("kiosk wake handoff", () => {
+  afterEach(() => {
+    restoreWakeClaim();
+  });
+
   it("does nothing when Kiosk Satellite is missing", () => {
     const events = wakeTarget();
     const assist = vi.fn();
@@ -71,6 +75,60 @@ describe("kiosk wake handoff", () => {
     expect(kiosk.setInteractionActive).toHaveBeenNthCalledWith(1, true, "voice");
     expect(kiosk.setWakeWordActive).toHaveBeenCalledWith(true);
     expect(kiosk.setInteractionActive).toHaveBeenLastCalledWith(false, "voice");
+  });
+
+  it("blocks Assist even when the wake event is delivered through EventTarget.prototype", async () => {
+    const events = wakeTarget();
+    const pipelineRun = vi.fn();
+    const pipelineStart = vi.fn(async () => "started");
+    const showBlurOverlay = vi.fn();
+    const assist = vi.fn(() => {
+      pipelineRun({ start_stage: "stt" });
+    });
+    EventTarget.prototype.addEventListener.call(events, WAKE_EVENT, assist);
+    const host = {
+      __vsSession: {
+        onWakeAction(opts: Record<string, unknown>) {
+          showBlurOverlay("pipeline");
+          return pipelineStart(opts);
+        },
+        pipeline: { start: pipelineStart, stop: vi.fn() },
+        ui: { showBlurOverlay, hideBlurOverlay: vi.fn(), hideBar: vi.fn() },
+      },
+    };
+    let session!: VoiceSession;
+    const openSession = vi.fn(async () => {
+      session = new VoiceSession(
+        () => ({ stop() {} }),
+        () => ({ send() {}, close() {} }),
+      );
+      return session;
+    });
+    installGrokVoice({
+      kiosk: {
+        platform: "kiosksatellite",
+        pipelineRun,
+        setInteractionActive: vi.fn(async () => true),
+        setWakeWordActive: vi.fn(async () => true),
+      },
+      events,
+      host,
+      openSession,
+    });
+
+    EventTarget.prototype.dispatchEvent.call(events, new Event(WAKE_EVENT));
+    host.__vsSession.onWakeAction?.({ detected: true, wake_word_phrase: "hey jarvis" });
+    host.__vsSession.ui?.showBlurOverlay?.("pipeline");
+    await host.__vsSession.pipeline?.start?.({ start_stage: "stt", wake_word_phrase: "hey jarvis" });
+    await flush();
+
+    expect(assist).not.toHaveBeenCalled();
+    expect(pipelineRun).not.toHaveBeenCalled();
+    expect(showBlurOverlay).not.toHaveBeenCalled();
+    expect(pipelineStart).not.toHaveBeenCalled();
+    expect(openSession).toHaveBeenCalledOnce();
+    session.finish("idle");
+    await flush();
   });
 
   it("still delivers other Kiosk Satellite events", () => {
