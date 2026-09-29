@@ -10,6 +10,8 @@ export interface ServerMessage {
   reason?: string;
   role?: string;
   text?: string;
+  name?: string;
+  status?: string;
 }
 
 export class VoiceSession {

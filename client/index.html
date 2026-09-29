@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Grok Voice</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #111318;
+        --card: #1c1e26;
+        --text: #f4f6fb;
+        --muted: #9aa3b5;
+        --accent: #18bc9c;
+        --danger: #ff6b6b;
+        --talk: #5b9dff;
+        --line: #2a2e39;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: radial-gradient(circle at top, #1b2433, var(--bg) 42%);
+        color: var(--text);
+      }
+      main {
+        max-width: 42rem;
+        margin: 0 auto;
+        padding: 1.5rem 1.25rem 3rem;
+      }
+      h1 {
+        margin: 0 0 0.35rem;
+        font-size: 1.6rem;
+      }
+      .lede {
+        margin: 0 0 1.25rem;
+        color: var(--muted);
+      }
+      #status {
+        display: inline-block;
+        margin: 0 0 1rem;
+        padding: 0.35rem 0.75rem;
+        border-radius: 999px;
+        background: #2a2e39;
+        font-size: 0.95rem;
+      }
+      #status[data-tone="live"] {
+        background: rgba(24, 188, 156, 0.18);
+        color: var(--accent);
+      }
+      #status[data-tone="talk"] {
+        background: rgba(91, 157, 255, 0.18);
+        color: var(--talk);
+      }
+      #status[data-tone="error"] {
+        background: rgba(255, 107, 107, 0.16);
+        color: var(--danger);
+      }
+      .actions {
+        display: flex;
+        gap: 0.75rem;
+        margin-bottom: 1rem;
+      }
+      button {
+        appearance: none;
+        border: 0;
+        border-radius: 0.85rem;
+        padding: 0.85rem 1.25rem;
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      #start {
+        background: var(--accent);
+        color: #06281f;
+      }
+      #stop {
+        background: #2a2e39;
+        color: var(--text);
+      }
+      button:disabled {
+        opacity: 0.45;
+        cursor: default;
+      }
+      #token-panel,
+      .card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 1rem;
+        padding: 1rem;
+        margin-bottom: 1rem;
+      }
+      label {
+        display: block;
+        margin-bottom: 0.4rem;
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+      input[type="password"] {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 0.7rem;
+        background: #12141a;
+        color: var(--text);
+        padding: 0.75rem 0.85rem;
+        font: inherit;
+      }
+      .remember {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin-top: 0.75rem;
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+      #token-source,
+      #secure-note,
+      #error {
+        margin: 0 0 1rem;
+        color: var(--muted);
+      }
+      #error {
+        color: var(--danger);
+      }
+      #log {
+        min-height: 12rem;
+        max-height: 50vh;
+        overflow: auto;
+      }
+      #log p {
+        margin: 0 0 0.65rem;
+      }
+      #log .user {
+        color: #d7deea;
+      }
+      #log .assistant {
+        color: var(--accent);
+      }
+      #secure-note[hidden],
+      #error[hidden],
+      #token-panel[hidden] {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Grok Voice</h1>
+      <p class="lede">Full-duplex talk with Grok through this Home Assistant add-on. Allow the microphone when the browser asks.</p>
+      <p id="status" data-tone="idle">Not connected</p>
+      <p id="token-source"></p>
+      <p id="secure-note" hidden>
+        This page is not a secure context, so Safari and Chrome will block the microphone. Open it through Home Assistant
+        HTTPS / Nabu Casa, or follow the LAN testing notes in the add-on docs.
+      </p>
+      <p id="error" hidden></p>
+      <div class="actions">
+        <button id="start" type="button">Start talking</button>
+        <button id="stop" type="button" disabled>Stop</button>
+      </div>
+      <section id="token-panel">
+        <label for="token">Home Assistant long-lived access token</label>
+        <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="Needed on the debug port" />
+        <label class="remember">
+          <input id="remember" type="checkbox" />
+          Remember this token in this browser
+        </label>
+      </section>
+      <section class="card" id="log" aria-live="polite"></section>
+    </main>
+    <script type="module" src="/src/ui.ts"></script>
+  </body>
+</html>

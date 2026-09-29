@@ -1,0 +1,6 @@
+# Home Assistant discovers each subdirectory that contains config.yaml.
+# Add-ons in this repository:
+#   grok_voice_agent — Grok Voice Agent
+name: Grok Voice
+url: https://github.com/fabianluque/ha-grok-voice
+maintainer: Fabian Luque <fabianluque@gmail.com>
