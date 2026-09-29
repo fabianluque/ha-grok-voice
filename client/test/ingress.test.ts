@@ -47,30 +47,68 @@ describe("voice socket URLs", () => {
     );
   });
 
-  it("turns a Home Assistant callWS object reject into an Error", async () => {
+  it("uses the store-prefixed slug when that addon info call succeeds first", async () => {
+    const endpoints: string[] = [];
     await expect(
       resolveVoiceSocketUrl(
         {
-          callWS: async () => {
-            throw { code: "unknown_error", message: "Connection lost" };
+          callWS: async (message: unknown) => {
+            const endpoint = (message as { endpoint?: string }).endpoint ?? "";
+            endpoints.push(endpoint);
+            expect(endpoint).toBe("/addons/b4d5c281_grok_voice_agent/info");
+            return { data: { ingress_entry: "/api/hassio_ingress/abc" } };
           },
         },
         "https:",
         "homeassistant.local:8123",
       ),
-    ).rejects.toThrow('Grok Voice ingress lookup failed: {"code":"unknown_error","message":"Connection lost"}');
+    ).resolves.toBe("wss://homeassistant.local:8123/api/hassio_ingress/abc/");
+    expect(endpoints).toEqual(["/addons/b4d5c281_grok_voice_agent/info"]);
   });
 
-  it("builds the voice socket URL from the supervisor ingress entry", async () => {
+  it("falls back to grok_voice_agent when the store-prefixed slug is missing", async () => {
+    const endpoints: string[] = [];
     await expect(
       resolveVoiceSocketUrl(
         {
-          callWS: async () => ({ data: { ingress_entry: "/api/hassio_ingress/abc" } }),
+          callWS: async (message: unknown) => {
+            const endpoint = (message as { endpoint?: string }).endpoint ?? "";
+            endpoints.push(endpoint);
+            if (endpoint === "/addons/b4d5c281_grok_voice_agent/info") {
+              throw { code: "unknown_error", message: "App b4d5c281_grok_voice_agent does not exist" };
+            }
+            expect(endpoint).toBe("/addons/grok_voice_agent/info");
+            return { data: { ingress_entry: "/api/hassio_ingress/fallback" } };
+          },
         },
         "https:",
         "homeassistant.local:8123",
       ),
-    ).resolves.toBe("wss://homeassistant.local:8123/api/hassio_ingress/abc/");
+    ).resolves.toBe("wss://homeassistant.local:8123/api/hassio_ingress/fallback/");
+    expect(endpoints).toEqual(["/addons/b4d5c281_grok_voice_agent/info", "/addons/grok_voice_agent/info"]);
+  });
+
+  it("includes the last supervisor message when every slug is missing", async () => {
+    const endpoints: string[] = [];
+    await expect(
+      resolveVoiceSocketUrl(
+        {
+          callWS: async (message: unknown) => {
+            const endpoint = (message as { endpoint?: string }).endpoint ?? "";
+            endpoints.push(endpoint);
+            if (endpoint === "/addons/b4d5c281_grok_voice_agent/info") {
+              throw { code: "unknown_error", message: "App b4d5c281_grok_voice_agent does not exist" };
+            }
+            throw { code: "unknown_error", message: "App grok_voice_agent does not exist" };
+          },
+        },
+        "https:",
+        "homeassistant.local:8123",
+      ),
+    ).rejects.toThrow(
+      'Grok Voice ingress lookup failed: {"code":"unknown_error","message":"App grok_voice_agent does not exist"}',
+    );
+    expect(endpoints).toEqual(["/addons/b4d5c281_grok_voice_agent/info", "/addons/grok_voice_agent/info"]);
   });
 });
 

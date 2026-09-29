@@ -93,28 +93,45 @@ export function pageVoiceSocketUrl(pageProtocol: string, host: string, pathname:
   return `${proto}//${host}${path}`;
 }
 
+/**
+ * Store installs register as `{repo_hash}_grok_voice_agent`. This HA host's
+ * installed slug is `b4d5c281_grok_voice_agent`. TODO: discover the installed
+ * slug from `/addons` instead of hardcoding one repo hash.
+ */
+export const VOICE_ADDON_SLUGS = ["b4d5c281_grok_voice_agent", "grok_voice_agent"] as const;
+
+function supervisorDetail(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (error && typeof error === "object") {
+    return JSON.stringify(error);
+  }
+  return String(error);
+}
+
 export async function resolveVoiceSocketUrl(hass: HassLike, pageProtocol: string, host: string): Promise<string> {
-  let info: IngressInfo;
-  try {
-    info = await hass.callWS({
-      type: "supervisor/api",
-      endpoint: "/addons/grok_voice_agent/info",
-      method: "get",
-    });
-  } catch (error) {
-    const detail =
-      error instanceof Error
-        ? error.message
-        : error && typeof error === "object"
-          ? JSON.stringify(error)
-          : String(error);
-    throw new Error(`Grok Voice ingress lookup failed: ${detail}`);
+  let lastDetail = "";
+  for (const slug of VOICE_ADDON_SLUGS) {
+    try {
+      const info = await hass.callWS({
+        type: "supervisor/api",
+        endpoint: `/addons/${slug}/info`,
+        method: "get",
+      });
+      const entry = info.data?.ingress_entry || info.ingress_entry;
+      if (entry) {
+        return voiceSocketUrl(pageProtocol, host, entry);
+      }
+      lastDetail = "Grok Voice ingress is not available for this user";
+    } catch (error) {
+      lastDetail = supervisorDetail(error);
+    }
   }
-  const entry = info.data?.ingress_entry || info.ingress_entry;
-  if (!entry) {
-    throw new Error("Grok Voice ingress is not available for this user");
+  if (lastDetail === "Grok Voice ingress is not available for this user") {
+    throw new Error(lastDetail);
   }
-  return voiceSocketUrl(pageProtocol, host, entry);
+  throw new Error(`Grok Voice ingress lookup failed: ${lastDetail}`);
 }
 
 export function readHassTokens(storage: TokenStorage): string {
