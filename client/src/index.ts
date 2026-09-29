@@ -1,5 +1,6 @@
 import { createBrowserSession } from "./browser";
 import { accessToken, pageHass, resolveVoiceSocketUrl } from "./ingress";
+import type { NativeAssistHass } from "./native-assist";
 import { installGrokVoice, type KioskApi, type WakeHost } from "./wake";
 
 interface KioskWindow extends Window {
@@ -20,6 +21,7 @@ function boot(): void {
     events: window,
     host: window as Window & WakeHost,
     document,
+    hass: () => pageHass() as NativeAssistHass | null,
     openSession: async () => {
       const hass = pageHass();
       const explicit = (window as KioskWindow).GROK_VOICE_URL;

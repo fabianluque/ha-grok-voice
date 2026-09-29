@@ -1,3 +1,4 @@
+import { cancelNativeAssist, resolveNativeCancelService, type NativeAssistHass } from "./native-assist";
 import type { VoiceSession } from "./session";
 
 export const WAKE_EVENT = "kiosksatellite:wakeword";
@@ -9,6 +10,7 @@ export interface KioskApi {
   setInteractionActive(active: boolean, reason?: string): Promise<boolean>;
   setWakeWordActive(active: boolean): Promise<boolean>;
   pipelineRun?(params: unknown): Promise<unknown>;
+  getDeviceInfo?(): Promise<{ name?: string } | null | undefined>;
 }
 
 export interface WakeEventTarget {
@@ -53,6 +55,8 @@ export interface WakeDeps {
   /** Page object that holds `__vsSession`. Defaults to the event target when it is the page. */
   host?: WakeHost;
   document?: Document;
+  /** Home Assistant page object, used to cancel this kiosk's native Assist turn. */
+  hass?: () => NativeAssistHass | null | undefined;
   openSession(): Promise<VoiceSession>;
 }
 
@@ -248,6 +252,90 @@ export function claimWakeEvent(target: WakeEventTarget, handler: (event: Event) 
   };
 }
 
+const QUICK_CLOSE_MS = 800;
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+/**
+ * Native Assist pauses the dashboard as soon as its overlay is up, which
+ * closes the duplex socket in about 100ms. Retry that collapse. A real end
+ * (`idle`, `end`) returns immediately.
+ */
+async function runDuplex(open: () => Promise<VoiceSession>): Promise<void> {
+  let last: unknown;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const started = Date.now();
+    try {
+      const session = await open();
+      const reason = await new Promise<string>((resolve) => {
+        session.onEnd((endReason) => resolve(endReason));
+        void session.start();
+      });
+      const collapsed = reason === "closed" && Date.now() - started < QUICK_CLOSE_MS;
+      if (!collapsed || attempt === 3) {
+        return;
+      }
+    } catch (error) {
+      last = error;
+      if (attempt === 3) {
+        throw error;
+      }
+    }
+    await wait(250);
+  }
+  if (last) {
+    throw last;
+  }
+}
+
+function lookupNativeCancel(deps: WakeDeps): Promise<string | null> {
+  return (async () => {
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const hass = deps.hass?.() ?? null;
+      if (!hass?.callService || !deps.kiosk?.getDeviceInfo) {
+        if (!deps.hass && !deps.kiosk?.getDeviceInfo) {
+          return null;
+        }
+        await wait(300);
+        continue;
+      }
+      const name = (await deps.kiosk.getDeviceInfo())?.name?.trim() ?? "";
+      if (!name) {
+        return null;
+      }
+      return resolveNativeCancelService(hass, name);
+    }
+    return null;
+  })();
+}
+
+/**
+ * While Grok holds the microphone, native onIdle tries to re-arm the wake
+ * word and take the mic back. Keep it suspended until the duplex session ends.
+ */
+function holdNativeWakeOff(kiosk: KioskApi): () => void {
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const poke = () => {
+    if (stopped) {
+      return;
+    }
+    void kiosk.setWakeWordActive(false);
+    timer = setTimeout(poke, 200);
+  };
+  poke();
+  return () => {
+    stopped = true;
+    if (timer) {
+      clearTimeout(timer);
+    }
+  };
+}
+
 export function installGrokVoice(deps: WakeDeps): { installed: boolean } {
   if (!deps.kiosk || deps.kiosk.platform !== "kiosksatellite") {
     return { installed: false };
@@ -257,6 +345,7 @@ export function installGrokVoice(deps: WakeDeps): { installed: boolean } {
     watchVoiceSatellite(deps.host);
   }
   hideAssistChrome(deps.document);
+  const nativeCancel = lookupNativeCancel(deps);
 
   let active = false;
   const onWake = async () => {
@@ -265,14 +354,21 @@ export function installGrokVoice(deps: WakeDeps): { installed: boolean } {
     }
     active = true;
     blockAssistWake(deps.host?.__vsSession);
+    const service = await nativeCancel;
+    const cancelled = await cancelNativeAssist(deps.hass?.() ?? null, service);
+    if (cancelled && service) {
+      console.log(`[Grok Voice] Cancelled native Assist via esphome.${service}`);
+    } else if (service) {
+      console.log(`[Grok Voice] Native Assist cancel failed for esphome.${service}`);
+    } else {
+      console.log("[Grok Voice] Native Assist cancel skipped; no esphome vs_cancel matched this kiosk");
+    }
+    const releaseWake = holdNativeWakeOff(deps.kiosk!);
     await deps.kiosk!.setInteractionActive(true, "voice");
     try {
-      const session = await deps.openSession();
-      await new Promise<void>((resolve) => {
-        session.onEnd(() => resolve());
-        void session.start();
-      });
+      await runDuplex(deps.openSession);
     } finally {
+      releaseWake();
       active = false;
       await deps.kiosk!.setWakeWordActive(true);
       await deps.kiosk!.setInteractionActive(false, "voice");
@@ -280,5 +376,6 @@ export function installGrokVoice(deps: WakeDeps): { installed: boolean } {
   };
 
   claimWakeEvent(deps.events, onWake as (event: Event) => void);
+  console.log("[Grok Voice] Installed Kiosk Satellite wake override");
   return { installed: true };
 }
