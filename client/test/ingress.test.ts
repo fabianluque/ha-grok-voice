@@ -8,13 +8,13 @@ import {
   isKioskSatelliteProxyHost,
   isLoopbackHostname,
   isOpenWebUiPath,
-  LAN_HA_FALLBACK_URL,
+  LAN_HA_FALLBACK_HOST,
+  LAN_VOICE_DEBUG_URL,
   pageHostNeedsHaIngressHost,
   pageVoiceSocketUrl,
   parseDebugPort,
   readHassTokens,
   resolveAccessToken,
-  resolveIngressVoiceSocketUrl,
   resolveKioskVoiceSocket,
   resolveVoiceSocketAuthority,
   resolveVoiceSocketUrl,
@@ -57,47 +57,6 @@ describe("voice socket URLs", () => {
     expect(pageVoiceSocketUrl("https:", "homeassistant.local:8123", "/api/hassio_ingress/abc/")).toBe(
       "wss://homeassistant.local:8123/api/hassio_ingress/abc/",
     );
-  });
-
-  it("uses the store-prefixed slug when that addon info call succeeds first", async () => {
-    const endpoints: string[] = [];
-    await expect(
-      resolveIngressVoiceSocketUrl(
-        {
-          callWS: async (message: unknown) => {
-            const endpoint = (message as { endpoint?: string }).endpoint ?? "";
-            endpoints.push(endpoint);
-            expect(endpoint).toBe("/addons/b4d5c281_grok_voice_agent/info");
-            return { data: { ingress_entry: "/api/hassio_ingress/abc" } };
-          },
-        },
-        "https:",
-        "homeassistant.local:8123",
-      ),
-    ).resolves.toBe("wss://homeassistant.local:8123/api/hassio_ingress/abc/");
-    expect(endpoints).toEqual(["/addons/b4d5c281_grok_voice_agent/info"]);
-  });
-
-  it("falls back to grok_voice_agent when the store-prefixed slug is missing", async () => {
-    const endpoints: string[] = [];
-    await expect(
-      resolveIngressVoiceSocketUrl(
-        {
-          callWS: async (message: unknown) => {
-            const endpoint = (message as { endpoint?: string }).endpoint ?? "";
-            endpoints.push(endpoint);
-            if (endpoint === "/addons/b4d5c281_grok_voice_agent/info") {
-              throw { code: "unknown_error", message: "App b4d5c281_grok_voice_agent does not exist" };
-            }
-            expect(endpoint).toBe("/addons/grok_voice_agent/info");
-            return { data: { ingress_entry: "/api/hassio_ingress/fallback" } };
-          },
-        },
-        "https:",
-        "homeassistant.local:8123",
-      ),
-    ).resolves.toBe("wss://homeassistant.local:8123/api/hassio_ingress/fallback/");
-    expect(endpoints).toEqual(["/addons/b4d5c281_grok_voice_agent/info", "/addons/grok_voice_agent/info"]);
   });
 
   it("replaces a loopback, 127.0.0.1, or Kiosk Satellite proxy host with the Home Assistant host", () => {
@@ -235,11 +194,13 @@ describe("voice socket URLs", () => {
     };
     expect(resolveVoiceSocketAuthority("http:", "127.0.0.1:2325", hass)).toEqual({
       protocol: "http:",
-      host: "192.168.86.38:8123",
+      host: LAN_HA_FALLBACK_HOST,
       source: "lan-fallback",
     });
-    expect(LAN_HA_FALLBACK_URL).toBe("http://192.168.86.38:8123");
-    await expect(resolveVoiceSocketUrl(hass, "http:", "127.0.0.1:2325")).resolves.toBe("ws://192.168.86.38:8080/");
+    expect(LAN_VOICE_DEBUG_URL).toBe("ws://192.168.86.38:8080/");
+    const url = await resolveVoiceSocketUrl(hass, "http:", "127.0.0.1:2325");
+    expect(url).toBe(LAN_VOICE_DEBUG_URL);
+    expect(url).not.toMatch(/hassio_ingress|:8123\//);
     expect(log).toHaveBeenCalledWith("[Grok Voice] duplex host 192.168.86.38:8080 via lan-fallback auth token");
     log.mockRestore();
   });
@@ -260,29 +221,6 @@ describe("voice socket URLs", () => {
         authMode: resolved.authMode,
       }),
     ).toBe("[Grok Voice] duplex host 192.168.86.38:9099 via auth.hassUrl auth token");
-  });
-
-  it("includes the last supervisor message when every slug is missing", async () => {
-    const endpoints: string[] = [];
-    await expect(
-      resolveIngressVoiceSocketUrl(
-        {
-          callWS: async (message: unknown) => {
-            const endpoint = (message as { endpoint?: string }).endpoint ?? "";
-            endpoints.push(endpoint);
-            if (endpoint === "/addons/b4d5c281_grok_voice_agent/info") {
-              throw { code: "unknown_error", message: "App b4d5c281_grok_voice_agent does not exist" };
-            }
-            throw { code: "unknown_error", message: "App grok_voice_agent does not exist" };
-          },
-        },
-        "https:",
-        "homeassistant.local:8123",
-      ),
-    ).rejects.toThrow(
-      'Grok Voice ingress lookup failed: {"code":"unknown_error","message":"App grok_voice_agent does not exist"}',
-    );
-    expect(endpoints).toEqual(["/addons/b4d5c281_grok_voice_agent/info", "/addons/grok_voice_agent/info"]);
   });
 });
 

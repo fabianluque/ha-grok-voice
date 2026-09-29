@@ -104,14 +104,16 @@ export function shouldOfferTokenField(input: { pathname: string; authFailed: boo
 export const KIOSK_SATELLITE_PROXY_PORT = "2325";
 
 /**
- * This install's Home Assistant LAN. KS remaps auth.hassUrl / wsUrl /
- * hass.hassUrl / config URLs to 127.0.0.1:2325, so none of those can carry
- * an ingress WebSocket to the add-on.
- * TODO: discover the installed HA LAN URL instead of hardcoding this host.
+ * This install's Home Assistant LAN hostname. Kiosk duplex never uses
+ * Core :8123 `/api/hassio_ingress/` — Lovelace has no ingress_session cookie.
+ * TODO: discover the installed HA LAN host instead of hardcoding it.
  */
-export const LAN_HA_FALLBACK_URL = "http://192.168.86.38:8123";
+export const LAN_HA_FALLBACK_HOST = "192.168.86.38";
 
+/** Add-on debug port mapped on the HA host. Token auth; not ingress. */
 export const VOICE_DEBUG_PORT = 8080;
+
+export const LAN_VOICE_DEBUG_URL = `ws://${LAN_HA_FALLBACK_HOST}:${VOICE_DEBUG_PORT}/`;
 
 export type VoiceSocketHostSource =
   | "page"
@@ -222,9 +224,8 @@ function hassAuthorities(hass: HassLike): VoiceSocketAuthority[] {
 }
 
 /**
- * Ingress WebSockets from a Kiosk Satellite loopback dashboard never reach
- * the add-on. Prefer a non-loopback Home Assistant host. When KS has remapped
- * every hass authority to 127.0.0.1:2325, use the LAN fallback.
+ * Find a non-loopback HA hostname for the add-on debug port. Never used to
+ * open Core :8123 ingress — that path needs a cookie Lovelace does not have.
  */
 export function resolveVoiceSocketAuthority(
   pageProtocol: string,
@@ -241,8 +242,7 @@ export function resolveVoiceSocketAuthority(
   if (usable) {
     return usable;
   }
-  const fallback = authorityFromUrl(LAN_HA_FALLBACK_URL);
-  return fallback ? { ...fallback, source: "lan-fallback" } : page;
+  return { protocol: "http:", host: LAN_HA_FALLBACK_HOST, source: "lan-fallback" };
 }
 
 export function voiceSocketUrl(pageProtocol: string, host: string, ingressEntry: string): string {
@@ -262,23 +262,6 @@ export function pageVoiceSocketUrl(pageProtocol: string, host: string, pathname:
     path = `${path}/`;
   }
   return `${proto}//${host}${path}`;
-}
-
-/**
- * Store installs register as `{repo_hash}_grok_voice_agent`. This HA host's
- * installed slug is `b4d5c281_grok_voice_agent`. TODO: discover the installed
- * slug from `/addons` instead of hardcoding one repo hash.
- */
-export const VOICE_ADDON_SLUGS = ["b4d5c281_grok_voice_agent", "grok_voice_agent"] as const;
-
-function supervisorDetail(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  if (error && typeof error === "object") {
-    return JSON.stringify(error);
-  }
-  return String(error);
 }
 
 export function parseDebugPort(value: unknown): number {
@@ -347,31 +330,6 @@ export async function resolveVoiceSocketUrl(
     }),
   );
   return resolved.url;
-}
-
-export async function resolveIngressVoiceSocketUrl(hass: HassLike, pageProtocol: string, host: string): Promise<string> {
-  let lastDetail = "";
-  for (const slug of VOICE_ADDON_SLUGS) {
-    try {
-      const info = await hass.callWS({
-        type: "supervisor/api",
-        endpoint: `/addons/${slug}/info`,
-        method: "get",
-      });
-      const entry = info.data?.ingress_entry || info.ingress_entry;
-      if (entry) {
-        const authority = resolveVoiceSocketAuthority(pageProtocol, host, hass);
-        return voiceSocketUrl(authority.protocol, authority.host, entry);
-      }
-      lastDetail = "Grok Voice ingress is not available for this user";
-    } catch (error) {
-      lastDetail = supervisorDetail(error);
-    }
-  }
-  if (lastDetail === "Grok Voice ingress is not available for this user") {
-    throw new Error(lastDetail);
-  }
-  throw new Error(`Grok Voice ingress lookup failed: ${lastDetail}`);
 }
 
 export function readHassTokens(storage: TokenStorage): string {
