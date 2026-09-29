@@ -1,10 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   accessToken,
   authHandshake,
   isKioskSatelliteProxyHost,
   isLoopbackHostname,
   isOpenWebUiPath,
+  LAN_HA_FALLBACK_URL,
   pageHostNeedsHaIngressHost,
   pageVoiceSocketUrl,
   readHassTokens,
@@ -113,18 +114,22 @@ describe("voice socket URLs", () => {
     expect(resolveVoiceSocketAuthority("http:", "127.0.0.1:2325", hass)).toEqual({
       protocol: "http:",
       host: "192.168.86.38:8123",
+      source: "auth.hassUrl",
     });
     expect(resolveVoiceSocketAuthority("http:", "127.0.0.1", hass)).toEqual({
       protocol: "http:",
       host: "192.168.86.38:8123",
+      source: "auth.hassUrl",
     });
     expect(resolveVoiceSocketAuthority("http:", "localhost:2325", hass)).toEqual({
       protocol: "http:",
       host: "192.168.86.38:8123",
+      source: "auth.hassUrl",
     });
     expect(resolveVoiceSocketAuthority("https:", "homeassistant.local:8123", hass)).toEqual({
       protocol: "https:",
       host: "homeassistant.local:8123",
+      source: "page",
     });
   });
 
@@ -154,18 +159,52 @@ describe("voice socket URLs", () => {
     ).resolves.toBe("ws://192.168.86.38:8123/api/hassio_ingress/abc/");
   });
 
-  it("uses config.internal_url when hassUrl is also the Kiosk Satellite proxy", async () => {
-    await expect(
-      resolveVoiceSocketUrl(
-        {
-          callWS: async () => ({ data: { ingress_entry: "/api/hassio_ingress/abc" } }),
-          auth: { data: { hassUrl: "http://127.0.0.1:2325" } },
-          config: { internal_url: "http://192.168.86.38:8123" },
-        },
-        "http:",
-        "127.0.0.1:2325",
-      ),
-    ).resolves.toBe("ws://192.168.86.38:8123/api/hassio_ingress/abc/");
+  it("uses config.internal_url when the KS page host and hassUrl are both loopback", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const hass = {
+      callWS: async () => ({ data: { ingress_entry: "/api/hassio_ingress/abc" } }),
+      auth: {
+        data: { hassUrl: "http://127.0.0.1:2325" },
+        wsUrl: "ws://127.0.0.1:2325/api/websocket",
+      },
+      hassUrl: () => "http://127.0.0.1:2325/",
+      config: { internal_url: "http://192.168.86.38:8123", external_url: "http://127.0.0.1:2325" },
+    };
+    expect(resolveVoiceSocketAuthority("http:", "127.0.0.1:2325", hass)).toEqual({
+      protocol: "http:",
+      host: "192.168.86.38:8123",
+      source: "config.internal_url",
+    });
+    await expect(resolveVoiceSocketUrl(hass, "http:", "127.0.0.1:2325")).resolves.toBe(
+      "ws://192.168.86.38:8123/api/hassio_ingress/abc/",
+    );
+    expect(log).toHaveBeenCalledWith("[Grok Voice] duplex host 192.168.86.38:8123 via config.internal_url");
+    log.mockRestore();
+  });
+
+  it("uses the LAN fallback when every hass authority is also the KS loopback proxy", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const hass = {
+      callWS: async () => ({ data: { ingress_entry: "/api/hassio_ingress/OMwnLs6XGmfQ-r0Fn5pc_Fblx9OpR8BUERKIrvOBLuA" } }),
+      auth: {
+        data: { hassUrl: "http://127.0.0.1:2325" },
+        wsUrl: "ws://127.0.0.1:2325/api/websocket",
+      },
+      connection: { options: { auth: { data: { hassUrl: "http://127.0.0.1:2325" }, wsUrl: "ws://127.0.0.1:2325/api/websocket" } } },
+      hassUrl: () => "http://127.0.0.1:2325/",
+      config: { internal_url: "http://127.0.0.1:2325", external_url: "http://127.0.0.1:2325" },
+    };
+    expect(resolveVoiceSocketAuthority("http:", "127.0.0.1:2325", hass)).toEqual({
+      protocol: "http:",
+      host: "192.168.86.38:8123",
+      source: "lan-fallback",
+    });
+    expect(LAN_HA_FALLBACK_URL).toBe("http://192.168.86.38:8123");
+    await expect(resolveVoiceSocketUrl(hass, "http:", "127.0.0.1:2325")).resolves.toBe(
+      "ws://192.168.86.38:8123/api/hassio_ingress/OMwnLs6XGmfQ-r0Fn5pc_Fblx9OpR8BUERKIrvOBLuA/",
+    );
+    expect(log).toHaveBeenCalledWith("[Grok Voice] duplex host 192.168.86.38:8123 via lan-fallback");
+    log.mockRestore();
   });
 
   it("includes the last supervisor message when every slug is missing", async () => {

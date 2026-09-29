@@ -85,6 +85,31 @@ export function shouldOfferTokenField(input: { pathname: string; authFailed: boo
 /** Kiosk Satellite's secure-context proxy listens on loopback :2325. */
 export const KIOSK_SATELLITE_PROXY_PORT = "2325";
 
+/**
+ * This install's Home Assistant LAN. KS remaps auth.hassUrl / wsUrl /
+ * hass.hassUrl / config URLs to 127.0.0.1:2325, so none of those can carry
+ * an ingress WebSocket to the add-on.
+ * TODO: discover the installed HA LAN URL instead of hardcoding this host.
+ */
+export const LAN_HA_FALLBACK_URL = "http://192.168.86.38:8123";
+
+export type VoiceSocketHostSource =
+  | "page"
+  | "auth.hassUrl"
+  | "auth.wsUrl"
+  | "connection.hassUrl"
+  | "connection.wsUrl"
+  | "hass.hassUrl"
+  | "config.internal_url"
+  | "config.external_url"
+  | "lan-fallback";
+
+export interface VoiceSocketAuthority {
+  protocol: string;
+  host: string;
+  source: VoiceSocketHostSource;
+}
+
 export function hostnameOf(host: string): string {
   const raw = host.trim();
   if (!raw) {
@@ -153,21 +178,21 @@ function hassUrlValue(hassUrl: HassLike["hassUrl"]): string {
   return hassUrl || "";
 }
 
-function hassAuthorities(hass: HassLike): Array<{ protocol: string; host: string }> {
-  const raw = [
-    hass.auth?.data?.hassUrl,
-    hass.auth?.wsUrl,
-    hass.connection?.options?.auth?.data?.hassUrl,
-    hass.connection?.options?.auth?.wsUrl,
-    hassUrlValue(hass.hassUrl),
-    hass.config?.internal_url,
-    hass.config?.external_url,
+function hassAuthorities(hass: HassLike): VoiceSocketAuthority[] {
+  const raw: Array<[VoiceSocketHostSource, string | null | undefined]> = [
+    ["auth.hassUrl", hass.auth?.data?.hassUrl],
+    ["auth.wsUrl", hass.auth?.wsUrl],
+    ["connection.hassUrl", hass.connection?.options?.auth?.data?.hassUrl],
+    ["connection.wsUrl", hass.connection?.options?.auth?.wsUrl],
+    ["hass.hassUrl", hassUrlValue(hass.hassUrl)],
+    ["config.internal_url", hass.config?.internal_url],
+    ["config.external_url", hass.config?.external_url],
   ];
-  const out: Array<{ protocol: string; host: string }> = [];
-  for (const value of raw) {
+  const out: VoiceSocketAuthority[] = [];
+  for (const [source, value] of raw) {
     const authority = authorityFromUrl(value);
     if (authority) {
-      out.push(authority);
+      out.push({ ...authority, source });
     }
   }
   return out;
@@ -175,19 +200,26 @@ function hassAuthorities(hass: HassLike): Array<{ protocol: string; host: string
 
 /**
  * Ingress WebSockets from a Kiosk Satellite loopback dashboard never reach
- * the add-on. Prefer the Home Assistant host stored on `hass` instead.
+ * the add-on. Prefer a non-loopback Home Assistant host. When KS has remapped
+ * every hass authority to 127.0.0.1:2325, use the LAN fallback.
  */
 export function resolveVoiceSocketAuthority(
   pageProtocol: string,
   pageHost: string,
   hass?: HassLike | null,
-): { protocol: string; host: string } {
-  const page = { protocol: pageProtocol, host: pageHost };
-  if (!hass || !pageHostNeedsHaIngressHost(pageHost)) {
+): VoiceSocketAuthority {
+  const page: VoiceSocketAuthority = { protocol: pageProtocol, host: pageHost, source: "page" };
+  if (!pageHostNeedsHaIngressHost(pageHost)) {
     return page;
   }
-  const usable = hassAuthorities(hass).find((candidate) => !isLoopbackHostname(hostnameOf(candidate.host)));
-  return usable ?? page;
+  const usable = hass
+    ? hassAuthorities(hass).find((candidate) => !isLoopbackHostname(hostnameOf(candidate.host)))
+    : undefined;
+  if (usable) {
+    return usable;
+  }
+  const fallback = authorityFromUrl(LAN_HA_FALLBACK_URL);
+  return fallback ? { ...fallback, source: "lan-fallback" } : page;
 }
 
 export function voiceSocketUrl(pageProtocol: string, host: string, ingressEntry: string): string {
@@ -238,6 +270,7 @@ export async function resolveVoiceSocketUrl(hass: HassLike, pageProtocol: string
       const entry = info.data?.ingress_entry || info.ingress_entry;
       if (entry) {
         const authority = resolveVoiceSocketAuthority(pageProtocol, host, hass);
+        console.log(`[Grok Voice] duplex host ${authority.host} via ${authority.source}`);
         return voiceSocketUrl(authority.protocol, authority.host, entry);
       }
       lastDetail = "Grok Voice ingress is not available for this user";
