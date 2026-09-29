@@ -1,15 +1,21 @@
 import { downsample, floatToPcm16, schedulePcm } from "./audio";
+import { authHandshake } from "./ingress";
 import { VoiceSession, type ServerMessage, type WebSocketLike } from "./session";
 
 export const SAMPLE_RATE = 24000;
 
-export function openSocket(url: string, token: string, session: VoiceSession): WebSocketLike {
+export function openSocket(
+  url: string,
+  token: string,
+  session: VoiceSession,
+  ingress = false,
+): WebSocketLike {
   const socket = new WebSocket(url);
   const pending: Array<ArrayBuffer | string> = [];
   let open = false;
   socket.binaryType = "arraybuffer";
   socket.addEventListener("open", () => {
-    socket.send(JSON.stringify({ type: "auth", token }));
+    socket.send(JSON.stringify(authHandshake({ ingress, token })));
     open = true;
     for (const chunk of pending) {
       socket.send(chunk);
@@ -78,6 +84,7 @@ export async function captureMic(
 export interface BrowserSessionOptions {
   url: string;
   token: string;
+  ingress?: boolean;
   onTranscript?: (role: string, text: string) => void;
   onServerText?: (message: ServerMessage) => void;
 }
@@ -94,7 +101,7 @@ export async function createBrowserSession(
   let closed = false;
   const session = new VoiceSession(
     (pcm) => schedulePcm(context, pcm, nextTime),
-    () => openSocket(options.url, options.token, session),
+    () => openSocket(options.url, options.token, session, options.ingress === true),
   );
   const originalFinish = session.finish.bind(session);
   session.finish = (reason) => {
