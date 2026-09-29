@@ -1,7 +1,15 @@
+export interface HassAuthLike {
+  data?: { access_token?: string; hassUrl?: string };
+  accessToken?: string;
+  wsUrl?: string;
+}
+
 export interface HassLike {
   callWS(message: unknown): Promise<IngressInfo>;
-  auth?: { data?: { access_token?: string }; accessToken?: string };
-  connection?: { options?: { auth?: { accessToken?: string } } };
+  auth?: HassAuthLike;
+  connection?: { options?: { auth?: HassAuthLike } };
+  hassUrl?: string | ((path?: string) => string);
+  config?: { internal_url?: string | null; external_url?: string | null };
 }
 
 interface IngressInfo {
@@ -74,6 +82,114 @@ export function shouldOfferTokenField(input: { pathname: string; authFailed: boo
   return !isOpenWebUiPath(input.pathname);
 }
 
+/** Kiosk Satellite's secure-context proxy listens on loopback :2325. */
+export const KIOSK_SATELLITE_PROXY_PORT = "2325";
+
+export function hostnameOf(host: string): string {
+  const raw = host.trim();
+  if (!raw) {
+    return "";
+  }
+  try {
+    const url = new URL(raw.includes("://") ? raw : `http://${raw}`);
+    return url.hostname.toLowerCase();
+  } catch {
+    const noPath = raw.split("/")[0] ?? raw;
+    const noBrackets = noPath.replace(/^\[|\]$/g, "");
+    const colon = noBrackets.lastIndexOf(":");
+    if (colon > 0 && noBrackets.indexOf(":") === colon) {
+      return noBrackets.slice(0, colon).toLowerCase();
+    }
+    return noBrackets.toLowerCase();
+  }
+}
+
+export function isLoopbackHostname(hostname: string): boolean {
+  const host = hostname.trim().toLowerCase().replace(/^\[|\]$/g, "");
+  return host === "127.0.0.1" || host === "localhost" || host === "::1";
+}
+
+export function isKioskSatelliteProxyHost(host: string): boolean {
+  try {
+    const url = new URL(host.includes("://") ? host : `http://${host}`);
+    return isLoopbackHostname(url.hostname) && url.port === KIOSK_SATELLITE_PROXY_PORT;
+  } catch {
+    return false;
+  }
+}
+
+/** Page origins that cannot carry Supervisor ingress WebSockets to the add-on. */
+export function pageHostNeedsHaIngressHost(host: string): boolean {
+  return isLoopbackHostname(hostnameOf(host)) || isKioskSatelliteProxyHost(host);
+}
+
+function authorityFromUrl(value: string | null | undefined): { protocol: string; host: string } | null {
+  if (!value || typeof value !== "string") {
+    return null;
+  }
+  const raw = value.trim();
+  if (!raw) {
+    return null;
+  }
+  try {
+    const url = new URL(raw.includes("://") ? raw : `http://${raw}`);
+    if (!url.hostname) {
+      return null;
+    }
+    return { protocol: url.protocol, host: url.host };
+  } catch {
+    return null;
+  }
+}
+
+function hassUrlValue(hassUrl: HassLike["hassUrl"]): string {
+  if (typeof hassUrl === "function") {
+    try {
+      return hassUrl("/") || hassUrl() || "";
+    } catch {
+      return "";
+    }
+  }
+  return hassUrl || "";
+}
+
+function hassAuthorities(hass: HassLike): Array<{ protocol: string; host: string }> {
+  const raw = [
+    hass.auth?.data?.hassUrl,
+    hass.auth?.wsUrl,
+    hass.connection?.options?.auth?.data?.hassUrl,
+    hass.connection?.options?.auth?.wsUrl,
+    hassUrlValue(hass.hassUrl),
+    hass.config?.internal_url,
+    hass.config?.external_url,
+  ];
+  const out: Array<{ protocol: string; host: string }> = [];
+  for (const value of raw) {
+    const authority = authorityFromUrl(value);
+    if (authority) {
+      out.push(authority);
+    }
+  }
+  return out;
+}
+
+/**
+ * Ingress WebSockets from a Kiosk Satellite loopback dashboard never reach
+ * the add-on. Prefer the Home Assistant host stored on `hass` instead.
+ */
+export function resolveVoiceSocketAuthority(
+  pageProtocol: string,
+  pageHost: string,
+  hass?: HassLike | null,
+): { protocol: string; host: string } {
+  const page = { protocol: pageProtocol, host: pageHost };
+  if (!hass || !pageHostNeedsHaIngressHost(pageHost)) {
+    return page;
+  }
+  const usable = hassAuthorities(hass).find((candidate) => !isLoopbackHostname(hostnameOf(candidate.host)));
+  return usable ?? page;
+}
+
 export function voiceSocketUrl(pageProtocol: string, host: string, ingressEntry: string): string {
   const proto = pageProtocol === "https:" ? "wss:" : "ws:";
   const path = ingressEntry.endsWith("/") ? ingressEntry : `${ingressEntry}/`;
@@ -121,7 +237,8 @@ export async function resolveVoiceSocketUrl(hass: HassLike, pageProtocol: string
       });
       const entry = info.data?.ingress_entry || info.ingress_entry;
       if (entry) {
-        return voiceSocketUrl(pageProtocol, host, entry);
+        const authority = resolveVoiceSocketAuthority(pageProtocol, host, hass);
+        return voiceSocketUrl(authority.protocol, authority.host, entry);
       }
       lastDetail = "Grok Voice ingress is not available for this user";
     } catch (error) {

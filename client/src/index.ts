@@ -1,5 +1,5 @@
 import { createBrowserSession } from "./browser";
-import { accessToken, pageHass, resolveVoiceSocketUrl } from "./ingress";
+import { accessToken, isOpenWebUiPath, pageHass, resolveVoiceSocketUrl } from "./ingress";
 import type { NativeAssistHass } from "./native-assist";
 import { installGrokVoice, type KioskApi, type WakeHost } from "./wake";
 
@@ -30,6 +30,7 @@ function boot(): void {
         throw new Error("Home Assistant ingress is not available on this page");
       }
       const token = accessToken(hass);
+      console.log(`[Grok Voice] Opening duplex ${url}`);
       const overlay = document.createElement("div");
       overlay.id = "grok-voice-overlay";
       overlay.style.cssText =
@@ -39,6 +40,7 @@ function boot(): void {
         const { session } = await createBrowserSession({
           url,
           token,
+          ingress: isOpenWebUiPath(new URL(url, "http://localhost").pathname),
           onTranscript: (role, text) => showLine(overlay, role, text),
         });
         const originalFinish = session.finish.bind(session);

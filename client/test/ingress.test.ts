@@ -2,10 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
   accessToken,
   authHandshake,
+  isKioskSatelliteProxyHost,
+  isLoopbackHostname,
   isOpenWebUiPath,
+  pageHostNeedsHaIngressHost,
   pageVoiceSocketUrl,
   readHassTokens,
   resolveAccessToken,
+  resolveVoiceSocketAuthority,
   resolveVoiceSocketUrl,
   saveDebugToken,
   savedDebugToken,
@@ -86,6 +90,82 @@ describe("voice socket URLs", () => {
       ),
     ).resolves.toBe("wss://homeassistant.local:8123/api/hassio_ingress/fallback/");
     expect(endpoints).toEqual(["/addons/b4d5c281_grok_voice_agent/info", "/addons/grok_voice_agent/info"]);
+  });
+
+  it("replaces a loopback, 127.0.0.1, or Kiosk Satellite proxy host with the Home Assistant host", () => {
+    expect(isLoopbackHostname("127.0.0.1")).toBe(true);
+    expect(isLoopbackHostname("localhost")).toBe(true);
+    expect(isLoopbackHostname("::1")).toBe(true);
+    expect(isLoopbackHostname("192.168.86.38")).toBe(false);
+    expect(isKioskSatelliteProxyHost("127.0.0.1:2325")).toBe(true);
+    expect(isKioskSatelliteProxyHost("localhost:2325")).toBe(true);
+    expect(isKioskSatelliteProxyHost("127.0.0.1:8123")).toBe(false);
+    expect(isKioskSatelliteProxyHost("192.168.86.38:2325")).toBe(false);
+    expect(pageHostNeedsHaIngressHost("127.0.0.1")).toBe(true);
+    expect(pageHostNeedsHaIngressHost("127.0.0.1:2325")).toBe(true);
+    expect(pageHostNeedsHaIngressHost("localhost:2325")).toBe(true);
+    expect(pageHostNeedsHaIngressHost("192.168.86.38:8123")).toBe(false);
+
+    const hass = {
+      callWS: async () => ({}),
+      auth: { data: { hassUrl: "http://192.168.86.38:8123", access_token: "t" } },
+    };
+    expect(resolveVoiceSocketAuthority("http:", "127.0.0.1:2325", hass)).toEqual({
+      protocol: "http:",
+      host: "192.168.86.38:8123",
+    });
+    expect(resolveVoiceSocketAuthority("http:", "127.0.0.1", hass)).toEqual({
+      protocol: "http:",
+      host: "192.168.86.38:8123",
+    });
+    expect(resolveVoiceSocketAuthority("http:", "localhost:2325", hass)).toEqual({
+      protocol: "http:",
+      host: "192.168.86.38:8123",
+    });
+    expect(resolveVoiceSocketAuthority("https:", "homeassistant.local:8123", hass)).toEqual({
+      protocol: "https:",
+      host: "homeassistant.local:8123",
+    });
+  });
+
+  it("uses the Home Assistant host when the dashboard is on the Kiosk Satellite loopback proxy", async () => {
+    await expect(
+      resolveVoiceSocketUrl(
+        {
+          callWS: async () => ({ data: { ingress_entry: "/api/hassio_ingress/abc" } }),
+          auth: { data: { hassUrl: "http://192.168.86.38:8123", access_token: "t" } },
+        },
+        "http:",
+        "127.0.0.1:2325",
+      ),
+    ).resolves.toBe("ws://192.168.86.38:8123/api/hassio_ingress/abc/");
+  });
+
+  it("uses the Home Assistant host when the page host is 127.0.0.1", async () => {
+    await expect(
+      resolveVoiceSocketUrl(
+        {
+          callWS: async () => ({ data: { ingress_entry: "/api/hassio_ingress/abc" } }),
+          auth: { data: { hassUrl: "http://192.168.86.38:8123" } },
+        },
+        "http:",
+        "127.0.0.1",
+      ),
+    ).resolves.toBe("ws://192.168.86.38:8123/api/hassio_ingress/abc/");
+  });
+
+  it("uses config.internal_url when hassUrl is also the Kiosk Satellite proxy", async () => {
+    await expect(
+      resolveVoiceSocketUrl(
+        {
+          callWS: async () => ({ data: { ingress_entry: "/api/hassio_ingress/abc" } }),
+          auth: { data: { hassUrl: "http://127.0.0.1:2325" } },
+          config: { internal_url: "http://192.168.86.38:8123" },
+        },
+        "http:",
+        "127.0.0.1:2325",
+      ),
+    ).resolves.toBe("ws://192.168.86.38:8123/api/hassio_ingress/abc/");
   });
 
   it("includes the last supervisor message when every slug is missing", async () => {
