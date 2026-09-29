@@ -22,11 +22,14 @@ async def _main() -> None:
     if not settings.xai_api_key:
         log.error("xAI API key is empty; set it in the add-on configuration")
     log.info(
-        "starting model=%s voice=%s mcp=%s",
+        "starting model=%s voice=%s mcp=%s mcp_auth=%s",
         settings.model,
         settings.voice,
         settings.ha_mcp_url,
+        settings.mcp_token_source,
     )
+    if not settings.mcp_token:
+        log.error("MCP token is empty; Home Assistant tools cannot authenticate")
     async with httpx.AsyncClient(timeout=30) as http:
         await serve_voice(settings, http)
 

@@ -59,7 +59,7 @@ class McpHttpClient:
 
     async def _post(self, payload: dict) -> dict:
         headers = {
-            "Authorization": f"Bearer {self.token}",
+            "Authorization": bearer_header(self.token),
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
         }
@@ -72,6 +72,18 @@ class McpHttpClient:
         if getattr(response, "status_code", 200) >= 400:
             raise McpError(f"MCP HTTP {response.status_code}")
         return _decode_body(getattr(response, "text", "") or "")
+
+
+def bearer_header(token: str) -> str:
+    """Authorization value for the Supervisor add-on token.
+
+    An empty token becomes ``Bearer `` with a trailing space. httpx rejects
+    that as an illegal header before the MCP request is sent.
+    """
+    cleaned = str(token or "").replace("\x00", "").strip()
+    if not cleaned or any(char in cleaned for char in "\r\n"):
+        raise McpError("MCP token is empty")
+    return f"Bearer {cleaned}"
 
 
 def function_tools(mcp_tools: list[dict], allowlist: frozenset[str]) -> list[dict]:
