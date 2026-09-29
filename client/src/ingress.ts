@@ -7,7 +7,7 @@ export interface HassAuthLike {
 export interface HassLike {
   callWS(message: unknown): Promise<IngressInfo>;
   auth?: HassAuthLike;
-  connection?: { options?: { auth?: HassAuthLike } };
+  connection?: { host?: string; options?: { auth?: HassAuthLike; host?: string } };
   hassUrl?: string | ((path?: string) => string);
   config?: { internal_url?: string | null; external_url?: string | null };
 }
@@ -65,11 +65,29 @@ export function isOpenWebUiPath(pathname: string): boolean {
   return pathname.includes("/api/hassio_ingress/");
 }
 
+export type VoiceAuthMode = "token" | "ingress";
+
+export function usesIngressAuth(url: string): boolean {
+  try {
+    return isOpenWebUiPath(new URL(url, "http://localhost").pathname);
+  } catch {
+    return url.includes("/api/hassio_ingress/");
+  }
+}
+
+export function authModeForUrl(url: string, ingress = false): VoiceAuthMode {
+  if (ingress || usesIngressAuth(url)) {
+    return "ingress";
+  }
+  return "token";
+}
+
 export function authHandshake(options: {
   ingress: boolean;
   token: string;
+  url?: string;
 }): { type: "auth"; via?: "ingress"; token?: string } {
-  if (options.ingress && !options.token.trim()) {
+  if (authModeForUrl(options.url || "", options.ingress) === "ingress") {
     return { type: "auth", via: "ingress" };
   }
   return { type: "auth", token: options.token };
@@ -93,16 +111,20 @@ export const KIOSK_SATELLITE_PROXY_PORT = "2325";
  */
 export const LAN_HA_FALLBACK_URL = "http://192.168.86.38:8123";
 
+export const VOICE_DEBUG_PORT = 8080;
+
 export type VoiceSocketHostSource =
   | "page"
   | "auth.hassUrl"
   | "auth.wsUrl"
+  | "connection.host"
   | "connection.hassUrl"
   | "connection.wsUrl"
   | "hass.hassUrl"
   | "config.internal_url"
   | "config.external_url"
-  | "lan-fallback";
+  | "lan-fallback"
+  | "explicit";
 
 export interface VoiceSocketAuthority {
   protocol: string;
@@ -182,6 +204,7 @@ function hassAuthorities(hass: HassLike): VoiceSocketAuthority[] {
   const raw: Array<[VoiceSocketHostSource, string | null | undefined]> = [
     ["auth.hassUrl", hass.auth?.data?.hassUrl],
     ["auth.wsUrl", hass.auth?.wsUrl],
+    ["connection.host", hass.connection?.host || hass.connection?.options?.host],
     ["connection.hassUrl", hass.connection?.options?.auth?.data?.hassUrl],
     ["connection.wsUrl", hass.connection?.options?.auth?.wsUrl],
     ["hass.hassUrl", hassUrlValue(hass.hassUrl)],
@@ -258,7 +281,75 @@ function supervisorDetail(error: unknown): string {
   return String(error);
 }
 
-export async function resolveVoiceSocketUrl(hass: HassLike, pageProtocol: string, host: string): Promise<string> {
+export function parseDebugPort(value: unknown): number {
+  const n = typeof value === "number" ? value : Number.parseInt(String(value ?? ""), 10);
+  return Number.isInteger(n) && n > 0 && n < 65536 ? n : VOICE_DEBUG_PORT;
+}
+
+/** Lovelace / kiosk inject talks to the add-on debug port. Ingress needs a cookie. */
+export function debugVoiceSocketUrl(protocol: string, host: string, debugPort = VOICE_DEBUG_PORT): string {
+  const proto = protocol === "https:" ? "wss:" : "ws:";
+  return `${proto}//${hostnameOf(host)}:${debugPort}/`;
+}
+
+export interface KioskVoiceSocket {
+  url: string;
+  authority: VoiceSocketAuthority;
+  debugPort: number;
+  authMode: VoiceAuthMode;
+}
+
+export function resolveKioskVoiceSocket(input: {
+  hass?: HassLike | null;
+  pageProtocol: string;
+  pageHost: string;
+  debugPort?: number;
+}): KioskVoiceSocket {
+  const authority = resolveVoiceSocketAuthority(input.pageProtocol, input.pageHost, input.hass);
+  const debugPort = parseDebugPort(input.debugPort);
+  return {
+    url: debugVoiceSocketUrl(authority.protocol, authority.host, debugPort),
+    authority,
+    debugPort,
+    authMode: "token",
+  };
+}
+
+export function describeDuplexChoice(choice: {
+  authority: Pick<VoiceSocketAuthority, "source">;
+  host: string;
+  authMode: VoiceAuthMode;
+}): string {
+  return `[Grok Voice] duplex host ${choice.host} via ${choice.authority.source} auth ${choice.authMode}`;
+}
+
+/**
+ * Kiosk / dashboard inject: `ws(s)://<HA host>:8080/` with token auth.
+ * Do not use `/api/hassio_ingress/` here — Lovelace has no ingress cookie.
+ */
+export async function resolveVoiceSocketUrl(
+  hass: HassLike,
+  pageProtocol: string,
+  host: string,
+  debugPort?: number,
+): Promise<string> {
+  const resolved = resolveKioskVoiceSocket({
+    hass,
+    pageProtocol,
+    pageHost: host,
+    debugPort,
+  });
+  console.log(
+    describeDuplexChoice({
+      authority: resolved.authority,
+      host: `${hostnameOf(resolved.authority.host)}:${resolved.debugPort}`,
+      authMode: resolved.authMode,
+    }),
+  );
+  return resolved.url;
+}
+
+export async function resolveIngressVoiceSocketUrl(hass: HassLike, pageProtocol: string, host: string): Promise<string> {
   let lastDetail = "";
   for (const slug of VOICE_ADDON_SLUGS) {
     try {
@@ -270,7 +361,6 @@ export async function resolveVoiceSocketUrl(hass: HassLike, pageProtocol: string
       const entry = info.data?.ingress_entry || info.ingress_entry;
       if (entry) {
         const authority = resolveVoiceSocketAuthority(pageProtocol, host, hass);
-        console.log(`[Grok Voice] duplex host ${authority.host} via ${authority.source}`);
         return voiceSocketUrl(authority.protocol, authority.host, entry);
       }
       lastDetail = "Grok Voice ingress is not available for this user";
