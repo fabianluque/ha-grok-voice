@@ -254,10 +254,28 @@ export function claimWakeEvent(target: WakeEventTarget, handler: (event: Event) 
 
 const QUICK_CLOSE_MS = 800;
 
+/** Time for the dashboard WebView to leave the native Assist pause after vs_cancel. */
+export const CANCEL_SETTLE_MS = 400;
+
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+/** Home Assistant `callWS` rejects with a plain `{ code, message }` object. */
+export function formatReject(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (error && typeof error === "object") {
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return String(error);
+    }
+  }
+  return String(error);
 }
 
 /**
@@ -281,6 +299,7 @@ async function runDuplex(open: () => Promise<VoiceSession>): Promise<void> {
       }
     } catch (error) {
       last = error;
+      console.warn(`[Grok Voice] openSession attempt ${attempt + 1} failed`, formatReject(error));
       if (attempt === 3) {
         throw error;
       }
@@ -324,7 +343,7 @@ function holdNativeWakeOff(kiosk: KioskApi): () => void {
     if (stopped) {
       return;
     }
-    void kiosk.setWakeWordActive(false);
+    void kiosk.setWakeWordActive(false).catch(() => undefined);
     timer = setTimeout(poke, 200);
   };
   poke();
@@ -365,8 +384,13 @@ export function installGrokVoice(deps: WakeDeps): { installed: boolean } {
     }
     const releaseWake = holdNativeWakeOff(deps.kiosk!);
     await deps.kiosk!.setInteractionActive(true, "voice");
+    if (cancelled) {
+      await wait(CANCEL_SETTLE_MS);
+    }
     try {
       await runDuplex(deps.openSession);
+    } catch (error) {
+      console.error("[Grok Voice] Duplex session failed after wake", formatReject(error));
     } finally {
       releaseWake();
       active = false;

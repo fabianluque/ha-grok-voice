@@ -94,11 +94,22 @@ export function pageVoiceSocketUrl(pageProtocol: string, host: string, pathname:
 }
 
 export async function resolveVoiceSocketUrl(hass: HassLike, pageProtocol: string, host: string): Promise<string> {
-  const info = await hass.callWS({
-    type: "supervisor/api",
-    endpoint: "/addons/grok_voice_agent/info",
-    method: "get",
-  });
+  let info: IngressInfo;
+  try {
+    info = await hass.callWS({
+      type: "supervisor/api",
+      endpoint: "/addons/grok_voice_agent/info",
+      method: "get",
+    });
+  } catch (error) {
+    const detail =
+      error instanceof Error
+        ? error.message
+        : error && typeof error === "object"
+          ? JSON.stringify(error)
+          : String(error);
+    throw new Error(`Grok Voice ingress lookup failed: ${detail}`);
+  }
   const entry = info.data?.ingress_entry || info.ingress_entry;
   if (!entry) {
     throw new Error("Grok Voice ingress is not available for this user");

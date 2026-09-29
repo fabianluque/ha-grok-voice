@@ -1,7 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { NativeAssistHass } from "../src/native-assist";
 import { VoiceSession } from "../src/session";
-import { installGrokVoice, restoreWakeClaim, WAKE_EVENT, type KioskApi } from "../src/wake";
+import {
+  CANCEL_SETTLE_MS,
+  formatReject,
+  installGrokVoice,
+  restoreWakeClaim,
+  WAKE_EVENT,
+  type KioskApi,
+} from "../src/wake";
 
 function pcm(size: number): ArrayBuffer {
   return new ArrayBuffer(size);
@@ -15,6 +22,12 @@ async function flush(): Promise<void> {
   for (let i = 0; i < 6; i += 1) {
     await Promise.resolve();
   }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 describe("kiosk wake handoff", () => {
@@ -278,7 +291,10 @@ describe("kiosk wake handoff", () => {
     events.dispatchEvent(new Event(WAKE_EVENT));
     await flush();
     expect(log).toHaveBeenCalledWith("[Grok Voice] Cancelled native Assist via esphome.ks_attic_dashboard_vs_cancel");
+    expect(openSession).not.toHaveBeenCalled();
 
+    await delay(CANCEL_SETTLE_MS + 20);
+    await flush();
     expect(callService).toHaveBeenCalledTimes(1);
     expect(callService).toHaveBeenCalledWith("esphome", "ks_attic_dashboard_vs_cancel", {});
     expect(pipelineRun).not.toHaveBeenCalled();
@@ -294,6 +310,139 @@ describe("kiosk wake handoff", () => {
     expect(kiosk.setWakeWordActive).toHaveBeenLastCalledWith(true);
     expect(openSession).toHaveBeenCalledOnce();
     log.mockRestore();
+  });
+
+  it("formats Home Assistant plain-object rejects for the console", () => {
+    expect(formatReject(new Error("named"))).toBe("named");
+    expect(formatReject({ code: "unknown_command", message: "Connection lost" })).toBe(
+      '{"code":"unknown_command","message":"Connection lost"}',
+    );
+    expect(formatReject("plain")).toBe("plain");
+  });
+
+  it("retries a plain-object openSession reject and keeps the duplex session up", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+
+    const events = wakeTarget();
+    let created = 0;
+    let kept!: VoiceSession;
+    const openSession = vi.fn(async () => {
+      created += 1;
+      if (created === 1) {
+        throw { code: "unknown_command", message: "Connection lost" };
+      }
+      kept = new VoiceSession(
+        () => ({ stop() {} }),
+        () => ({ send() {}, close() {} }),
+      );
+      return kept;
+    });
+    const kiosk: KioskApi = {
+      platform: "kiosksatellite",
+      setInteractionActive: vi.fn(async () => true),
+      setWakeWordActive: vi.fn(async () => true),
+    };
+    installGrokVoice({ kiosk, events, openSession });
+    events.dispatchEvent(new Event(WAKE_EVENT));
+    await flush();
+    expect(openSession).toHaveBeenCalledOnce();
+    await delay(300);
+    await flush();
+
+    expect(openSession).toHaveBeenCalledTimes(2);
+    expect(kept.captureActive).toBe(true);
+    expect(kiosk.setInteractionActive).not.toHaveBeenCalledWith(false, "voice");
+    expect(warn).toHaveBeenCalledWith(
+      "[Grok Voice] openSession attempt 1 failed",
+      '{"code":"unknown_command","message":"Connection lost"}',
+    );
+    kept.finish("idle");
+    await flush();
+    expect(kiosk.setInteractionActive).toHaveBeenLastCalledWith(false, "voice");
+    expect(unhandled).toEqual([]);
+    process.off("unhandledRejection", onUnhandled);
+    warn.mockRestore();
+  });
+
+  it("swallows a failed wake after retries so the Assist cancel path does not throw #<Object>", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+
+    const events = wakeTarget();
+    const rejectObject = { code: "unknown_command", message: "Connection lost" };
+    const openSession = vi.fn(async () => {
+      throw rejectObject;
+    });
+    const kiosk: KioskApi = {
+      platform: "kiosksatellite",
+      setInteractionActive: vi.fn(async () => true),
+      setWakeWordActive: vi.fn(async () => true),
+    };
+    installGrokVoice({ kiosk, events, openSession });
+    events.dispatchEvent(new Event(WAKE_EVENT));
+    await delay(900);
+    await flush();
+
+    expect(openSession).toHaveBeenCalledTimes(4);
+    expect(kiosk.setInteractionActive).toHaveBeenLastCalledWith(false, "voice");
+    expect(kiosk.setWakeWordActive).toHaveBeenLastCalledWith(true);
+    expect(errorLog).toHaveBeenCalledWith(
+      "[Grok Voice] Duplex session failed after wake",
+      '{"code":"unknown_command","message":"Connection lost"}',
+    );
+    expect(unhandled).toEqual([]);
+    process.off("unhandledRejection", onUnhandled);
+    warn.mockRestore();
+    errorLog.mockRestore();
+  });
+
+  it("does not leave an uncaught rejection when the wake-word poke fails", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    let session!: VoiceSession;
+    const events = wakeTarget();
+    const kiosk: KioskApi = {
+      platform: "kiosksatellite",
+      setInteractionActive: vi.fn(async () => true),
+      setWakeWordActive: vi.fn(async (active: boolean) => {
+        if (!active) {
+          throw { code: "bridge_error", message: "wake poke failed" };
+        }
+        return true;
+      }),
+    };
+    installGrokVoice({
+      kiosk,
+      events,
+      openSession: async () => {
+        session = new VoiceSession(
+          () => ({ stop() {} }),
+          () => ({ send() {}, close() {} }),
+        );
+        return session;
+      },
+    });
+    events.dispatchEvent(new Event(WAKE_EVENT));
+    await flush();
+    expect(session.captureActive).toBe(true);
+    await delay(250);
+    session.finish("idle");
+    await flush();
+    expect(unhandled).toEqual([]);
+    process.off("unhandledRejection", onUnhandled);
   });
 
   it("reopens the duplex session when the native overlay closes it immediately", async () => {
