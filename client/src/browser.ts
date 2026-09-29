@@ -15,7 +15,7 @@ export function openSocket(
   let open = false;
   socket.binaryType = "arraybuffer";
   socket.addEventListener("open", () => {
-    socket.send(JSON.stringify(authHandshake({ ingress, token })));
+    socket.send(JSON.stringify(authHandshake({ ingress, token, url })));
     open = true;
     for (const chunk of pending) {
       socket.send(chunk);

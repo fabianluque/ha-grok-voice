@@ -1,20 +1,28 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   accessToken,
   authHandshake,
+  authModeForUrl,
+  debugVoiceSocketUrl,
+  describeDuplexChoice,
   isKioskSatelliteProxyHost,
   isLoopbackHostname,
   isOpenWebUiPath,
+  LAN_HA_FALLBACK_HOST,
+  LAN_VOICE_DEBUG_URL,
   pageHostNeedsHaIngressHost,
   pageVoiceSocketUrl,
+  parseDebugPort,
   readHassTokens,
   resolveAccessToken,
+  resolveKioskVoiceSocket,
   resolveVoiceSocketAuthority,
   resolveVoiceSocketUrl,
   saveDebugToken,
   savedDebugToken,
   shouldOfferTokenField,
   tokenFromHassConnection,
+  VOICE_DEBUG_PORT,
   voiceSocketUrl,
 } from "../src/ingress";
 
@@ -51,47 +59,6 @@ describe("voice socket URLs", () => {
     );
   });
 
-  it("uses the store-prefixed slug when that addon info call succeeds first", async () => {
-    const endpoints: string[] = [];
-    await expect(
-      resolveVoiceSocketUrl(
-        {
-          callWS: async (message: unknown) => {
-            const endpoint = (message as { endpoint?: string }).endpoint ?? "";
-            endpoints.push(endpoint);
-            expect(endpoint).toBe("/addons/b4d5c281_grok_voice_agent/info");
-            return { data: { ingress_entry: "/api/hassio_ingress/abc" } };
-          },
-        },
-        "https:",
-        "homeassistant.local:8123",
-      ),
-    ).resolves.toBe("wss://homeassistant.local:8123/api/hassio_ingress/abc/");
-    expect(endpoints).toEqual(["/addons/b4d5c281_grok_voice_agent/info"]);
-  });
-
-  it("falls back to grok_voice_agent when the store-prefixed slug is missing", async () => {
-    const endpoints: string[] = [];
-    await expect(
-      resolveVoiceSocketUrl(
-        {
-          callWS: async (message: unknown) => {
-            const endpoint = (message as { endpoint?: string }).endpoint ?? "";
-            endpoints.push(endpoint);
-            if (endpoint === "/addons/b4d5c281_grok_voice_agent/info") {
-              throw { code: "unknown_error", message: "App b4d5c281_grok_voice_agent does not exist" };
-            }
-            expect(endpoint).toBe("/addons/grok_voice_agent/info");
-            return { data: { ingress_entry: "/api/hassio_ingress/fallback" } };
-          },
-        },
-        "https:",
-        "homeassistant.local:8123",
-      ),
-    ).resolves.toBe("wss://homeassistant.local:8123/api/hassio_ingress/fallback/");
-    expect(endpoints).toEqual(["/addons/b4d5c281_grok_voice_agent/info", "/addons/grok_voice_agent/info"]);
-  });
-
   it("replaces a loopback, 127.0.0.1, or Kiosk Satellite proxy host with the Home Assistant host", () => {
     expect(isLoopbackHostname("127.0.0.1")).toBe(true);
     expect(isLoopbackHostname("localhost")).toBe(true);
@@ -113,82 +80,147 @@ describe("voice socket URLs", () => {
     expect(resolveVoiceSocketAuthority("http:", "127.0.0.1:2325", hass)).toEqual({
       protocol: "http:",
       host: "192.168.86.38:8123",
+      source: "auth.hassUrl",
     });
     expect(resolveVoiceSocketAuthority("http:", "127.0.0.1", hass)).toEqual({
       protocol: "http:",
       host: "192.168.86.38:8123",
+      source: "auth.hassUrl",
     });
     expect(resolveVoiceSocketAuthority("http:", "localhost:2325", hass)).toEqual({
       protocol: "http:",
       host: "192.168.86.38:8123",
+      source: "auth.hassUrl",
     });
     expect(resolveVoiceSocketAuthority("https:", "homeassistant.local:8123", hass)).toEqual({
       protocol: "https:",
       host: "homeassistant.local:8123",
+      source: "page",
     });
   });
 
-  it("uses the Home Assistant host when the dashboard is on the Kiosk Satellite loopback proxy", async () => {
+  it("opens the add-on debug port on the Home Assistant host from a KS loopback dashboard", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    expect(VOICE_DEBUG_PORT).toBe(8080);
+    expect(debugVoiceSocketUrl("http:", "192.168.86.38:8123")).toBe("ws://192.168.86.38:8080/");
+    expect(parseDebugPort("9090")).toBe(9090);
+    expect(parseDebugPort("nope")).toBe(8080);
     await expect(
       resolveVoiceSocketUrl(
         {
-          callWS: async () => ({ data: { ingress_entry: "/api/hassio_ingress/abc" } }),
+          callWS: async () => {
+            throw new Error("kiosk inject must not look up ingress");
+          },
           auth: { data: { hassUrl: "http://192.168.86.38:8123", access_token: "t" } },
         },
         "http:",
         "127.0.0.1:2325",
       ),
-    ).resolves.toBe("ws://192.168.86.38:8123/api/hassio_ingress/abc/");
+    ).resolves.toBe("ws://192.168.86.38:8080/");
+    expect(log).toHaveBeenCalledWith("[Grok Voice] duplex host 192.168.86.38:8080 via auth.hassUrl auth token");
+    log.mockRestore();
   });
 
   it("uses the Home Assistant host when the page host is 127.0.0.1", async () => {
     await expect(
       resolveVoiceSocketUrl(
         {
-          callWS: async () => ({ data: { ingress_entry: "/api/hassio_ingress/abc" } }),
+          callWS: async () => ({}),
           auth: { data: { hassUrl: "http://192.168.86.38:8123" } },
         },
         "http:",
         "127.0.0.1",
       ),
-    ).resolves.toBe("ws://192.168.86.38:8123/api/hassio_ingress/abc/");
+    ).resolves.toBe("ws://192.168.86.38:8080/");
   });
 
-  it("uses config.internal_url when hassUrl is also the Kiosk Satellite proxy", async () => {
-    await expect(
-      resolveVoiceSocketUrl(
-        {
-          callWS: async () => ({ data: { ingress_entry: "/api/hassio_ingress/abc" } }),
-          auth: { data: { hassUrl: "http://127.0.0.1:2325" } },
-          config: { internal_url: "http://192.168.86.38:8123" },
-        },
-        "http:",
-        "127.0.0.1:2325",
-      ),
-    ).resolves.toBe("ws://192.168.86.38:8123/api/hassio_ingress/abc/");
+  it("uses config.internal_url when the KS page host and hassUrl are both loopback", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const hass = {
+      callWS: async () => ({}),
+      auth: {
+        data: { hassUrl: "http://127.0.0.1:2325" },
+        wsUrl: "ws://127.0.0.1:2325/api/websocket",
+      },
+      hassUrl: () => "http://127.0.0.1:2325/",
+      config: { internal_url: "http://192.168.86.38:8123", external_url: "http://127.0.0.1:2325" },
+    };
+    expect(resolveVoiceSocketAuthority("http:", "127.0.0.1:2325", hass)).toEqual({
+      protocol: "http:",
+      host: "192.168.86.38:8123",
+      source: "config.internal_url",
+    });
+    await expect(resolveVoiceSocketUrl(hass, "http:", "127.0.0.1:2325")).resolves.toBe("ws://192.168.86.38:8080/");
+    expect(log).toHaveBeenCalledWith("[Grok Voice] duplex host 192.168.86.38:8080 via config.internal_url auth token");
+    log.mockRestore();
   });
 
-  it("includes the last supervisor message when every slug is missing", async () => {
-    const endpoints: string[] = [];
-    await expect(
-      resolveVoiceSocketUrl(
-        {
-          callWS: async (message: unknown) => {
-            const endpoint = (message as { endpoint?: string }).endpoint ?? "";
-            endpoints.push(endpoint);
-            if (endpoint === "/addons/b4d5c281_grok_voice_agent/info") {
-              throw { code: "unknown_error", message: "App b4d5c281_grok_voice_agent does not exist" };
-            }
-            throw { code: "unknown_error", message: "App grok_voice_agent does not exist" };
-          },
-        },
-        "https:",
-        "homeassistant.local:8123",
-      ),
-    ).rejects.toThrow(
-      'Grok Voice ingress lookup failed: {"code":"unknown_error","message":"App grok_voice_agent does not exist"}',
-    );
-    expect(endpoints).toEqual(["/addons/b4d5c281_grok_voice_agent/info", "/addons/grok_voice_agent/info"]);
+  it("uses connection.host when every other hass authority is the KS loopback proxy", () => {
+    const hass = {
+      callWS: async () => ({}),
+      auth: { data: { hassUrl: "http://127.0.0.1:2325" } },
+      connection: { host: "192.168.86.38" },
+      config: { internal_url: "http://127.0.0.1:2325" },
+    };
+    expect(resolveVoiceSocketAuthority("http:", "127.0.0.1:2325", hass)).toEqual({
+      protocol: "http:",
+      host: "192.168.86.38",
+      source: "connection.host",
+    });
+    expect(
+      resolveKioskVoiceSocket({
+        hass,
+        pageProtocol: "http:",
+        pageHost: "127.0.0.1:2325",
+      }),
+    ).toMatchObject({
+      url: "ws://192.168.86.38:8080/",
+      authMode: "token",
+      debugPort: 8080,
+    });
+  });
+
+  it("uses the LAN fallback debug port when every hass authority is also the KS loopback proxy", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const hass = {
+      callWS: async () => ({}),
+      auth: {
+        data: { hassUrl: "http://127.0.0.1:2325" },
+        wsUrl: "ws://127.0.0.1:2325/api/websocket",
+      },
+      connection: { options: { auth: { data: { hassUrl: "http://127.0.0.1:2325" }, wsUrl: "ws://127.0.0.1:2325/api/websocket" } } },
+      hassUrl: () => "http://127.0.0.1:2325/",
+      config: { internal_url: "http://127.0.0.1:2325", external_url: "http://127.0.0.1:2325" },
+    };
+    expect(resolveVoiceSocketAuthority("http:", "127.0.0.1:2325", hass)).toEqual({
+      protocol: "http:",
+      host: LAN_HA_FALLBACK_HOST,
+      source: "lan-fallback",
+    });
+    expect(LAN_VOICE_DEBUG_URL).toBe("ws://192.168.86.38:8080/");
+    const url = await resolveVoiceSocketUrl(hass, "http:", "127.0.0.1:2325");
+    expect(url).toBe(LAN_VOICE_DEBUG_URL);
+    expect(url).not.toMatch(/hassio_ingress|:8123\//);
+    expect(log).toHaveBeenCalledWith("[Grok Voice] duplex host 192.168.86.38:8080 via lan-fallback auth token");
+    log.mockRestore();
+  });
+
+  it("honors GROK_VOICE_DEBUG_PORT on the kiosk debug socket", () => {
+    const resolved = resolveKioskVoiceSocket({
+      hass: { callWS: async () => ({}), auth: { data: { hassUrl: "http://192.168.86.38:8123" } } },
+      pageProtocol: "http:",
+      pageHost: "127.0.0.1:2325",
+      debugPort: 9099,
+    });
+    expect(resolved.url).toBe("ws://192.168.86.38:9099/");
+    expect(resolved.authMode).toBe("token");
+    expect(
+      describeDuplexChoice({
+        authority: resolved.authority,
+        host: "192.168.86.38:9099",
+        authMode: resolved.authMode,
+      }),
+    ).toBe("[Grok Voice] duplex host 192.168.86.38:9099 via auth.hassUrl auth token");
   });
 });
 
@@ -256,9 +288,21 @@ describe("Open Web UI session", () => {
     expect(authHandshake({ ingress: true, token: "" })).toEqual({ type: "auth", via: "ingress" });
     expect(authHandshake({ ingress: true, token: "long-lived" })).toEqual({
       type: "auth",
+      via: "ingress",
+    });
+    expect(
+      authHandshake({
+        ingress: false,
+        token: "long-lived",
+        url: "ws://192.168.86.38:8123/api/hassio_ingress/OMwnLs6XGmfQ-r0Fn5pc_Fblx9OpR8BUERKIrvOBLuA/",
+      }),
+    ).toEqual({ type: "auth", via: "ingress" });
+    expect(authModeForUrl("ws://192.168.86.38:8080/")).toBe("token");
+    expect(authHandshake({ ingress: false, token: "long-lived" })).toEqual({
+      type: "auth",
       token: "long-lived",
     });
-    expect(authHandshake({ ingress: false, token: "long-lived" })).toEqual({
+    expect(authHandshake({ ingress: false, token: "long-lived", url: "ws://192.168.86.38:8080/" })).toEqual({
       type: "auth",
       token: "long-lived",
     });

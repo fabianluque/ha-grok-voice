@@ -7,7 +7,7 @@ export interface HassAuthLike {
 export interface HassLike {
   callWS(message: unknown): Promise<IngressInfo>;
   auth?: HassAuthLike;
-  connection?: { options?: { auth?: HassAuthLike } };
+  connection?: { host?: string; options?: { auth?: HassAuthLike; host?: string } };
   hassUrl?: string | ((path?: string) => string);
   config?: { internal_url?: string | null; external_url?: string | null };
 }
@@ -65,11 +65,29 @@ export function isOpenWebUiPath(pathname: string): boolean {
   return pathname.includes("/api/hassio_ingress/");
 }
 
+export type VoiceAuthMode = "token" | "ingress";
+
+export function usesIngressAuth(url: string): boolean {
+  try {
+    return isOpenWebUiPath(new URL(url, "http://localhost").pathname);
+  } catch {
+    return url.includes("/api/hassio_ingress/");
+  }
+}
+
+export function authModeForUrl(url: string, ingress = false): VoiceAuthMode {
+  if (ingress || usesIngressAuth(url)) {
+    return "ingress";
+  }
+  return "token";
+}
+
 export function authHandshake(options: {
   ingress: boolean;
   token: string;
+  url?: string;
 }): { type: "auth"; via?: "ingress"; token?: string } {
-  if (options.ingress && !options.token.trim()) {
+  if (authModeForUrl(options.url || "", options.ingress) === "ingress") {
     return { type: "auth", via: "ingress" };
   }
   return { type: "auth", token: options.token };
@@ -84,6 +102,37 @@ export function shouldOfferTokenField(input: { pathname: string; authFailed: boo
 
 /** Kiosk Satellite's secure-context proxy listens on loopback :2325. */
 export const KIOSK_SATELLITE_PROXY_PORT = "2325";
+
+/**
+ * This install's Home Assistant LAN hostname. Kiosk duplex never uses
+ * Core :8123 `/api/hassio_ingress/` — Lovelace has no ingress_session cookie.
+ * TODO: discover the installed HA LAN host instead of hardcoding it.
+ */
+export const LAN_HA_FALLBACK_HOST = "192.168.86.38";
+
+/** Add-on debug port mapped on the HA host. Token auth; not ingress. */
+export const VOICE_DEBUG_PORT = 8080;
+
+export const LAN_VOICE_DEBUG_URL = `ws://${LAN_HA_FALLBACK_HOST}:${VOICE_DEBUG_PORT}/`;
+
+export type VoiceSocketHostSource =
+  | "page"
+  | "auth.hassUrl"
+  | "auth.wsUrl"
+  | "connection.host"
+  | "connection.hassUrl"
+  | "connection.wsUrl"
+  | "hass.hassUrl"
+  | "config.internal_url"
+  | "config.external_url"
+  | "lan-fallback"
+  | "explicit";
+
+export interface VoiceSocketAuthority {
+  protocol: string;
+  host: string;
+  source: VoiceSocketHostSource;
+}
 
 export function hostnameOf(host: string): string {
   const raw = host.trim();
@@ -153,41 +202,47 @@ function hassUrlValue(hassUrl: HassLike["hassUrl"]): string {
   return hassUrl || "";
 }
 
-function hassAuthorities(hass: HassLike): Array<{ protocol: string; host: string }> {
-  const raw = [
-    hass.auth?.data?.hassUrl,
-    hass.auth?.wsUrl,
-    hass.connection?.options?.auth?.data?.hassUrl,
-    hass.connection?.options?.auth?.wsUrl,
-    hassUrlValue(hass.hassUrl),
-    hass.config?.internal_url,
-    hass.config?.external_url,
+function hassAuthorities(hass: HassLike): VoiceSocketAuthority[] {
+  const raw: Array<[VoiceSocketHostSource, string | null | undefined]> = [
+    ["auth.hassUrl", hass.auth?.data?.hassUrl],
+    ["auth.wsUrl", hass.auth?.wsUrl],
+    ["connection.host", hass.connection?.host || hass.connection?.options?.host],
+    ["connection.hassUrl", hass.connection?.options?.auth?.data?.hassUrl],
+    ["connection.wsUrl", hass.connection?.options?.auth?.wsUrl],
+    ["hass.hassUrl", hassUrlValue(hass.hassUrl)],
+    ["config.internal_url", hass.config?.internal_url],
+    ["config.external_url", hass.config?.external_url],
   ];
-  const out: Array<{ protocol: string; host: string }> = [];
-  for (const value of raw) {
+  const out: VoiceSocketAuthority[] = [];
+  for (const [source, value] of raw) {
     const authority = authorityFromUrl(value);
     if (authority) {
-      out.push(authority);
+      out.push({ ...authority, source });
     }
   }
   return out;
 }
 
 /**
- * Ingress WebSockets from a Kiosk Satellite loopback dashboard never reach
- * the add-on. Prefer the Home Assistant host stored on `hass` instead.
+ * Find a non-loopback HA hostname for the add-on debug port. Never used to
+ * open Core :8123 ingress — that path needs a cookie Lovelace does not have.
  */
 export function resolveVoiceSocketAuthority(
   pageProtocol: string,
   pageHost: string,
   hass?: HassLike | null,
-): { protocol: string; host: string } {
-  const page = { protocol: pageProtocol, host: pageHost };
-  if (!hass || !pageHostNeedsHaIngressHost(pageHost)) {
+): VoiceSocketAuthority {
+  const page: VoiceSocketAuthority = { protocol: pageProtocol, host: pageHost, source: "page" };
+  if (!pageHostNeedsHaIngressHost(pageHost)) {
     return page;
   }
-  const usable = hassAuthorities(hass).find((candidate) => !isLoopbackHostname(hostnameOf(candidate.host)));
-  return usable ?? page;
+  const usable = hass
+    ? hassAuthorities(hass).find((candidate) => !isLoopbackHostname(hostnameOf(candidate.host)))
+    : undefined;
+  if (usable) {
+    return usable;
+  }
+  return { protocol: "http:", host: LAN_HA_FALLBACK_HOST, source: "lan-fallback" };
 }
 
 export function voiceSocketUrl(pageProtocol: string, host: string, ingressEntry: string): string {
@@ -209,46 +264,72 @@ export function pageVoiceSocketUrl(pageProtocol: string, host: string, pathname:
   return `${proto}//${host}${path}`;
 }
 
-/**
- * Store installs register as `{repo_hash}_grok_voice_agent`. This HA host's
- * installed slug is `b4d5c281_grok_voice_agent`. TODO: discover the installed
- * slug from `/addons` instead of hardcoding one repo hash.
- */
-export const VOICE_ADDON_SLUGS = ["b4d5c281_grok_voice_agent", "grok_voice_agent"] as const;
-
-function supervisorDetail(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  if (error && typeof error === "object") {
-    return JSON.stringify(error);
-  }
-  return String(error);
+export function parseDebugPort(value: unknown): number {
+  const n = typeof value === "number" ? value : Number.parseInt(String(value ?? ""), 10);
+  return Number.isInteger(n) && n > 0 && n < 65536 ? n : VOICE_DEBUG_PORT;
 }
 
-export async function resolveVoiceSocketUrl(hass: HassLike, pageProtocol: string, host: string): Promise<string> {
-  let lastDetail = "";
-  for (const slug of VOICE_ADDON_SLUGS) {
-    try {
-      const info = await hass.callWS({
-        type: "supervisor/api",
-        endpoint: `/addons/${slug}/info`,
-        method: "get",
-      });
-      const entry = info.data?.ingress_entry || info.ingress_entry;
-      if (entry) {
-        const authority = resolveVoiceSocketAuthority(pageProtocol, host, hass);
-        return voiceSocketUrl(authority.protocol, authority.host, entry);
-      }
-      lastDetail = "Grok Voice ingress is not available for this user";
-    } catch (error) {
-      lastDetail = supervisorDetail(error);
-    }
-  }
-  if (lastDetail === "Grok Voice ingress is not available for this user") {
-    throw new Error(lastDetail);
-  }
-  throw new Error(`Grok Voice ingress lookup failed: ${lastDetail}`);
+/** Lovelace / kiosk inject talks to the add-on debug port. Ingress needs a cookie. */
+export function debugVoiceSocketUrl(protocol: string, host: string, debugPort = VOICE_DEBUG_PORT): string {
+  const proto = protocol === "https:" ? "wss:" : "ws:";
+  return `${proto}//${hostnameOf(host)}:${debugPort}/`;
+}
+
+export interface KioskVoiceSocket {
+  url: string;
+  authority: VoiceSocketAuthority;
+  debugPort: number;
+  authMode: VoiceAuthMode;
+}
+
+export function resolveKioskVoiceSocket(input: {
+  hass?: HassLike | null;
+  pageProtocol: string;
+  pageHost: string;
+  debugPort?: number;
+}): KioskVoiceSocket {
+  const authority = resolveVoiceSocketAuthority(input.pageProtocol, input.pageHost, input.hass);
+  const debugPort = parseDebugPort(input.debugPort);
+  return {
+    url: debugVoiceSocketUrl(authority.protocol, authority.host, debugPort),
+    authority,
+    debugPort,
+    authMode: "token",
+  };
+}
+
+export function describeDuplexChoice(choice: {
+  authority: Pick<VoiceSocketAuthority, "source">;
+  host: string;
+  authMode: VoiceAuthMode;
+}): string {
+  return `[Grok Voice] duplex host ${choice.host} via ${choice.authority.source} auth ${choice.authMode}`;
+}
+
+/**
+ * Kiosk / dashboard inject: `ws(s)://<HA host>:8080/` with token auth.
+ * Do not use `/api/hassio_ingress/` here — Lovelace has no ingress cookie.
+ */
+export async function resolveVoiceSocketUrl(
+  hass: HassLike,
+  pageProtocol: string,
+  host: string,
+  debugPort?: number,
+): Promise<string> {
+  const resolved = resolveKioskVoiceSocket({
+    hass,
+    pageProtocol,
+    pageHost: host,
+    debugPort,
+  });
+  console.log(
+    describeDuplexChoice({
+      authority: resolved.authority,
+      host: `${hostnameOf(resolved.authority.host)}:${resolved.debugPort}`,
+      authMode: resolved.authMode,
+    }),
+  );
+  return resolved.url;
 }
 
 export function readHassTokens(storage: TokenStorage): string {
