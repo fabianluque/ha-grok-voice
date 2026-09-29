@@ -17,7 +17,7 @@ function boot(): void {
   const kiosk = (window as KioskWindow).kioskSatellite;
   installGrokVoice({
     kiosk,
-    addEventListener: (type, handler) => window.addEventListener(type, handler),
+    events: window,
     openSession: async () => {
       const hass = pageHass();
       const explicit = (window as KioskWindow).GROK_VOICE_URL;

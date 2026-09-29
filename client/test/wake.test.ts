@@ -1,23 +1,98 @@
 import { describe, expect, it, vi } from "vitest";
 import { VoiceSession } from "../src/session";
-import { installGrokVoice, type KioskApi } from "../src/wake";
+import { installGrokVoice, WAKE_EVENT, type KioskApi } from "../src/wake";
 
 function pcm(size: number): ArrayBuffer {
   return new ArrayBuffer(size);
 }
 
+function wakeTarget(): EventTarget {
+  return new EventTarget();
+}
+
+async function flush(): Promise<void> {
+  for (let i = 0; i < 6; i += 1) {
+    await Promise.resolve();
+  }
+}
+
 describe("kiosk wake handoff", () => {
   it("does nothing when Kiosk Satellite is missing", () => {
-    const addEventListener = vi.fn();
+    const events = wakeTarget();
+    const assist = vi.fn();
+    events.addEventListener(WAKE_EVENT, assist);
     const installed = installGrokVoice({
       kiosk: undefined,
-      addEventListener,
+      events,
       openSession: async () => {
         throw new Error("should not open");
       },
     });
     expect(installed.installed).toBe(false);
-    expect(addEventListener).not.toHaveBeenCalled();
+    events.dispatchEvent(new Event(WAKE_EVENT));
+    expect(assist).toHaveBeenCalledOnce();
+  });
+
+  it("replaces Assist's wake listener and ignores a later Assist bind", async () => {
+    const events = wakeTarget();
+    const pipelineRun = vi.fn();
+    const assist = vi.fn(() => {
+      pipelineRun({ start_stage: "stt" });
+    });
+    events.addEventListener(WAKE_EVENT, assist);
+    let session!: VoiceSession;
+    const openSession = vi.fn(async () => {
+      session = new VoiceSession(
+        () => ({ stop() {} }),
+        () => ({ send() {}, close() {} }),
+      );
+      return session;
+    });
+    const kiosk: KioskApi = {
+      platform: "kiosksatellite",
+      pipelineRun,
+      setInteractionActive: vi.fn(async () => true),
+      setWakeWordActive: vi.fn(async () => true),
+    };
+
+    expect(installGrokVoice({ kiosk, events, openSession }).installed).toBe(true);
+    events.addEventListener(WAKE_EVENT, assist);
+
+    events.dispatchEvent(new CustomEvent(WAKE_EVENT, { detail: { phrase: "hey jarvis" } }));
+    events.dispatchEvent(new Event(WAKE_EVENT));
+    await flush();
+
+    expect(assist).not.toHaveBeenCalled();
+    expect(pipelineRun).not.toHaveBeenCalled();
+    expect(openSession).toHaveBeenCalledOnce();
+    expect(session.captureActive).toBe(true);
+    session.finish("idle");
+    await flush();
+    expect(kiosk.setInteractionActive).toHaveBeenNthCalledWith(1, true, "voice");
+    expect(kiosk.setWakeWordActive).toHaveBeenCalledWith(true);
+    expect(kiosk.setInteractionActive).toHaveBeenLastCalledWith(false, "voice");
+  });
+
+  it("still delivers other Kiosk Satellite events", () => {
+    const events = wakeTarget();
+    const motion = vi.fn();
+    events.addEventListener("kiosksatellite:motion", motion);
+    installGrokVoice({
+      kiosk: {
+        platform: "kiosksatellite",
+        setInteractionActive: vi.fn(async () => true),
+        setWakeWordActive: vi.fn(async () => true),
+      },
+      events,
+      openSession: async () => {
+        throw new Error("should not open");
+      },
+    });
+    const lateMotion = vi.fn();
+    events.addEventListener("kiosksatellite:motion", lateMotion);
+    events.dispatchEvent(new Event("kiosksatellite:motion"));
+    expect(motion).toHaveBeenCalledOnce();
+    expect(lateMotion).toHaveBeenCalledOnce();
   });
 
   it("keeps the mic open during playback, flushes barge-in, and re-arms on end", async () => {
@@ -32,12 +107,10 @@ describe("kiosk wake handoff", () => {
       setInteractionActive: vi.fn(async () => true),
       setWakeWordActive: vi.fn(async () => true),
     };
-    let wake: (() => Promise<void>) | undefined;
+    const events = wakeTarget();
     installGrokVoice({
       kiosk,
-      addEventListener: (_type, handler) => {
-        wake = handler as () => Promise<void>;
-      },
+      events,
       openSession: async () => {
         session = new VoiceSession(
           (chunk) => {
@@ -57,9 +130,8 @@ describe("kiosk wake handoff", () => {
       },
     });
 
-    const running = wake!();
-    await Promise.resolve();
-    await Promise.resolve();
+    events.dispatchEvent(new Event(WAKE_EVENT));
+    await flush();
     expect(session.captureActive).toBe(true);
 
     const first = pcm(2);
@@ -81,7 +153,7 @@ describe("kiosk wake handoff", () => {
     expect(played).toEqual([first, next]);
 
     session.finish("idle");
-    await running;
+    await flush();
 
     expect(pipelineRun).not.toHaveBeenCalled();
     expect(kiosk.setWakeWordActive).toHaveBeenCalledWith(true);
