@@ -2,17 +2,29 @@
 
 Home Assistant add-on that talks to Grok Voice Think Fast 2.0 and runs Assist tools through the local MCP server. Open the add-on page in a browser (Mac, tablet, or the attic Kiosk Satellite dashboard). The xAI key stays in the add-on.
 
-## Add-on
+## Install from the Add-on store
 
-1. In Home Assistant, add this repository under Settings → Add-ons → Add-on store → Repositories.
-2. Install **Grok Voice Agent** and set the xAI API key.
-3. Install the official **Model Context Protocol Server** integration and expose the entities Assist may control.
-4. Leave the MCP URL blank. It uses `http://supervisor/core/api/mcp` with the add-on token. Paste a long-lived token only if the log shows MCP HTTP 401.
-5. Start the add-on. Rebuild after a client UI change (`npm run build` in `client/`, then `ha apps rebuild` / reinstall) so `/app/www` is in the image.
+Home Assistant clones this GitHub URL as a store repository. The repo root has `repository.yaml`; the add-on itself is the `grok_voice_agent/` folder (`config.yaml`, `Dockerfile`, …).
+
+The GitHub repository must be **public**. The add-on store does not log into GitHub, so a private clone will not show **Grok Voice Agent**.
+
+1. In Home Assistant: **Settings → Add-ons → Add-on store → ⋮ → Repositories**.
+2. Add `https://github.com/fabianluque/ha-grok-voice` and save.
+3. On the store page, open **Grok Voice Agent** and install it. Home Assistant builds the image locally from the Dockerfile.
+4. Open the add-on **Configuration**, set **xAI API key**, and save. Do not put that key in the browser UI.
+5. Install the official **Model Context Protocol Server** integration and expose the entities Assist may control.
+6. Leave the MCP URL blank. It uses `http://supervisor/core/api/mcp` with the add-on token. Paste a long-lived token only if the log shows MCP HTTP 401.
+7. Start the add-on.
 
 A blank tool allowlist is `HassTurnOn`, `HassTurnOff`, `HassLightSet`, `GetLiveContext`, and `GetDateTime`. Set `*` to offer every MCP tool.
 
+After a client UI change, run `npm run build` in `client/` so `grok_voice_agent/www` is current, then update/rebuild the add-on so `/app/www` is in the image.
+
 The add-on serves the mic UI on dashboard ingress (port 8099, **Open Web UI**) and on the debug port (`8080/tcp`). Voice still authenticates with a Home Assistant access token on the first WebSocket message; that handshake is unchanged.
+
+## Local `/addons` (optional, for development)
+
+To iterate without the GitHub store, copy `grok_voice_agent/` into Home Assistant’s local add-ons directory as `/addons/grok_voice_agent` (Samba share `addons`, SSH, or similar). Local add-ons do not use `repository.yaml`. Rebuild with `ha apps rebuild` / reinstall after you change the add-on or the packaged UI.
 
 ## Test from a Mac browser
 
