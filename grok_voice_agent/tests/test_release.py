@@ -146,6 +146,9 @@ def test_ship_workflows_and_readme():
     assert "npm test" in ci
     assert "push: false" in ci
     assert "workflow_dispatch" in release_yml
+    assert "GH_TOKEN: ${{ github.token }}" in release_yml
+    assert "contents: write" in release_yml
+    assert "packages: write" in release_yml
     assert "generate_release_notes: true" in release_yml
     assert "grok-voice-agent" in release_yml
     assert "home-assistant/builder/actions/build-image@2026.03.2" in release_yml
