@@ -281,7 +281,8 @@ export function formatReject(error: unknown): string {
 /**
  * Native Assist pauses the dashboard as soon as its overlay is up, which
  * closes the duplex socket in about 100ms. Retry that collapse. A real end
- * (`idle`, `end`) returns immediately.
+ * (`idle`, `end`) returns immediately. Four quick closes is a real failure
+ * (wrong host, proxy drop), not a successful session.
  */
 async function runDuplex(open: () => Promise<VoiceSession>): Promise<void> {
   let last: unknown;
@@ -293,16 +294,19 @@ async function runDuplex(open: () => Promise<VoiceSession>): Promise<void> {
         session.onEnd((endReason) => resolve(endReason));
         void session.start();
       });
-      const collapsed = reason === "closed" && Date.now() - started < QUICK_CLOSE_MS;
-      if (!collapsed || attempt === 3) {
+      const elapsed = Date.now() - started;
+      const collapsed = reason === "closed" && elapsed < QUICK_CLOSE_MS;
+      if (!collapsed) {
         return;
       }
+      last = new Error("socket closed quickly");
+      console.warn(`[Grok Voice] duplex attempt ${attempt + 1} closed after ${elapsed}ms`, reason);
     } catch (error) {
       last = error;
       console.warn(`[Grok Voice] openSession attempt ${attempt + 1} failed`, formatReject(error));
-      if (attempt === 3) {
-        throw error;
-      }
+    }
+    if (attempt === 3) {
+      throw last ?? new Error("socket closed quickly");
     }
     await wait(250);
   }

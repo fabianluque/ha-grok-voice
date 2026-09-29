@@ -484,4 +484,40 @@ describe("kiosk wake handoff", () => {
     await flush();
     expect(kiosk.setInteractionActive).toHaveBeenLastCalledWith(false, "voice");
   });
+
+  it("throws after four quick socket closes so a silent duplex failure is visible", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const events = wakeTarget();
+    const openSession = vi.fn(async () => {
+      const session = new VoiceSession(
+        () => ({ stop() {} }),
+        () => ({ send() {}, close() {} }),
+      );
+      const start = session.start.bind(session);
+      session.start = async () => {
+        await start();
+        session.finish("closed");
+      };
+      return session;
+    });
+    const kiosk: KioskApi = {
+      platform: "kiosksatellite",
+      setInteractionActive: vi.fn(async () => true),
+      setWakeWordActive: vi.fn(async () => true),
+    };
+    installGrokVoice({ kiosk, events, openSession });
+    events.dispatchEvent(new Event(WAKE_EVENT));
+    await delay(1200);
+    await flush();
+
+    expect(openSession).toHaveBeenCalledTimes(4);
+    expect(warn.mock.calls.some((call) => String(call[0]).includes("duplex attempt 1 closed after"))).toBe(true);
+    expect(warn.mock.calls.some((call) => String(call[0]).includes("duplex attempt 4 closed after"))).toBe(true);
+    expect(errorLog).toHaveBeenCalledWith("[Grok Voice] Duplex session failed after wake", "socket closed quickly");
+    expect(kiosk.setInteractionActive).toHaveBeenLastCalledWith(false, "voice");
+    expect(kiosk.setWakeWordActive).toHaveBeenLastCalledWith(true);
+    warn.mockRestore();
+    errorLog.mockRestore();
+  });
 });
