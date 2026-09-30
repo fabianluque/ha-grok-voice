@@ -7,6 +7,7 @@ in those pull requests are included below when GitHub reports them.
 ## [0.2.11] - 2026-09-30
 
 - Let Grok’s hang-up ack finish playing before the duplex closes. `end_session` (command or dismiss) and closing-phrase hang-up wait until queued/playing assistant audio drains (the same sequential playback path used for tool TTS), then close the socket and microphone and re-arm Kiosk Satellite wake. Mid-session tool replies still are not clipped.
+- Shrink kiosk overlay conversation type by about 30% (`clamp(18px, 2.9vw, 28px)`). Streaming user/Grok lines update the in-progress bubble in place as each transcript delta arrives, without rebuilding the whole log.
 
 ## [0.2.10] - 2026-09-30
 

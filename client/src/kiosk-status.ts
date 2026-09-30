@@ -18,13 +18,13 @@ const STYLE = `
   pointer-events:auto;
   background:rgba(6,8,14,.82);
   color:#f4f6fb;
-  font:clamp(26px,4.2vw,40px)/1.35 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  font:clamp(18px,2.9vw,28px)/1.35 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
   backdrop-filter:blur(22px) saturate(1.15);
   -webkit-backdrop-filter:blur(22px) saturate(1.15);
 }
 #grok-voice-overlay .header{
   display:flex;align-items:center;gap:12px;flex-shrink:0;
-  font-size:clamp(28px,4.6vw,44px);
+  font-size:clamp(20px,3.2vw,32px);
 }
 #grok-voice-overlay .dot{
   width:14px;height:14px;border-radius:50%;background:#18bc9c;
@@ -39,7 +39,7 @@ const STYLE = `
 }
 #grok-voice-overlay[data-status="speaking"] .status{color:#c9ddff}
 #grok-voice-overlay .brand{
-  margin-left:auto;color:#9aa3b5;font-size:clamp(18px,2.6vw,26px);font-weight:700;
+  margin-left:auto;color:#9aa3b5;font-size:clamp(14px,1.8vw,18px);font-weight:700;
 }
 #grok-voice-overlay .messages{
   flex:1 1 auto;overflow:auto;min-height:0;
@@ -48,13 +48,14 @@ const STYLE = `
 #grok-voice-overlay .messages:empty{display:none}
 #grok-voice-overlay .msg{
   margin:0;white-space:pre-wrap;word-break:break-word;
-  font-size:clamp(26px,4.2vw,40px);line-height:1.35;
+  font-size:clamp(18px,2.9vw,28px);line-height:1.35;
 }
 #grok-voice-overlay .msg[data-final="false"]{opacity:.88}
 #grok-voice-overlay .msg[data-role="user"]{color:#d7deea}
 #grok-voice-overlay .msg[data-role="assistant"]{color:#7dffcf}
 #grok-voice-overlay .who{font-weight:800;margin-right:.35em;color:#9aa3b5}
 #grok-voice-overlay .msg[data-role="assistant"] .who{color:#18bc9c}
+#grok-voice-overlay .body{font-weight:400}
 @keyframes grok-voice-pulse{
   0%{box-shadow:0 0 0 0 currentColor;opacity:1}
   70%{box-shadow:0 0 0 10px transparent;opacity:.85}
@@ -89,6 +90,23 @@ export function speakerLabel(role: string): string {
   return role === "user" ? "You" : "Grok";
 }
 
+/** Merge a delta that may be incremental or a cumulative snapshot. */
+export function mergeTranscript(current: string, incoming: string): string {
+  if (!incoming) {
+    return current;
+  }
+  if (!current) {
+    return incoming;
+  }
+  if (incoming.startsWith(current)) {
+    return incoming;
+  }
+  if (current.startsWith(incoming)) {
+    return current;
+  }
+  return current + incoming;
+}
+
 /** Update the in-progress line for a role, otherwise append a new bubble. */
 export function upsertTranscript(
   messages: OverlayMessage[],
@@ -96,17 +114,20 @@ export function upsertTranscript(
   text: string,
   final: boolean,
 ): OverlayMessage[] {
-  const trimmed = text.trim();
-  if (!trimmed) {
-    return messages;
-  }
   const last = messages[messages.length - 1];
   if (last && last.role === role && !last.final) {
-    last.text = trimmed;
+    last.text = mergeTranscript(last.text, text);
     last.final = final;
+    if (final) {
+      last.text = last.text.trim();
+    }
     return messages;
   }
-  messages.push({ role, text: trimmed, final });
+  const seed = text.trim();
+  if (!seed) {
+    return messages;
+  }
+  messages.push({ role, text: final ? seed : text.replace(/^\s+/, ""), final });
   return messages;
 }
 
@@ -148,21 +169,35 @@ export function mountKioskStatus(doc: Document): KioskOverlay {
   doc.body.appendChild(root);
 
   const messages: OverlayMessage[] = [];
+  let lastLine: HTMLParagraphElement | null = null;
+  let lastIndex = -1;
 
-  const paintLog = () => {
-    log.textContent = "";
-    for (const message of messages) {
-      const line = doc.createElement("p");
-      line.className = "msg";
-      line.dataset.role = message.role === "user" ? "user" : "assistant";
-      line.dataset.final = message.final ? "true" : "false";
-      const who = doc.createElement("span");
-      who.className = "who";
-      who.textContent = `${speakerLabel(message.role)}:`;
-      line.appendChild(who);
-      line.appendChild(doc.createTextNode(` ${message.text}`));
-      log.appendChild(line);
+  const paintLine = (message: OverlayMessage, index: number) => {
+    if (lastLine && lastIndex === index) {
+      lastLine.dataset.final = message.final ? "true" : "false";
+      const body = lastLine.querySelector(".body");
+      if (body) {
+        body.textContent = message.text;
+      }
+      log.scrollTop = log.scrollHeight;
+      return;
     }
+    const line = doc.createElement("p");
+    line.className = "msg";
+    line.dataset.role = message.role === "user" ? "user" : "assistant";
+    line.dataset.final = message.final ? "true" : "false";
+    const who = doc.createElement("span");
+    who.className = "who";
+    who.textContent = `${speakerLabel(message.role)}:`;
+    const body = doc.createElement("span");
+    body.className = "body";
+    body.textContent = message.text;
+    line.appendChild(who);
+    line.appendChild(doc.createTextNode(" "));
+    line.appendChild(body);
+    log.appendChild(line);
+    lastLine = line;
+    lastIndex = index;
     log.scrollTop = log.scrollHeight;
   };
 
@@ -175,7 +210,11 @@ export function mountKioskStatus(doc: Document): KioskOverlay {
     set,
     addMessage(role: string, text: string, final = true) {
       upsertTranscript(messages, role, text, final);
-      paintLog();
+      const index = messages.length - 1;
+      if (index < 0) {
+        return;
+      }
+      paintLine(messages[index], index);
     },
     remove() {
       root.remove();

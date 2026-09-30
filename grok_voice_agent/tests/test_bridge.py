@@ -166,6 +166,14 @@ def test_completed_user_transcript_is_marked_final():
     ]
 
 
+def test_empty_transcript_delta_is_not_forwarded():
+    bridge = GrokBridge(ToolGateway(FakeMcp(), frozenset({"HassTurnOn"})))
+    assert bridge.client_messages({"type": "response.audio_transcript.delta", "delta": ""}) == []
+    assert bridge.client_messages({"type": "response.audio_transcript.delta", "delta": "Hi"}) == [
+        {"type": "transcript", "role": "assistant", "text": "Hi", "final": False}
+    ]
+
+
 def test_uplink_continues_while_audio_is_playing():
     bridge = GrokBridge(ToolGateway(FakeMcp(), frozenset({"HassTurnOn"})))
     bridge.playing = True

@@ -529,18 +529,25 @@ def _stream_transcript(bridge: GrokBridge, event_type: object, event: dict) -> d
     kind = str(event_type or "")
     if kind in ASSISTANT_DELTA_TYPES:
         piece = str(event.get("delta") or event.get("transcript") or event.get("text") or "")
-        bridge._assistant_partial = _extend_partial(bridge._assistant_partial, piece)
-        text = bridge._assistant_partial.strip()
-        if not text:
+        if not piece:
             return None
-        return {"type": "transcript", "role": "assistant", "text": text, "final": False}
+        bridge._assistant_partial = _extend_partial(bridge._assistant_partial, piece)
+        if not bridge._assistant_partial.strip():
+            return None
+        return {
+            "type": "transcript",
+            "role": "assistant",
+            "text": bridge._assistant_partial,
+            "final": False,
+        }
     if kind in USER_DELTA_TYPES:
         piece = str(event.get("delta") or event.get("transcript") or event.get("text") or "")
-        bridge._user_partial = _extend_partial(bridge._user_partial, piece)
-        text = bridge._user_partial.strip()
-        if not text:
+        if not piece:
             return None
-        return {"type": "transcript", "role": "user", "text": text, "final": False}
+        bridge._user_partial = _extend_partial(bridge._user_partial, piece)
+        if not bridge._user_partial.strip():
+            return None
+        return {"type": "transcript", "role": "user", "text": bridge._user_partial, "final": False}
     if kind in FINAL_TRANSCRIPT_TYPES:
         role = TRANSCRIPT_ROLES.get(kind)
         if role == "assistant":
