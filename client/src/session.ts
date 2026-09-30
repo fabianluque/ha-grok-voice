@@ -13,6 +13,7 @@ export interface ServerMessage {
   name?: string;
   status?: string;
   final?: boolean;
+  itemId?: string;
   idleTimeoutSeconds?: number;
 }
 

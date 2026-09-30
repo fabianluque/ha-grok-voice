@@ -99,8 +99,8 @@ function boot(): void {
           ingress: authMode === "ingress",
           area,
           device,
-          onTranscript: (role, text, final) => {
-            status.addMessage(role, text, final === true);
+          onTranscript: (role, text, final, itemId) => {
+            status.addMessage(role, text, final === true, itemId);
           },
           onServerText: (message) => {
             status.handleDuplex(message.type);

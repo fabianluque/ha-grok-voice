@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from "vitest";
-import { describe, expect, it, vi } from "vitest";
 import {
   applyOverlaySpeech,
   attachOverlayDismiss,
@@ -7,12 +6,16 @@ import {
   isOverlayTap,
   mergeTranscript,
   overlayStyle,
-  revisesUserSnapshot,
   speakerLabel,
   statusLabel,
   upsertTranscript,
   voiceStatusFromMessage,
+  type OverlaySpeechState,
 } from "../src/kiosk-status";
+
+function speechState(overrides: Partial<OverlaySpeechState> = {}): OverlaySpeechState {
+  return { userSpeaking: false, heardStop: false, newUserUtterance: false, ...overrides };
+}
 
 describe("kiosk status pill", () => {
   it("maps duplex events to Listening or Speaking", () => {
@@ -83,13 +86,30 @@ describe("kiosk status pill", () => {
     expect(mergeTranscript("Hello?", "Hello, my name is", "replace")).toBe("Hello, my name is");
   });
 
-  it("keeps one You: line for cumulative updated snapshots even if marked final", () => {
-    const messages = upsertTranscript([], "user", "Hello", true);
-    upsertTranscript(messages, "user", "Hello, my name is", false);
-    upsertTranscript(messages, "user", "Hello, my name is Grok", false);
-    expect(messages).toEqual([{ role: "user", text: "Hello, my name is Grok", final: false }]);
-    expect(revisesUserSnapshot("Hello?", "Hello, my name is")).toBe(true);
-    expect(revisesUserSnapshot("turn on the lights", "and the fan")).toBe(false);
+  it("keeps one You: line when ASR revises wording after speech_stopped or completed", () => {
+    const speech = speechState();
+    const messages = upsertTranscript([], "user", "turn on the light", false, {
+      itemId: "item_1",
+      speech,
+    });
+    applyOverlaySpeech(messages, speech, "speech_started");
+    upsertTranscript(messages, "user", "turn on the lights", false, { itemId: "item_1", speech });
+    applyOverlaySpeech(messages, speech, "speech_stopped");
+    upsertTranscript(messages, "user", "turn on the lights", true, { itemId: "item_1", speech });
+    upsertTranscript(messages, "user", "turn off the attic fan", false, { itemId: "item_1", speech });
+    expect(messages).toEqual([
+      { role: "user", text: "turn off the attic fan", final: false, itemId: "item_1" },
+    ]);
+  });
+
+  it("replaces the same ASR item even after Grok has started speaking", () => {
+    const messages = upsertTranscript([], "user", "what's happening", true, { itemId: "item_1" });
+    upsertTranscript(messages, "assistant", "This weekend?", false);
+    upsertTranscript(messages, "user", "what's the weather this weekend", false, { itemId: "item_1" });
+    expect(messages).toEqual([
+      { role: "user", text: "what's the weather this weekend", final: false, itemId: "item_1" },
+      { role: "assistant", text: "This weekend?", final: false },
+    ]);
   });
 
   it("starts a new user line after the previous snapshot is finalized", () => {
@@ -102,18 +122,36 @@ describe("kiosk status pill", () => {
     ]);
   });
 
+  it("starts a new You: line only after a true turn boundary", () => {
+    const speech = speechState();
+    const messages = upsertTranscript([], "user", "turn on", false, { itemId: "item_1", speech });
+    applyOverlaySpeech(messages, speech, "speech_started");
+    upsertTranscript(messages, "user", "turn on the lights", false, { itemId: "item_1", speech });
+    applyOverlaySpeech(messages, speech, "speech_stopped");
+    upsertTranscript(messages, "user", "turn off the lights", false, { itemId: "item_1", speech });
+    expect(messages).toEqual([
+      { role: "user", text: "turn off the lights", final: false, itemId: "item_1" },
+    ]);
+    applyOverlaySpeech(messages, speech, "speech_started");
+    upsertTranscript(messages, "user", "and the fan", false, { itemId: "item_2", speech });
+    expect(messages).toEqual([
+      { role: "user", text: "turn off the lights", final: true, itemId: "item_1" },
+      { role: "user", text: "and the fan", final: false, itemId: "item_2" },
+    ]);
+  });
+
   it("does not start a new You: line on extra speech_started mid-utterance", () => {
     const messages = upsertTranscript([], "user", "turn on", false);
-    const speech = { userSpeaking: false };
+    const speech = speechState();
     applyOverlaySpeech(messages, speech, "speech_started");
-    upsertTranscript(messages, "user", "turn on the", false);
+    upsertTranscript(messages, "user", "turn on the", false, { speech });
     applyOverlaySpeech(messages, speech, "speech_started");
-    upsertTranscript(messages, "user", "turn on the lights", false);
+    upsertTranscript(messages, "user", "turn on the lights", false, { speech });
     expect(messages).toEqual([{ role: "user", text: "turn on the lights", final: false }]);
     applyOverlaySpeech(messages, speech, "speech_stopped");
     expect(messages).toEqual([{ role: "user", text: "turn on the lights", final: true }]);
     applyOverlaySpeech(messages, speech, "speech_started");
-    upsertTranscript(messages, "user", "and the fan", false);
+    upsertTranscript(messages, "user", "and the fan", false, { speech });
     expect(messages).toEqual([
       { role: "user", text: "turn on the lights", final: true },
       { role: "user", text: "and the fan", final: false },

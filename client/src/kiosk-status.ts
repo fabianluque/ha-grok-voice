@@ -4,6 +4,7 @@ export interface OverlayMessage {
   role: string;
   text: string;
   final: boolean;
+  itemId?: string;
 }
 
 const OVERLAY_ID = "grok-voice-overlay";
@@ -111,55 +112,103 @@ export function mergeTranscript(current: string, incoming: string, mode: "merge"
   return current + incoming;
 }
 
-function snapshotKey(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]+/g, " ")
-    .trim()
-    .replace(/\s+/g, " ");
+function lastIndexWhere(messages: OverlayMessage[], match: (message: OverlayMessage) => boolean): number {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (match(messages[index])) {
+      return index;
+    }
+  }
+  return -1;
 }
 
-/** True when `incoming` is the same utterance growing or an ASR revision. */
-export function revisesUserSnapshot(current: string, incoming: string): boolean {
-  const from = snapshotKey(current);
-  const to = snapshotKey(incoming);
-  if (!from || !to) {
-    return false;
+function applyTranscript(
+  message: OverlayMessage,
+  text: string,
+  final: boolean,
+  itemId?: string,
+): void {
+  message.text = mergeTranscript(message.text, text, message.role === "user" ? "replace" : "merge");
+  message.final = final;
+  if (itemId) {
+    message.itemId = itemId;
   }
-  return to.startsWith(from) || from.startsWith(to);
+  if (final) {
+    message.text = message.text.trim();
+  }
 }
 
-function shouldReplaceTranscript(last: OverlayMessage, role: string, text: string): boolean {
-  if (last.role !== role) {
-    return false;
-  }
-  if (!last.final) {
-    return true;
-  }
-  return role === "user" && revisesUserSnapshot(last.text, text);
+export interface OverlaySpeechState {
+  userSpeaking: boolean;
+  /** VAD ended the current utterance; a later speech_started is a new You: line. */
+  heardStop: boolean;
+  /** Next user snapshot without a matching item id starts a new bubble. */
+  newUserUtterance: boolean;
 }
 
-/** Update the in-progress line for a role, otherwise append a new bubble. */
+export interface UpsertTranscriptOptions {
+  itemId?: string;
+  speech?: OverlaySpeechState;
+}
+
+/**
+ * Update the in-progress line for a role, otherwise append a new bubble.
+ *
+ * User ASR revisions (including after speech_stopped / completed) replace the
+ * live You: line. A new You: line starts only at a true turn boundary: a new
+ * conversation item id, or speech_started after speech_stopped.
+ */
 export function upsertTranscript(
   messages: OverlayMessage[],
   role: string,
   text: string,
   final: boolean,
+  options: UpsertTranscriptOptions = {},
 ): OverlayMessage[] {
-  const last = messages[messages.length - 1];
-  if (last && shouldReplaceTranscript(last, role, text)) {
-    last.text = mergeTranscript(last.text, text, role === "user" ? "replace" : "merge");
-    last.final = final;
-    if (final) {
-      last.text = last.text.trim();
+  const itemId = options.itemId?.trim() || undefined;
+  const speech = options.speech;
+  if (role === "user") {
+    let index = itemId ? lastIndexWhere(messages, (message) => message.role === "user" && message.itemId === itemId) : -1;
+    if (index < 0) {
+      const last = messages[messages.length - 1];
+      if (last?.role === "user" && (!last.itemId || !itemId || last.itemId === itemId)) {
+        const sameTurn = speech
+          ? speech.newUserUtterance !== true
+          : !last.final || Boolean(itemId && last.itemId === itemId);
+        if (sameTurn) {
+          index = messages.length - 1;
+        }
+      }
     }
-    return messages;
+    if (index >= 0) {
+      applyTranscript(messages[index], text, final, itemId);
+      if (speech) {
+        speech.newUserUtterance = false;
+      }
+      return messages;
+    }
+  } else {
+    const last = messages[messages.length - 1];
+    if (last && last.role === role && !last.final) {
+      applyTranscript(last, text, final, itemId);
+      return messages;
+    }
   }
   const seed = text.trim();
   if (!seed) {
     return messages;
   }
-  messages.push({ role, text: final ? seed : text.replace(/^\s+/, ""), final });
+  const next: OverlayMessage = {
+    role,
+    text: final ? seed : text.replace(/^\s+/, ""),
+    final,
+  };
+  if (itemId) {
+    next.itemId = itemId;
+  }
+  messages.push(next);
+  if (role === "user" && speech) {
+    speech.newUserUtterance = false;
+  }
   return messages;
 }
 
@@ -172,14 +221,13 @@ export function finalizeTranscript(messages: OverlayMessage[], role?: string): O
   return messages;
 }
 
-export interface OverlaySpeechState {
-  userSpeaking: boolean;
-}
-
 /**
  * Close the previous You: bubble only when a *new* utterance starts.
- * Extra `speech_started` events mid-turn must not finalize the live snapshot,
- * or each ASR `updated` event becomes another growing You: line.
+ *
+ * Extra `speech_started` mid-turn must not finalize. `speech_stopped` /
+ * `completed` also must not block later ASR revisions of the same item —
+ * those still replace the live You: line. A following `speech_started` after
+ * a stop is the turn boundary for a new You: line.
  */
 export function applyOverlaySpeech(
   messages: OverlayMessage[],
@@ -189,12 +237,17 @@ export function applyOverlaySpeech(
   if (type === "speech_started") {
     if (!state.userSpeaking) {
       finalizeTranscript(messages, "user");
+      if (state.heardStop) {
+        state.newUserUtterance = true;
+      }
+      state.heardStop = false;
     }
     state.userSpeaking = true;
     return messages;
   }
   if (type === "speech_stopped") {
     state.userSpeaking = false;
+    state.heardStop = true;
     finalizeTranscript(messages, "user");
   }
   return messages;
@@ -202,7 +255,7 @@ export function applyOverlaySpeech(
 
 export interface KioskOverlay {
   set(status: VoiceStatus): void;
-  addMessage(role: string, text: string, final?: boolean): void;
+  addMessage(role: string, text: string, final?: boolean, itemId?: string): void;
   handleDuplex(type: string): void;
   finalize(role?: string): void;
   remove(): void;
@@ -299,7 +352,7 @@ export function mountKioskStatus(doc: Document, options: MountKioskStatusOptions
   doc.body.appendChild(root);
 
   const messages: OverlayMessage[] = [];
-  const speech: OverlaySpeechState = { userSpeaking: false };
+  const speech: OverlaySpeechState = { userSpeaking: false, heardStop: false, newUserUtterance: false };
 
   const paintLine = (message: OverlayMessage, index: number) => {
     const existing = log.children[index] as HTMLParagraphElement | undefined;
@@ -337,9 +390,16 @@ export function mountKioskStatus(doc: Document, options: MountKioskStatusOptions
   set("listening");
   return {
     set,
-    addMessage(role: string, text: string, final = false) {
-      upsertTranscript(messages, role, text, final);
-      const index = messages.length - 1;
+    addMessage(role: string, text: string, final = false, itemId?: string) {
+      upsertTranscript(messages, role, text, final, { itemId, speech });
+      let index = messages.length - 1;
+      const id = itemId?.trim();
+      if (role === "user" && id) {
+        const found = lastIndexWhere(messages, (message) => message.role === "user" && message.itemId === id);
+        if (found >= 0) {
+          index = found;
+        }
+      }
       if (index < 0) {
         return;
       }

@@ -205,6 +205,40 @@ def test_user_updated_snapshot_streams_and_can_revise():
     ) == [{"type": "transcript", "role": "user", "text": "Hello, my name is", "final": False}]
 
 
+def test_user_snapshot_forwards_item_id():
+    bridge = GrokBridge(ToolGateway(FakeMcp(), frozenset({"HassTurnOn"})))
+    assert bridge.client_messages(
+        {
+            "type": "conversation.item.input_audio_transcription.updated",
+            "item_id": "item_9",
+            "transcript": "turn on the light",
+        }
+    ) == [
+        {
+            "type": "transcript",
+            "role": "user",
+            "text": "turn on the light",
+            "final": False,
+            "itemId": "item_9",
+        }
+    ]
+    assert bridge.client_messages(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "item_9",
+            "transcript": "turn off the attic fan",
+        }
+    ) == [
+        {
+            "type": "transcript",
+            "role": "user",
+            "text": "turn off the attic fan",
+            "final": True,
+            "itemId": "item_9",
+        }
+    ]
+
+
 def test_empty_transcript_delta_is_not_forwarded():
     bridge = GrokBridge(ToolGateway(FakeMcp(), frozenset({"HassTurnOn"})))
     assert bridge.client_messages({"type": "response.audio_transcript.delta", "delta": ""}) == []

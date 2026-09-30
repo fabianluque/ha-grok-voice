@@ -116,7 +116,7 @@ export interface BrowserSessionOptions {
   ingress?: boolean;
   area?: { id?: string; name: string };
   device?: { id?: string; name: string };
-  onTranscript?: (role: string, text: string, final?: boolean) => void;
+  onTranscript?: (role: string, text: string, final?: boolean, itemId?: string) => void;
   onServerText?: (message: ServerMessage) => void;
 }
 
@@ -159,7 +159,7 @@ export async function createBrowserSession(
   const wrapped = session.handleServerText.bind(session);
   session.handleServerText = (message) => {
     if (message.type === "transcript" && message.text) {
-      options.onTranscript?.(message.role || "assistant", message.text, message.final === true);
+      options.onTranscript?.(message.role || "assistant", message.text, message.final === true, message.itemId);
     }
     // Only barge-in jumps the playback cursor. A tool follow-up
     // `response_started` must append after audio already scheduled.
