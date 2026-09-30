@@ -252,6 +252,21 @@ def test_auth_area_is_written_into_session_instructions():
     assert "attic" in update["session"]["instructions"]
 
 
+def test_missing_client_area_uses_addon_default_attic():
+    async def run():
+        client = QueueSocket()
+        grok = QueueSocket()
+        await client.incoming.put(json.dumps({"type": "auth", "token": "good-token"}))
+        task = asyncio.create_task(_run_session(client, grok, idle=0.1))
+        await asyncio.wait_for(task, timeout=2)
+        return grok.sent
+
+    sent = asyncio.run(run())
+    update = next(json.loads(item) for item in sent if isinstance(item, str) and "session.update" in item)
+    assert "Attic" in update["session"]["instructions"]
+    assert "Do not ask which lights" in update["session"]["instructions"]
+
+
 def test_ready_includes_idle_timeout_seconds():
     async def run():
         client = QueueSocket()

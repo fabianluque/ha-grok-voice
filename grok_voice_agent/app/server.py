@@ -17,7 +17,7 @@ from app.grok_session import (
     GrokBridge,
     build_session,
     is_closing_utterance,
-    parse_client_area,
+    merge_session_area,
     xai_realtime_error_log,
     xai_session_tools_log,
 )
@@ -124,7 +124,7 @@ async def handle_socket(websocket, settings, http, grok_connect=None) -> None:
         log.info("voice session authenticated via ingress")
     else:
         log.info("voice session authenticated")
-    area = parse_client_area(message.get("area"))
+    area = merge_session_area(message.get("area"), settings)
     if area:
         log.info("voice area name=%s id=%s", area.get("name"), area.get("id") or "")
     gateway = ToolGateway(

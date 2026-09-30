@@ -22,8 +22,10 @@ options:
   instructions: >-
     You are the voice of this home. Speak in short, natural sentences.
     Call tools silently, then give one complete answer. Do not read entity
-    IDs or technical names; use ordinary names. If the device or room is
-    ambiguous, ask one short question. If something fails, say what went wrong.
+    IDs or technical names; use ordinary names. When the user does not name
+    a room, use this satellite's area for lights, music, and other room-scoped
+    devices. Do not ask which lights or which room. If they name another room,
+    use that room. If something fails, say what went wrong.
   voice: eve
   model: grok-voice-think-fast-2.0
   reasoning_effort: none
@@ -33,6 +35,8 @@ options:
   longlived_token: ""
   mcp_tool_allowlist: ""
   idle_timeout_seconds: 20
+  default_area: Attic
+  default_area_id: ""
 schema:
   xai_api_key: password
   instructions: str
@@ -45,3 +49,5 @@ schema:
   longlived_token: password
   mcp_tool_allowlist: str
   idle_timeout_seconds: int(5,600)
+  default_area: str
+  default_area_id: str

@@ -9,7 +9,7 @@ in those pull requests are included below when GitHub reports them.
 - Hang up when a completed utterance *ends* with a closer (`oh, that's great, thank you`), not only when the whole phrase is exactly `thank you` / `goodbye`. A closer in the middle of a request still does not end the session.
 - Do not replace mid-reply speech when a tool runs or a second TTS generation starts. New audio waits until the current sentence finishes unless the user barges in.
 - Show a conversation overlay on the attic kiosk during a duplex session (Listening / Speaking plus user and Grok transcripts). It hides when the session ends and wake is re-armed.
-- Scope lights, music, and other room commands to this kiosk's Home Assistant area (from KS `getDeviceInfo` or the HA device/assist area). Fall back to Attic only when that area is not readable yet. Optional inject override: `GROK_VOICE_AREA` / `GROK_VOICE_AREA_ID`.
+- Scope lights, music, and other room commands to this kiosk's Home Assistant area. The kiosk sends the tablet's HA/KS area; the add-on also has `default_area` (Attic) and optional `default_area_id`. Bare "turn on the lights" uses that area on Assist tools and does not ask which room. Override with `window.GROK_VOICE_AREA` / `GROK_VOICE_AREA_ID` in the inject if needed.
 - Call `setTimeout` / `clearTimeout` as methods of `globalThis` so Chromium WebView no longer throws `Illegal invocation` about every 10s during a live session.
 
 ## [0.2.5] - 2026-09-30

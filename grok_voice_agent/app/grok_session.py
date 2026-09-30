@@ -115,6 +115,27 @@ def parse_client_area(value: object) -> dict[str, str] | None:
     return area
 
 
+def slug_area_id(name: str) -> str:
+    folded = unicodedata.normalize("NFKC", name).lower()
+    folded = re.sub(r"[^a-z0-9]+", "_", folded).strip("_")
+    return folded[:80]
+
+
+def merge_session_area(client: object, settings) -> dict[str, str] | None:
+    """Client kiosk area wins; otherwise the add-on default_area / default_area_id."""
+    parsed = parse_client_area(client) or {}
+    default_name = str(getattr(settings, "default_area", "") or "").strip()
+    default_id = str(getattr(settings, "default_area_id", "") or "").strip()
+    name = parsed.get("name") or default_name
+    area_id = parsed.get("id") or ""
+    if not area_id and default_id:
+        if not parsed.get("name") or parsed["name"].casefold() == default_name.casefold():
+            area_id = default_id
+    if not area_id and name:
+        area_id = slug_area_id(name)
+    return parse_client_area({"name": name, "id": area_id})
+
+
 def with_area_instructions(base: str, area: dict[str, str] | None) -> str:
     """Tell Grok this satellite's room so bare 'the lights' stays local."""
     if not area:
@@ -124,17 +145,16 @@ def with_area_instructions(base: str, area: dict[str, str] | None) -> str:
         return base
     extra = (
         f"You are speaking from the {name} area of this home. "
-        "When the user does not name another room, control lights, music, "
-        "and other room-scoped devices in that area"
+        "When the user does not name another room, you MUST control lights, music, "
+        "and other room-scoped devices in that area. Do not ask which lights or which room."
     )
     area_id = area.get("id")
     if area_id:
         extra += (
-            f" (Home Assistant area `{name}`, area_id `{area_id}`). "
-            "Pass that area on tool calls."
+            f" Pass Home Assistant area `{name}` and area_id `{area_id}` on those tool calls."
         )
     else:
-        extra += f" (named {name}). Pass that area on tool calls."
+        extra += f" Pass Home Assistant area `{name}` on those tool calls."
     extra += " If they name a different room, use that room instead."
     root = (base or "").rstrip()
     return f"{root}\n\n{extra}" if root else extra

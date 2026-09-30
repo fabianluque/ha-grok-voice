@@ -42,6 +42,8 @@ class Settings:
     allowlist: frozenset[str]
     idle_timeout_seconds: int
     ha_api_url: str
+    default_area: str = "Attic"
+    default_area_id: str = ""
     ingress_port: int = 8099
     debug_port: int = 8080
     mcp_token_source: str = "missing"
@@ -120,5 +122,7 @@ def load_settings(
         allowlist=parse_allowlist(options.get("mcp_tool_allowlist")),
         idle_timeout_seconds=int(options.get("idle_timeout_seconds") or 20),
         ha_api_url=HOME_ASSISTANT_API_URL,
+        default_area=str(options.get("default_area") or "Attic").strip() or "Attic",
+        default_area_id=str(options.get("default_area_id") or "").strip(),
         mcp_token_source=mcp_token_source,
     )
