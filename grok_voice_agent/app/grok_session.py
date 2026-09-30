@@ -121,6 +121,18 @@ _EXACT_CLOSERS = frozenset(
     }
 )
 _CLOSERS = _SUFFIX_CLOSERS | _EXACT_CLOSERS
+# Extra quiet time after Grok asks a follow-up so idle does not fire while
+# TTS is still draining or the user is thinking of an answer.
+FOLLOWUP_IDLE_GRACE_SECONDS = 15
+_FOLLOWUP_PHRASES = (
+    "do you want",
+    "would you like",
+    "want me to",
+    "anything else",
+    "need anything",
+    "shall i",
+    "should i",
+)
 
 
 def normalize_utterance(text: str) -> str:
@@ -153,6 +165,24 @@ def is_closing_utterance(text: str | None) -> bool:
     if normalized in _CLOSERS:
         return True
     return any(normalized.endswith(f" {closer}") for closer in _SUFFIX_CLOSERS)
+
+
+def is_open_followup(text: str | None) -> bool:
+    """True when the assistant turn is still waiting for an answer.
+
+    A question mark, a sentence-final ``Want …`` (ASR often drops ``?``),
+    or a short ``want …?`` / ``anything else`` pattern. Home-command acks
+    like ``Lights on.`` do not match.
+    """
+    if not text or not str(text).strip():
+        return False
+    raw = str(text).strip()
+    if "?" in raw:
+        return True
+    if re.search(r"(?:^|[.!]+\s+)want\b", raw, flags=re.IGNORECASE):
+        return True
+    normalized = normalize_utterance(raw)
+    return any(phrase in normalized for phrase in _FOLLOWUP_PHRASES)
 
 
 def parse_client_area(value: object) -> dict[str, str] | None:
@@ -258,7 +288,8 @@ END_SESSION_TOOL = {
         "media action (lights, garage, lock, climate, cover, play/pause/volume) "
         "that already succeeded and needs no follow-up. Do not call after sports, "
         "news, events, history, or general Q&A — keep listening and ask a brief "
-        "follow-up instead. Do not call during a multi-step task, while asking a "
+        "follow-up instead. Never call this in the same turn as a follow-up "
+        "question. Do not call during a multi-step task, while asking a "
         "clarifying question, or when the user is listing several requests."
     ),
     "parameters": {
@@ -377,9 +408,12 @@ def with_session_end_instructions(base: str) -> str:
         "locks, climate, covers, play/pause/volume on a house speaker) and you "
         "are not asking a question, reason=command. Speak a very short ack first. "
         "Never call end_session after sports, news, events, history, calendars, "
-        "lists, trivia, or other conversation. For those, answer and ask one "
-        "short follow-up so you keep listening. Do not hang up mid multi-step "
-        "task or while waiting for a clarifying answer."
+        "lists, trivia, or other conversation — not even with reason=dismiss. "
+        "For those, answer and ask one short follow-up so you keep listening. "
+        "Never call end_session in the same turn as a follow-up question. "
+        "Never hang up until the user answers that question or goes silent. "
+        "Do not hang up mid multi-step task or while waiting for a clarifying "
+        "answer."
     )
     root = (base or "").rstrip()
     return f"{root}\n\n{extra}" if root else extra
@@ -522,8 +556,10 @@ class GrokBridge:
         self.end_after_response = False
         self.end_session_forget = False
         self.home_control_this_turn = False
+        self.closing_phrase_this_turn = False
         self._pending_end_reason: str | None = None
         self._assistant_partial = ""
+        self._assistant_turn = ""
         self._user_partial = ""
 
     def client_audio(self, pcm: bytes) -> dict:
@@ -553,9 +589,14 @@ class GrokBridge:
             self._commit_end_session_if_allowed()
             ending = self.end_after_response
             output = {"ok": True, "ending": ending, "reason": reason}
-            if reason == "command" and not ending:
+            if not ending:
                 output["keep_open"] = True
-                output["error"] = "home_control_required"
+                if self.assistant_asked_followup():
+                    output["error"] = "open_followup"
+                elif reason == "command":
+                    output["error"] = "home_control_required"
+                else:
+                    output["error"] = "closing_phrase_required"
             return {
                 "type": "conversation.item.create",
                 "item": {
@@ -585,31 +626,90 @@ class GrokBridge:
         self._commit_end_session_if_allowed()
         return {"type": "response.create"}
 
+    def note_closing_phrase(self) -> None:
+        """User said a goodbye phrase; hang up after the ack unless Grok asks a question."""
+        self.closing_phrase_this_turn = True
+        self._pending_end_reason = "dismiss"
+        self.end_session_forget = True
+        self._commit_end_session_if_allowed()
+
+    def assistant_asked_followup(self) -> bool:
+        return is_open_followup(self._assistant_turn or self._assistant_partial)
+
+    def idle_timeout_seconds(self, base: float) -> float:
+        """Quiet-time hang-up. Follow-up questions get extra time to hear and answer."""
+        timeout = float(base)
+        if self.assistant_asked_followup():
+            return timeout + FOLLOWUP_IDLE_GRACE_SECONDS
+        return timeout
+
+    def _record_assistant_text(self, text: str) -> None:
+        piece = str(text or "").strip()
+        if not piece:
+            return
+        current = (self._assistant_turn or "").strip()
+        if not current:
+            self._assistant_turn = piece
+            return
+        if piece.startswith(current) or current.startswith(piece):
+            self._assistant_turn = piece if len(piece) >= len(current) else current
+            return
+        if piece in current:
+            return
+        self._assistant_turn = f"{current} {piece}"
+
+    def _remember_client_transcript(self, payload: dict[str, Any]) -> None:
+        if payload.get("role") == "assistant" and payload.get("text"):
+            self._record_assistant_text(str(payload["text"]))
+
+    def _abort_end_session(self) -> None:
+        self.end_after_response = False
+        self._pending_end_reason = None
+
     def _commit_end_session_if_allowed(self) -> None:
         reason = self._pending_end_reason
         if not reason:
             return
-        if reason == "dismiss" or self.home_control_this_turn:
+        if self.assistant_asked_followup():
+            return
+        if reason == "dismiss" and self.closing_phrase_this_turn:
             self.end_after_response = True
-            self.end_session_forget = reason == "dismiss"
+            self.end_session_forget = True
+            return
+        if reason == "command" and self.home_control_this_turn:
+            self.end_after_response = True
+            self.end_session_forget = False
 
     def consume_end_session(self) -> bool:
         """True once tools are done and the ack turn (if any) has finished generating.
 
         Command hang-up is allowed only after a successful home-control tool this
-        turn. Dismiss / goodbye still hangs up. The browser then drains queued
-        playback before closing the duplex.
+        turn and only when the ack is not a follow-up question. Dismiss hangs up
+        only after a detected goodbye phrase, not because the model asked to
+        leave after Q&A. The browser then drains queued playback before closing
+        the duplex.
         """
         self._commit_end_session_if_allowed()
+        if self.assistant_asked_followup():
+            if self.end_after_response or self._pending_end_reason:
+                log.info("voice end_session skipped open_followup")
+            self._abort_end_session()
+            return False
         if not self.end_after_response or self.awaiting_tool_followup:
-            if self._pending_end_reason == "command" and not self.awaiting_tool_followup:
-                log.info("voice end_session skipped no_home_control")
+            if self._pending_end_reason and not self.awaiting_tool_followup:
+                if self._pending_end_reason == "command":
+                    log.info("voice end_session skipped no_home_control")
+                else:
+                    log.info("voice end_session skipped dismiss_without_closer")
                 self._pending_end_reason = None
             return False
         if not self.end_session_forget and not self.home_control_this_turn:
             log.info("voice end_session skipped no_home_control")
-            self.end_after_response = False
-            self._pending_end_reason = None
+            self._abort_end_session()
+            return False
+        if self.end_session_forget and not self.closing_phrase_this_turn:
+            log.info("voice end_session skipped dismiss_without_closer")
+            self._abort_end_session()
             return False
         self.end_after_response = False
         self._pending_end_reason = None
@@ -625,6 +725,8 @@ class GrokBridge:
             if not self.end_after_response:
                 self.home_control_this_turn = False
                 self._pending_end_reason = None
+                self.closing_phrase_this_turn = False
+                self._assistant_turn = ""
             return [{"type": "speech_started"}]
         if event_type == "input_audio_buffer.speech_stopped":
             return [{"type": "speech_stopped"}]
@@ -637,21 +739,23 @@ class GrokBridge:
             return [{"type": "binary", "pcm": base64.b64decode(event["delta"])}]
         partial = _stream_transcript(self, event_type, event)
         if partial:
+            self._remember_client_transcript(partial)
             return [partial]
         role = TRANSCRIPT_ROLES.get(event_type or "")
         if role:
             text = event.get("transcript") or event.get("delta") or ""
             if text:
-                return [
-                    _transcript_payload(
-                        role,
-                        str(text),
-                        event_type in FINAL_TRANSCRIPT_TYPES,
-                        event,
-                    )
-                ]
+                payload = _transcript_payload(
+                    role,
+                    str(text),
+                    event_type in FINAL_TRANSCRIPT_TYPES,
+                    event,
+                )
+                self._remember_client_transcript(payload)
+                return [payload]
         item_transcript = _message_item_transcript(event)
         if item_transcript:
+            self._remember_client_transcript(item_transcript)
             return [item_transcript]
         return []
 

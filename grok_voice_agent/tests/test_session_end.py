@@ -889,6 +889,121 @@ def test_end_session_tool_hangs_up_after_the_ack_turn():
     assert any(item.get("type") == "response.create" for item in (json.loads(x) for x in grok_sent if isinstance(x, str) and x.startswith("{")))
 
 
+def test_end_session_dismiss_after_qna_followup_stays_open():
+    """Fabian 0.2.15: Grok asked a follow-up then the duplex still hung up."""
+
+    async def run():
+        client = QueueSocket()
+        grok = QueueSocket()
+        await client.incoming.put(json.dumps({"type": "auth", "token": "good-token"}))
+        task = asyncio.create_task(_run_session(client, grok, idle=5))
+        await asyncio.sleep(0.03)
+        await grok.incoming.put(
+            json.dumps(
+                {
+                    "type": "conversation.item.input_audio_transcription.completed",
+                    "transcript": "who won the mets game",
+                }
+            )
+        )
+        await grok.incoming.put(
+            json.dumps(
+                {
+                    "type": "response.function_call_arguments.done",
+                    "name": "end_session",
+                    "call_id": "e1",
+                    "arguments": json.dumps({"reason": "dismiss"}),
+                }
+            )
+        )
+        await grok.incoming.put(json.dumps({"type": "response.done"}))
+        await asyncio.sleep(0.03)
+        await grok.incoming.put(
+            json.dumps(
+                {
+                    "type": "response.output_audio_transcript.done",
+                    "transcript": "The Mets won 4-2. Want last night's highlights?",
+                }
+            )
+        )
+        await grok.incoming.put(json.dumps({"type": "response.done"}))
+        await asyncio.sleep(0.08)
+        assert _end_reason(client.sent) is None
+        await client.incoming.put(json.dumps({"type": "stop", "reason": "stop"}))
+        await asyncio.wait_for(task, timeout=2)
+        return client.sent
+
+    sent = asyncio.run(run())
+    assert _end_reason(sent) == "stop"
+
+
+def test_closing_phrase_then_assistant_followup_stays_open():
+    async def run():
+        client = QueueSocket()
+        grok = QueueSocket()
+        await client.incoming.put(json.dumps({"type": "auth", "token": "good-token"}))
+        task = asyncio.create_task(_run_session(client, grok, idle=5))
+        await asyncio.sleep(0.03)
+        await grok.incoming.put(
+            json.dumps(
+                {
+                    "type": "conversation.item.input_audio_transcription.completed",
+                    "transcript": "thank you",
+                }
+            )
+        )
+        await grok.incoming.put(
+            json.dumps(
+                {
+                    "type": "response.output_audio_transcript.done",
+                    "transcript": "You're welcome. Anything else?",
+                }
+            )
+        )
+        await grok.incoming.put(json.dumps({"type": "response.done"}))
+        await asyncio.sleep(0.05)
+        assert _end_reason(client.sent) is None
+        await client.incoming.put(json.dumps({"type": "stop", "reason": "stop"}))
+        await asyncio.wait_for(task, timeout=2)
+        return client.sent
+
+    sent = asyncio.run(run())
+    assert _end_reason(sent) == "stop"
+
+
+def test_followup_question_extends_idle_then_still_ends():
+    from app import grok_session
+
+    previous = grok_session.FOLLOWUP_IDLE_GRACE_SECONDS
+    grok_session.FOLLOWUP_IDLE_GRACE_SECONDS = 0.08
+
+    async def run():
+        client = QueueSocket()
+        grok = QueueSocket()
+        await client.incoming.put(json.dumps({"type": "auth", "token": "good-token"}))
+        task = asyncio.create_task(_run_session(client, grok, idle=0.12))
+        await asyncio.sleep(0.03)
+        await grok.incoming.put(
+            json.dumps(
+                {
+                    "type": "response.output_audio_transcript.done",
+                    "transcript": "The Mets won 4-2. Want last night's highlights?",
+                }
+            )
+        )
+        await grok.incoming.put(json.dumps({"type": "response.done"}))
+        await asyncio.sleep(0.16)
+        assert _end_reason(client.sent) is None
+        await asyncio.wait_for(task, timeout=2)
+        return client.sent
+
+    try:
+        sent = asyncio.run(run())
+    finally:
+        grok_session.FOLLOWUP_IDLE_GRACE_SECONDS = previous
+    assert _end_reason(sent) == "idle"
+
+
 def test_end_session_command_without_home_control_stays_open():
     async def run():
         client = QueueSocket()

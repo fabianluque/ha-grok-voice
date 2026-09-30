@@ -79,6 +79,7 @@ def test_home_location_and_memory_ttl_defaults(tmp_path, monkeypatch):
     settings = load_settings(_options(tmp_path, {}), env_dirs=())
     assert settings.home_location == ""
     assert settings.conversation_memory_ttl_seconds == 480
+    assert settings.idle_timeout_seconds == 30
 
 
 def test_missing_addon_token_stays_empty(tmp_path, monkeypatch):

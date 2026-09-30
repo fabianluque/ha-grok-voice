@@ -4,6 +4,10 @@ Versions match `grok_voice_agent/config.yaml`. GitHub Releases list the
 merged pull requests since the previous tag. Issues closed with `Fixes #N`
 in those pull requests are included below when GitHub reports them.
 
+## [0.2.16] - 2026-09-30
+
+- Keep the duplex open after sports/events/history/Q&A follow-ups. `end_session` no longer hangs up when Grok asked a question (or used `reason=dismiss` without a goodbye phrase). Home-command hang-up, tap-dismiss, goodbye phrases, TTS drain, and KS re-arm are unchanged. Idle still ends a truly silent session; a follow-up question adds 15s of grace so the user can hear the question and answer, and the default idle is 30s.
+
 ## [0.2.15] - 2026-09-30
 
 - Hang up the duplex only after a **home device / in-home media** action (lights, garage, locks, climate, covers, play/pause/volume) or an explicit goodbye / tap-dismiss. Sports, events, history, news, and other Q&A stay open: Grok is told to answer and ask a short follow-up, and `end_session` with `reason=command` is ignored unless a home-control tool succeeded this turn. Idle timeout, goodbye phrases, overlay tap, and TTS drain before hang-up are unchanged.

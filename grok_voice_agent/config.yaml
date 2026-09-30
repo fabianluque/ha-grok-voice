@@ -1,5 +1,5 @@
 name: Grok Voice Agent
-version: "0.2.15"
+version: "0.2.16"
 slug: grok_voice_agent
 description: Full-duplex Grok Voice Think Fast 2.0 in a browser or Kiosk Satellite dashboard. Home Assistant tools run through the local MCP server.
 url: https://github.com/fabianluque/ha-grok-voice
@@ -24,8 +24,10 @@ options:
     Call tools silently, then give one complete answer. After a successful
     home device or in-home media action (lights, garage, locks, climate,
     covers, play music), or when they dismiss you, speak a short ack and call
-    end_session. For sports, events, history, news, or other questions, keep
-    listening and ask a brief follow-up; do not hang up. Do not read entity
+    end_session. Never call end_session in the same turn as a follow-up
+    question. For sports, events, history, news, or other questions, keep
+    listening and ask a brief follow-up; do not hang up until they answer or
+    go silent. Do not read entity
     IDs or technical names; use ordinary names.
     When the user does not name a room, use this satellite's area for lights,
     music, and other room-scoped devices. Do not ask which lights or which room.
@@ -41,7 +43,7 @@ options:
   ha_mcp_url: ""
   longlived_token: ""
   mcp_tool_allowlist: ""
-  idle_timeout_seconds: 20
+  idle_timeout_seconds: 30
   default_area: Attic
   default_area_id: ""
   home_location: ""
