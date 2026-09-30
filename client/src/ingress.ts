@@ -86,11 +86,15 @@ export function authHandshake(options: {
   ingress: boolean;
   token: string;
   url?: string;
-}): { type: "auth"; via?: "ingress"; token?: string } {
+  area?: { id?: string; name?: string } | null;
+}): { type: "auth"; via?: "ingress"; token?: string; area?: { id?: string; name: string } } {
+  const areaName = options.area?.name?.trim();
+  const areaId = options.area?.id?.trim();
+  const area = areaName || areaId ? { name: areaName || areaId!, id: areaId || undefined } : undefined;
   if (authModeForUrl(options.url || "", options.ingress) === "ingress") {
-    return { type: "auth", via: "ingress" };
+    return area ? { type: "auth", via: "ingress", area } : { type: "auth", via: "ingress" };
   }
-  return { type: "auth", token: options.token };
+  return area ? { type: "auth", token: options.token, area } : { type: "auth", token: options.token };
 }
 
 export function shouldOfferTokenField(input: { pathname: string; authFailed: boolean }): boolean {

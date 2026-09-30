@@ -1,5 +1,6 @@
 import { isClosingUtterance } from "./end-phrase";
 import type { ServerMessage } from "./session";
+import { cancelTimeout, scheduleTimeout } from "./timers";
 
 export const DEFAULT_IDLE_MS = 20_000;
 
@@ -27,8 +28,8 @@ export class SessionEndWatch {
   constructor(options: SessionEndWatchOptions) {
     this.idleMs = options.idleMs ?? DEFAULT_IDLE_MS;
     this.onEnd = options.onEnd;
-    this.setTimer = options.setTimer ?? setTimeout;
-    this.clearTimer = options.clearTimer ?? clearTimeout;
+    this.setTimer = options.setTimer ?? scheduleTimeout;
+    this.clearTimer = options.clearTimer ?? cancelTimeout;
   }
 
   setIdleMs(idleMs: number): void {

@@ -123,3 +123,12 @@ def test_session_is_full_duplex_server_vad():
     assert session["audio"]["input"]["format"]["rate"] == 24000
     assert "interruptible" not in json.dumps(payload)
     assert {"type": "web_search"} in session["tools"]
+
+
+def test_session_instructions_include_client_area():
+    payload = build_session(_settings(), [], {"name": "Attic", "id": "attic"})
+    text = payload["session"]["instructions"]
+    assert "Attic" in text
+    assert "attic" in text
+    assert "lights" in text
+    assert "music" in text

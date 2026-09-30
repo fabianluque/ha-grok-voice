@@ -130,6 +130,50 @@ def test_user_speech_holds_idle_until_assistant_finishes():
     assert any('"type": "response_done"' in str(item) for item in sent)
 
 
+def test_trailing_thank_you_ends_the_session():
+    async def run():
+        client = QueueSocket()
+        grok = QueueSocket()
+        await client.incoming.put(json.dumps({"type": "auth", "token": "good-token"}))
+        task = asyncio.create_task(_run_session(client, grok, idle=5))
+        await asyncio.sleep(0.03)
+        await grok.incoming.put(
+            json.dumps(
+                {
+                    "type": "conversation.item.input_audio_transcription.completed",
+                    "transcript": "oh, that's great, thank you",
+                }
+            )
+        )
+        await asyncio.wait_for(task, timeout=2)
+        return client.sent
+
+    sent = asyncio.run(run())
+    assert _end_reason(sent) == "done"
+
+
+def test_mid_request_thank_you_does_not_end_the_session():
+    async def run():
+        client = QueueSocket()
+        grok = QueueSocket()
+        await client.incoming.put(json.dumps({"type": "auth", "token": "good-token"}))
+        task = asyncio.create_task(_run_session(client, grok, idle=0.2))
+        await asyncio.sleep(0.03)
+        await grok.incoming.put(
+            json.dumps(
+                {
+                    "type": "conversation.item.input_audio_transcription.completed",
+                    "transcript": "thank you for turning on the lights",
+                }
+            )
+        )
+        await asyncio.wait_for(task, timeout=2)
+        return client.sent
+
+    sent = asyncio.run(run())
+    assert _end_reason(sent) == "idle"
+
+
 def test_thank_you_ends_the_session():
     async def run():
         client = QueueSocket()
@@ -183,6 +227,29 @@ def test_partial_thank_you_does_not_end_the_session():
 
     sent = asyncio.run(run())
     assert _end_reason(sent) == "idle"
+
+
+def test_auth_area_is_written_into_session_instructions():
+    async def run():
+        client = QueueSocket()
+        grok = QueueSocket()
+        await client.incoming.put(
+            json.dumps(
+                {
+                    "type": "auth",
+                    "token": "good-token",
+                    "area": {"name": "Attic", "id": "attic"},
+                }
+            )
+        )
+        task = asyncio.create_task(_run_session(client, grok, idle=0.1))
+        await asyncio.wait_for(task, timeout=2)
+        return grok.sent
+
+    sent = asyncio.run(run())
+    update = next(json.loads(item) for item in sent if isinstance(item, str) and "session.update" in item)
+    assert "Attic" in update["session"]["instructions"]
+    assert "attic" in update["session"]["instructions"]
 
 
 def test_ready_includes_idle_timeout_seconds():

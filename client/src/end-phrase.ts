@@ -66,10 +66,28 @@ export function stripFillers(text: string): string {
   return words.filter((word) => word !== "grok").join(" ");
 }
 
-/** Completed user turns that mean the conversation is over. */
+/**
+ * Completed user turns that mean the conversation is over.
+ *
+ * Match the whole utterance, or a closer at the end after normalize
+ * ("oh, that's great, thank you"). A closer in the middle of a request
+ * ("thank you for turning on the lights") is not a hang-up.
+ */
 export function isClosingUtterance(text: string | undefined): boolean {
   if (!text || !text.trim()) {
     return false;
   }
-  return CLOSERS.has(stripFillers(normalizeUtterance(text)));
+  const normalized = stripFillers(normalizeUtterance(text));
+  if (!normalized) {
+    return false;
+  }
+  if (CLOSERS.has(normalized)) {
+    return true;
+  }
+  for (const closer of CLOSERS) {
+    if (normalized.endsWith(` ${closer}`)) {
+      return true;
+    }
+  }
+  return false;
 }

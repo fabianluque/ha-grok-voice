@@ -70,8 +70,17 @@ Leave Voice Satellite's wake word on. Kiosk Satellite only detects a wake word w
 4. Reload the attic kiosk.
 5. The tablet user must be able to open this add-on's ingress. An administrator can.
 
-The microphone stays open while Grok is speaking. Talking over a reply flushes playback in the browser. After wake, a small Listening / Speaking pill sits at the bottom of the dashboard and disappears when the session ends.
+The microphone stays open while Grok is speaking. Talking over a reply flushes playback in the browser. A later tool call or second TTS generation does **not** cut the sentence already playing; new audio waits until that reply finishes. After wake, a conversation overlay sits on the dashboard with Listening / Speaking and the user and Grok transcripts. It disappears when the session ends.
 
-Say **thank you**, **thanks**, **that's all**, **that's it**, **goodbye**, or **stop listening** (natural variants are fine) to hang up. The session also ends after `idle_timeout_seconds` of silence once Grok has finished and you are not mid-utterance. That timer uses xAI server VAD (`speech_started` / `speech_stopped` / `response.done`). xAI's `turn_detection.idle_timeout_ms` is not used — that option only triggers a proactive check-in, it does not close the session.
+Each kiosk session is scoped to **that tablet's Home Assistant area** so "turn on the lights" or "play music" targets this room, not the whole house. The inject reads, in order:
+
+1. Optional override on the page: `window.GROK_VOICE_AREA` (name) and `window.GROK_VOICE_AREA_ID` (slug), if you set them in the inject.
+2. Area fields on Kiosk Satellite `getDeviceInfo()` when the app exposes them (`area`, `area_name`, `area_id`, `assist_area`, …).
+3. The Home Assistant area assigned to this kiosk device (same device name as `getDeviceInfo().name`), including an `assist_satellite` entity area when that entity has its own area.
+4. If none of those are readable yet, **Attic** so this tablet still has a room default.
+
+A dining-room tablet with the same inject would resolve **Dining Room** from its own KS/HA area. Do not hardcode a room in the inject unless you are forcing an override.
+
+Say **thank you**, **thanks**, **that's all**, **that's it**, **goodbye**, or **stop listening** to hang up. A longer utterance that *ends* with one of those still hangs up (`oh, that's great, thank you`). The same words in the middle of a request (`thank you for turning on the lights`) do not. The session also ends after `idle_timeout_seconds` of silence once Grok has finished and you are not mid-utterance. That timer uses xAI server VAD (`speech_started` / `speech_stopped` / `response.done`). xAI's `turn_detection.idle_timeout_ms` is not used — that option only triggers a proactive check-in, it does not close the session.
 
 When the session ends, the inject stops the browser microphone, hides Assist chrome, and calls Kiosk Satellite `setWakeWordActive(true)` so on-device wake listening resumes. The next wake word starts a fresh duplex session.

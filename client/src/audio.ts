@@ -74,7 +74,11 @@ export function schedulePcm(
   nextTime.t = startAt + buffer.duration;
   return {
     stop() {
-      source.stop();
+      try {
+        source.stop();
+      } catch {
+        // Already finished or never started.
+      }
     },
   };
 }

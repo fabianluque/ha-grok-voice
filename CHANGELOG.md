@@ -4,6 +4,14 @@ Versions match `grok_voice_agent/config.yaml`. GitHub Releases list the
 merged pull requests since the previous tag. Issues closed with `Fixes #N`
 in those pull requests are included below when GitHub reports them.
 
+## [0.2.6] - 2026-09-30
+
+- Hang up when a completed utterance *ends* with a closer (`oh, that's great, thank you`), not only when the whole phrase is exactly `thank you` / `goodbye`. A closer in the middle of a request still does not end the session.
+- Do not replace mid-reply speech when a tool runs or a second TTS generation starts. New audio waits until the current sentence finishes unless the user barges in.
+- Show a conversation overlay on the attic kiosk during a duplex session (Listening / Speaking plus user and Grok transcripts). It hides when the session ends and wake is re-armed.
+- Scope lights, music, and other room commands to this kiosk's Home Assistant area (from KS `getDeviceInfo` or the HA device/assist area). Fall back to Attic only when that area is not readable yet. Optional inject override: `GROK_VOICE_AREA` / `GROK_VOICE_AREA_ID`.
+- Call `setTimeout` / `clearTimeout` as methods of `globalThis` so Chromium WebView no longer throws `Illegal invocation` about every 10s during a live session.
+
 ## [0.2.5] - 2026-09-30
 
 - Hang up the voice session on goodbye phrases or after `idle_timeout_seconds` of silence once Grok has finished speaking. The idle timer uses xAI server VAD (`speech_started` / `speech_stopped` / `response.done`) instead of raw microphone PCM, so a live duplex session no longer keeps the mic open forever. xAI `turn_detection.idle_timeout_ms` is not set; that option only starts a proactive check-in.

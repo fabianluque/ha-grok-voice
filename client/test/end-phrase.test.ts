@@ -15,6 +15,11 @@ describe("closing utterances", () => {
       "stop listening",
       "please stop listening",
       "thank you so much",
+      "oh, that's great, thank you",
+      "that's great, thanks",
+      "alright, goodbye",
+      "ok bye",
+      "that's all for now, thank you",
     ]) {
       expect(isClosingUtterance(text), text).toBe(true);
     }
@@ -26,6 +31,8 @@ describe("closing utterances", () => {
       "thanks, now turn off the kitchen",
       "stop listening to the radio",
       "that's all the lights in the attic",
+      "could you thank you later for me",
+      "don't stop listening until I say so",
       "",
       undefined,
     ]) {
