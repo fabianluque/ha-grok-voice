@@ -2,13 +2,16 @@ export interface Playable {
   stop(): void;
 }
 
-/** Schedules Grok audio and drops it the moment the user talks over a reply. */
+/**
+ * Schedules Grok audio. A later `response.created` (tool follow-up, a second
+ * TTS generation) must not cut the sentence already queued. Only user barge-in
+ * (`speech_started`) flushes playback.
+ */
 export class PlaybackQueue {
   private sources: Playable[] = [];
   private acceptDeltas = false;
 
   responseStarted(): void {
-    this.stopSources();
     this.acceptDeltas = true;
   }
 
@@ -27,7 +30,11 @@ export class PlaybackQueue {
 
   private stopSources(): void {
     for (const source of this.sources) {
-      source.stop();
+      try {
+        source.stop();
+      } catch {
+        // Buffer sources throw if they already finished.
+      }
     }
     this.sources = [];
   }

@@ -3,6 +3,36 @@ import { SessionEndWatch } from "../src/session-end";
 import { VoiceSession } from "../src/session";
 
 describe("session end watch", () => {
+  it("ends when a completed utterance ends with a closer", () => {
+    const onEnd = vi.fn();
+    const watch = new SessionEndWatch({ idleMs: 60_000, onEnd });
+    watch.handle({ type: "ready" });
+    expect(
+      watch.handle({
+        type: "transcript",
+        role: "user",
+        text: "oh, that's great, thank you",
+        final: true,
+      }),
+    ).toBe("done");
+    expect(onEnd).toHaveBeenCalledWith("done");
+  });
+
+  it("does not end when a closer is only in the middle of a request", () => {
+    const onEnd = vi.fn();
+    const watch = new SessionEndWatch({ idleMs: 60_000, onEnd });
+    watch.handle({ type: "ready" });
+    expect(
+      watch.handle({
+        type: "transcript",
+        role: "user",
+        text: "thank you for turning on the lights",
+        final: true,
+      }),
+    ).toBeNull();
+    expect(onEnd).not.toHaveBeenCalled();
+  });
+
   it("ends on a completed thank-you transcript", () => {
     const onEnd = vi.fn();
     const watch = new SessionEndWatch({ idleMs: 60_000, onEnd });

@@ -10,13 +10,14 @@ export function openSocket(
   token: string,
   session: VoiceSession,
   ingress = false,
+  area?: { id?: string; name: string },
 ): WebSocketLike {
   const socket = new WebSocket(url);
   const pending: Array<ArrayBuffer | string> = [];
   let open = false;
   socket.binaryType = "arraybuffer";
   socket.addEventListener("open", () => {
-    socket.send(JSON.stringify(authHandshake({ ingress, token, url })));
+    socket.send(JSON.stringify(authHandshake({ ingress, token, url, area })));
     open = true;
     for (const chunk of pending) {
       socket.send(chunk);
@@ -86,7 +87,8 @@ export interface BrowserSessionOptions {
   url: string;
   token: string;
   ingress?: boolean;
-  onTranscript?: (role: string, text: string) => void;
+  area?: { id?: string; name: string };
+  onTranscript?: (role: string, text: string, final?: boolean) => void;
   onServerText?: (message: ServerMessage) => void;
 }
 
@@ -102,7 +104,7 @@ export async function createBrowserSession(
   let closed = false;
   const session = new VoiceSession(
     (pcm) => schedulePcm(context, pcm, nextTime),
-    () => openSocket(options.url, options.token, session, options.ingress === true),
+    () => openSocket(options.url, options.token, session, options.ingress === true, options.area),
   );
   const originalFinish = session.finish.bind(session);
   const endWatch = new SessionEndWatch({
@@ -121,9 +123,11 @@ export async function createBrowserSession(
   const wrapped = session.handleServerText.bind(session);
   session.handleServerText = (message) => {
     if (message.type === "transcript" && message.text) {
-      options.onTranscript?.(message.role || "assistant", message.text);
+      options.onTranscript?.(message.role || "assistant", message.text, message.final !== false);
     }
-    if (message.type === "response_started" || message.type === "speech_started") {
+    // Only barge-in jumps the playback cursor. A tool follow-up
+    // `response_started` must append after audio already scheduled.
+    if (message.type === "speech_started") {
       nextTime.t = context.currentTime;
     }
     options.onServerText?.(message);

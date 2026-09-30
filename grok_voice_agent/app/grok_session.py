@@ -81,10 +81,83 @@ def strip_fillers(text: str) -> str:
 
 
 def is_closing_utterance(text: str | None) -> bool:
-    """True when a completed user turn is a goodbye / that's-all phrase."""
+    """True when a completed user turn is a goodbye / that's-all phrase.
+
+    Exact match after normalize, or a closer at the end of the utterance
+    (``oh, that's great, thank you``). A closer in the middle of a request
+    (``thank you for turning on the lights``) is not a hang-up.
+    """
     if not text or not str(text).strip():
         return False
-    return strip_fillers(normalize_utterance(text)) in _CLOSERS
+    normalized = strip_fillers(normalize_utterance(text))
+    if not normalized:
+        return False
+    if normalized in _CLOSERS:
+        return True
+    return any(normalized.endswith(f" {closer}") for closer in _CLOSERS)
+
+
+def parse_client_area(value: object) -> dict[str, str] | None:
+    """Optional area sent on the voice auth message."""
+    if not isinstance(value, dict):
+        return None
+    name = str(value.get("name") or "").strip()
+    area_id = str(value.get("id") or value.get("area_id") or "").strip()
+    if not name and not area_id:
+        return None
+    if len(name) > 80:
+        name = name[:80]
+    if len(area_id) > 80:
+        area_id = area_id[:80]
+    area: dict[str, str] = {"name": name or area_id}
+    if area_id:
+        area["id"] = area_id
+    return area
+
+
+def slug_area_id(name: str) -> str:
+    folded = unicodedata.normalize("NFKC", name).lower()
+    folded = re.sub(r"[^a-z0-9]+", "_", folded).strip("_")
+    return folded[:80]
+
+
+def merge_session_area(client: object, settings) -> dict[str, str] | None:
+    """Client kiosk area wins; otherwise the add-on default_area / default_area_id."""
+    parsed = parse_client_area(client) or {}
+    default_name = str(getattr(settings, "default_area", "") or "").strip()
+    default_id = str(getattr(settings, "default_area_id", "") or "").strip()
+    name = parsed.get("name") or default_name
+    area_id = parsed.get("id") or ""
+    if not area_id and default_id:
+        if not parsed.get("name") or parsed["name"].casefold() == default_name.casefold():
+            area_id = default_id
+    if not area_id and name:
+        area_id = slug_area_id(name)
+    return parse_client_area({"name": name, "id": area_id})
+
+
+def with_area_instructions(base: str, area: dict[str, str] | None) -> str:
+    """Tell Grok this satellite's room so bare 'the lights' stays local."""
+    if not area:
+        return base
+    name = area.get("name") or area.get("id") or ""
+    if not name:
+        return base
+    extra = (
+        f"You are speaking from the {name} area of this home. "
+        "When the user does not name another room, you MUST control lights, music, "
+        "and other room-scoped devices in that area. Do not ask which lights or which room."
+    )
+    area_id = area.get("id")
+    if area_id:
+        extra += (
+            f" Pass Home Assistant area `{name}` and area_id `{area_id}` on those tool calls."
+        )
+    else:
+        extra += f" Pass Home Assistant area `{name}` on those tool calls."
+    extra += " If they name a different room, use that room instead."
+    root = (base or "").rstrip()
+    return f"{root}\n\n{extra}" if root else extra
 
 
 class ConversationWatch:
@@ -144,7 +217,7 @@ def xai_realtime_error_log(event: dict) -> str | None:
     return f"xAI realtime error: {detail}"
 
 
-def build_session(settings, function_tools: list[dict]) -> dict:
+def build_session(settings, function_tools: list[dict], area: dict[str, str] | None = None) -> dict:
     tools: list[dict] = list(function_tools)
     if settings.enable_web_search:
         tools.append({"type": "web_search"})
@@ -154,7 +227,7 @@ def build_session(settings, function_tools: list[dict]) -> dict:
         "type": "session.update",
         "session": {
             "voice": settings.voice,
-            "instructions": settings.instructions,
+            "instructions": with_area_instructions(settings.instructions, area),
             "reasoning": {"effort": settings.reasoning_effort},
             # server_vad ends the user turn. Do not set idle_timeout_ms: xAI
             # treats that as a check-in, not a hang-up. Session end uses our

@@ -302,9 +302,17 @@ describe("Open Web UI session", () => {
       type: "auth",
       token: "long-lived",
     });
-    expect(authHandshake({ ingress: false, token: "long-lived", url: "ws://192.168.86.38:8080/" })).toEqual({
+    expect(
+      authHandshake({
+        ingress: false,
+        token: "long-lived",
+        url: "ws://192.168.86.38:8080/",
+        area: { name: "Attic", id: "attic" },
+      }),
+    ).toEqual({
       type: "auth",
       token: "long-lived",
+      area: { name: "Attic", id: "attic" },
     });
   });
 });

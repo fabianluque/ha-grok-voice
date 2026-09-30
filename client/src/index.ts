@@ -1,4 +1,5 @@
 import { createBrowserSession } from "./browser";
+import { describeArea, resolveKioskArea } from "./area";
 import {
   accessToken,
   authModeForUrl,
@@ -16,6 +17,8 @@ interface KioskWindow extends Window {
   kioskSatellite?: KioskApi;
   GROK_VOICE_URL?: string;
   GROK_VOICE_DEBUG_PORT?: number | string;
+  GROK_VOICE_AREA?: string;
+  GROK_VOICE_AREA_ID?: string;
 }
 
 function boot(): void {
@@ -56,12 +59,25 @@ function boot(): void {
       console.log(describeDuplexChoice({ authority: resolved.authority, host: hostLabel, authMode }));
       const token = accessToken(hass);
       console.log(`[Grok Voice] Opening duplex ${url} auth ${authMode}`);
+      const area = await resolveKioskArea({
+        kiosk,
+        hass: hass as NativeAssistHass,
+        explicit: {
+          area: (window as KioskWindow).GROK_VOICE_AREA,
+          areaId: (window as KioskWindow).GROK_VOICE_AREA_ID,
+        },
+      });
+      console.log(`[Grok Voice] Area ${describeArea(area)}`);
       const status = mountKioskStatus(document);
       try {
         const { session } = await createBrowserSession({
           url,
           token,
           ingress: authMode === "ingress",
+          area,
+          onTranscript: (role, text, final) => {
+            status.addMessage(role, text, final !== false);
+          },
           onServerText: (message) => {
             const next = voiceStatusFromMessage(message.type);
             if (next) {

@@ -17,6 +17,7 @@ from app.grok_session import (
     GrokBridge,
     build_session,
     is_closing_utterance,
+    merge_session_area,
     xai_realtime_error_log,
     xai_session_tools_log,
 )
@@ -123,9 +124,13 @@ async def handle_socket(websocket, settings, http, grok_connect=None) -> None:
         log.info("voice session authenticated via ingress")
     else:
         log.info("voice session authenticated")
+    area = merge_session_area(message.get("area"), settings)
+    if area:
+        log.info("voice area name=%s id=%s", area.get("name"), area.get("id") or "")
     gateway = ToolGateway(
         McpHttpClient(settings.ha_mcp_url, settings.mcp_token, http),
         settings.allowlist,
+        default_area=area,
     )
     try:
         listed = await gateway.mcp.list_tools()
@@ -135,7 +140,7 @@ async def handle_socket(websocket, settings, http, grok_connect=None) -> None:
     grok_tools = function_tools(listed, settings.allowlist)
     level, message = voice_tool_log(listed, grok_tools)
     getattr(log, level)(message)
-    await connection.grok.send(json.dumps(build_session(settings, grok_tools)))
+    await connection.grok.send(json.dumps(build_session(settings, grok_tools, area)))
     await websocket.send(
         json.dumps(
             {

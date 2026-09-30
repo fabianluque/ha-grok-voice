@@ -1,5 +1,6 @@
 import { cancelNativeAssist, resolveNativeCancelService, type NativeAssistHass } from "./native-assist";
 import type { VoiceSession } from "./session";
+import { cancelTimeout, scheduleTimeout } from "./timers";
 
 export const WAKE_EVENT = "kiosksatellite:wakeword";
 
@@ -17,7 +18,7 @@ export interface KioskApi {
   setWakeWordActive(active: boolean): Promise<boolean>;
   getWakeWordState?(): Promise<WakeWordState | null | undefined>;
   pipelineRun?(params: unknown): Promise<unknown>;
-  getDeviceInfo?(): Promise<{ name?: string } | null | undefined>;
+  getDeviceInfo?(): Promise<Record<string, unknown> | null | undefined>;
 }
 
 export interface WakeEventTarget {
@@ -269,7 +270,7 @@ export const MIC_RELEASE_MS = 150;
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => {
-    setTimeout(resolve, ms);
+    scheduleTimeout(resolve, ms);
   });
 }
 
@@ -409,13 +410,13 @@ function holdNativeWakeOff(kiosk: KioskApi): () => void {
       return;
     }
     void kiosk.setWakeWordActive(false).catch(() => undefined);
-    timer = setTimeout(poke, 200);
+    timer = scheduleTimeout(poke, 200);
   };
   poke();
   return () => {
     stopped = true;
     if (timer) {
-      clearTimeout(timer);
+      cancelTimeout(timer);
     }
   };
 }

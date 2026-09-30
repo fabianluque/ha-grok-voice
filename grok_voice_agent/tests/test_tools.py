@@ -5,7 +5,7 @@ import json
 
 from app.config import parse_allowlist
 from app.mcp_client import function_tools, grok_parameters, voice_tool_log
-from app.tools import ToolGateway
+from app.tools import ToolGateway, apply_default_area
 
 
 class FakeMcp:
@@ -15,6 +15,23 @@ class FakeMcp:
     async def call_tool(self, name, arguments):
         self.calls.append((name, arguments))
         return json.dumps({"speech": "The attic light is on."})
+
+
+def test_room_scoped_tool_gets_the_session_area_when_omitted():
+    mcp = FakeMcp()
+    area = {"name": "Attic", "id": "attic"}
+    gateway = ToolGateway(mcp, parse_allowlist(""), default_area=area)
+
+    async def run():
+        await gateway.execute("intent__HassTurnOn", {"name": "lights"})
+        await gateway.execute("intent__HassTurnOn", {"name": "kitchen lights", "area": "Kitchen"})
+        await gateway.execute("homeassistant__GetLiveContext", {})
+
+    asyncio.run(run())
+    assert mcp.calls[0] == ("intent__HassTurnOn", {"name": "lights", "area": "Attic", "area_id": "attic"})
+    assert mcp.calls[1] == ("intent__HassTurnOn", {"name": "kitchen lights", "area": "Kitchen"})
+    assert mcp.calls[2] == ("homeassistant__GetLiveContext", {})
+    assert apply_default_area("HassTurnOff", {}, area)["area"] == "Attic"
 
 
 def test_blank_allowlist_is_the_assist_control_set():

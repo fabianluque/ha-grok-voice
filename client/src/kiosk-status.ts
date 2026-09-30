@@ -1,27 +1,53 @@
 export type VoiceStatus = "listening" | "speaking";
 
-const STATUS_ID = "grok-voice-status";
-const STYLE_ID = "grok-voice-status-style";
+export interface OverlayMessage {
+  role: string;
+  text: string;
+  final: boolean;
+}
+
+const OVERLAY_ID = "grok-voice-overlay";
+const STYLE_ID = "grok-voice-overlay-style";
 
 const STYLE = `
-#grok-voice-status{
-  position:fixed;left:50%;bottom:28px;transform:translateX(-50%);
-  z-index:9999;display:flex;align-items:center;gap:8px;
-  padding:8px 14px;border-radius:999px;pointer-events:none;
-  background:rgba(17,19,24,.78);color:#f4f6fb;
-  font:600 14px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
-  letter-spacing:.01em;box-shadow:0 4px 20px rgba(0,0,0,.28);
-  backdrop-filter:blur(8px);
+#grok-voice-overlay{
+  position:fixed;left:50%;bottom:20px;transform:translateX(-50%);
+  z-index:10000;display:flex;flex-direction:column;gap:10px;
+  width:min(560px,calc(100vw - 28px));max-height:min(52vh,440px);
+  padding:14px 16px 16px;border-radius:20px;pointer-events:none;
+  background:rgba(17,19,24,.9);color:#f4f6fb;
+  font:16px/1.35 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  box-shadow:0 10px 40px rgba(0,0,0,.38);
+  backdrop-filter:blur(12px);
 }
-#grok-voice-status[data-status="speaking"]{color:#c9ddff}
-#grok-voice-status .dot{
+#grok-voice-overlay .header{
+  display:flex;align-items:center;gap:8px;flex-shrink:0;
+}
+#grok-voice-overlay .dot{
   width:8px;height:8px;border-radius:50%;background:#18bc9c;
   box-shadow:0 0 0 0 rgba(24,188,156,.45);
   animation:grok-voice-pulse 1.6s ease-out infinite;
 }
-#grok-voice-status[data-status="speaking"] .dot{
+#grok-voice-overlay[data-status="speaking"] .dot{
   background:#5b9dff;box-shadow:0 0 0 0 rgba(91,157,255,.45);
 }
+#grok-voice-overlay .status{
+  font-weight:700;letter-spacing:.01em;
+}
+#grok-voice-overlay[data-status="speaking"] .status{color:#c9ddff}
+#grok-voice-overlay .brand{
+  margin-left:auto;color:#9aa3b5;font-size:13px;font-weight:600;
+}
+#grok-voice-overlay .messages{
+  overflow:auto;min-height:4.5rem;max-height:min(40vh,340px);
+  display:flex;flex-direction:column;gap:8px;
+}
+#grok-voice-overlay .messages:empty{display:none}
+#grok-voice-overlay .msg{margin:0;white-space:pre-wrap;word-break:break-word}
+#grok-voice-overlay .msg[data-role="user"]{color:#d7deea}
+#grok-voice-overlay .msg[data-role="assistant"]{color:#7dffcf}
+#grok-voice-overlay .who{font-weight:700;margin-right:.35em;color:#9aa3b5}
+#grok-voice-overlay .msg[data-role="assistant"] .who{color:#18bc9c}
 @keyframes grok-voice-pulse{
   0%{box-shadow:0 0 0 0 currentColor;opacity:1}
   70%{box-shadow:0 0 0 8px transparent;opacity:.85}
@@ -48,40 +74,97 @@ export function statusLabel(status: VoiceStatus): string {
   return status === "speaking" ? "Speaking" : "Listening";
 }
 
-export interface KioskStatus {
+export function speakerLabel(role: string): string {
+  return role === "user" ? "You" : "Grok";
+}
+
+/** Update the in-progress line for a role, otherwise append a new bubble. */
+export function upsertTranscript(
+  messages: OverlayMessage[],
+  role: string,
+  text: string,
+  final: boolean,
+): OverlayMessage[] {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return messages;
+  }
+  const last = messages[messages.length - 1];
+  if (last && last.role === role && !last.final) {
+    last.text = trimmed;
+    last.final = final;
+    return messages;
+  }
+  messages.push({ role, text: trimmed, final });
+  return messages;
+}
+
+export interface KioskOverlay {
   set(status: VoiceStatus): void;
+  addMessage(role: string, text: string, final?: boolean): void;
   remove(): void;
 }
 
-export function mountKioskStatus(doc: Document): KioskStatus {
+export function mountKioskStatus(doc: Document): KioskOverlay {
   if (!doc.getElementById(STYLE_ID) && (doc.head || doc.documentElement)) {
     const style = doc.createElement("style");
     style.id = STYLE_ID;
     style.textContent = STYLE;
     (doc.head || doc.documentElement).appendChild(style);
   }
-  let root = doc.getElementById(STATUS_ID);
-  if (!root) {
-    root = doc.createElement("div");
-    root.id = STATUS_ID;
-    root.setAttribute("role", "status");
-    root.setAttribute("aria-live", "polite");
-    const dot = doc.createElement("span");
-    dot.className = "dot";
-    const label = doc.createElement("span");
-    label.className = "label";
-    root.appendChild(dot);
-    root.appendChild(label);
-    doc.body.appendChild(root);
-  }
-  const labelEl = root.querySelector(".label") ?? root;
+  doc.getElementById(OVERLAY_ID)?.remove();
+  doc.getElementById("grok-voice-status")?.remove();
+  const root = doc.createElement("div");
+  root.id = OVERLAY_ID;
+  root.setAttribute("role", "status");
+  root.setAttribute("aria-live", "polite");
+  const header = doc.createElement("div");
+  header.className = "header";
+  const dot = doc.createElement("span");
+  dot.className = "dot";
+  const statusEl = doc.createElement("span");
+  statusEl.className = "status";
+  const brand = doc.createElement("span");
+  brand.className = "brand";
+  brand.textContent = "Grok";
+  header.appendChild(dot);
+  header.appendChild(statusEl);
+  header.appendChild(brand);
+  const log = doc.createElement("div");
+  log.className = "messages";
+  root.appendChild(header);
+  root.appendChild(log);
+  doc.body.appendChild(root);
+
+  const messages: OverlayMessage[] = [];
+
+  const paintLog = () => {
+    log.textContent = "";
+    for (const message of messages) {
+      const line = doc.createElement("p");
+      line.className = "msg";
+      line.dataset.role = message.role === "user" ? "user" : "assistant";
+      const who = doc.createElement("span");
+      who.className = "who";
+      who.textContent = `${speakerLabel(message.role)}:`;
+      line.appendChild(who);
+      line.appendChild(doc.createTextNode(` ${message.text}`));
+      log.appendChild(line);
+    }
+    log.scrollTop = log.scrollHeight;
+  };
+
   const set = (status: VoiceStatus) => {
     root.dataset.status = status;
-    labelEl.textContent = statusLabel(status);
+    statusEl.textContent = statusLabel(status);
   };
   set("listening");
   return {
     set,
+    addMessage(role: string, text: string, final = true) {
+      upsertTranscript(messages, role, text, final);
+      paintLog();
+    },
     remove() {
       root.remove();
     },

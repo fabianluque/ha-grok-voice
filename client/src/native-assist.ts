@@ -45,12 +45,14 @@ export interface HassDeviceRecord {
   id?: string;
   name?: string | null;
   name_by_user?: string | null;
+  area_id?: string | null;
 }
 
 export interface HassEntityRecord {
   entity_id?: string;
   device_id?: string | null;
   platform?: string;
+  area_id?: string | null;
 }
 
 export interface NativeAssistHass {
