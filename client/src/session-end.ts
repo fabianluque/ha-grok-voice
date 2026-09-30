@@ -18,11 +18,13 @@ export interface SessionEndWatchOptions {
 }
 
 /**
- * Hang up after a goodbye phrase, or after configured silence once the
- * assistant has finished and the user is not mid-utterance.
+ * Hang up after a goodbye / thank-you phrase, or after configured silence
+ * once the assistant has finished and the user is not mid-utterance.
  *
- * A closer does not hang up until Grok's ack turn has finished generating
- * (`response_done`). Playback drain happens in `VoiceSession.finish`.
+ * A closer waits for Grok's ack turn (`response_done`) then hangs up even
+ * if that ack asks a soft "Anything else?". Overlay tap-dismiss calls
+ * `VoiceSession.finish` directly and is not gated here. Playback drain
+ * happens in `VoiceSession.finish`.
  */
 export class SessionEndWatch {
   userSpeaking = false;
@@ -81,20 +83,15 @@ export class SessionEndWatch {
     }
     if (message.type === "transcript" && message.role === "assistant" && message.text) {
       this.assistantText = message.text;
-      if (isOpenFollowup(message.text) && this.pendingDone) {
-        this.pendingDone = false;
-        this.arm();
-      }
       return null;
     }
     if (message.type === "response_done") {
       this.assistantBusy = false;
-      if (this.pendingDone && !isOpenFollowup(this.assistantText)) {
+      if (this.pendingDone) {
         this.dispose();
         this.onEnd("done");
         return "done";
       }
-      this.pendingDone = false;
       this.arm();
       return null;
     }

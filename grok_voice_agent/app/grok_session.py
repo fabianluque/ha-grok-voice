@@ -283,14 +283,15 @@ END_SESSION_TOOL = {
     "description": (
         "End this voice session and return the tablet to wake-word listening. "
         "Call after a brief spoken acknowledgment when the user dismisses you "
-        "('you can go', 'you can go now', 'that's all', 'thanks I'm done', "
-        "'never mind', 'goodbye') or after a successful home device or in-home "
-        "media action (lights, garage, lock, climate, cover, play/pause/volume) "
-        "that already succeeded and needs no follow-up. Do not call after sports, "
-        "news, events, history, or general Q&A — keep listening and ask a brief "
-        "follow-up instead. Never call this in the same turn as a follow-up "
-        "question. Do not call during a multi-step task, while asking a "
-        "clarifying question, or when the user is listing several requests."
+        "('thank you', 'thanks', 'that's all', 'you can go', 'you can go now', "
+        "'thanks I'm done', 'never mind', 'goodbye') or after a successful home "
+        "device or in-home media action (lights, garage, lock, climate, cover, "
+        "play/pause/volume) that already succeeded and needs no follow-up. Do "
+        "not call after sports, news, events, history, or general Q&A — keep "
+        "listening and ask a brief follow-up instead. After a goodbye or thank "
+        "you, do not ask a follow-up. Never call this in the same turn as a "
+        "follow-up question. Do not call during a multi-step task, while asking "
+        "a clarifying question, or when the user is listing several requests."
     ),
     "parameters": {
         "type": "object",
@@ -403,17 +404,18 @@ def tool_output_failed(output: str) -> bool:
 def with_session_end_instructions(base: str) -> str:
     extra = (
         "Call end_session only in these cases: (1) the user dismissed you "
-        "(goodbye, that's all, you can go), reason=dismiss; or (2) you just "
-        "successfully ran a home device or in-home media action (lights, garage, "
-        "locks, climate, covers, play/pause/volume on a house speaker) and you "
-        "are not asking a question, reason=command. Speak a very short ack first. "
-        "Never call end_session after sports, news, events, history, calendars, "
-        "lists, trivia, or other conversation — not even with reason=dismiss. "
-        "For those, answer and ask one short follow-up so you keep listening. "
-        "Never call end_session in the same turn as a follow-up question. "
-        "Never hang up until the user answers that question or goes silent. "
-        "Do not hang up mid multi-step task or while waiting for a clarifying "
-        "answer."
+        "(goodbye, thank you, thanks, that's all, you can go), reason=dismiss; "
+        "or (2) you just successfully ran a home device or in-home media action "
+        "(lights, garage, locks, climate, covers, play/pause/volume on a house "
+        "speaker) and you are not asking a question, reason=command. Speak a "
+        "very short ack first. After thank you or goodbye, do not ask "
+        "'anything else' — just ack and hang up. Never call end_session after "
+        "sports, news, events, history, calendars, lists, trivia, or other "
+        "conversation — not even with reason=dismiss. For those, answer and ask "
+        "one short follow-up so you keep listening. Never call end_session in "
+        "the same turn as a follow-up question. Never hang up until the user "
+        "answers that question, says goodbye, or goes silent. Do not hang up "
+        "mid multi-step task or while waiting for a clarifying answer."
     )
     root = (base or "").rstrip()
     return f"{root}\n\n{extra}" if root else extra
@@ -628,7 +630,11 @@ class GrokBridge:
         return {"type": "response.create"}
 
     def note_closing_phrase(self) -> None:
-        """User said a goodbye phrase; hang up after the ack unless Grok asks a question."""
+        """User said goodbye / thank you; hang up after the ack.
+
+        A soft question in Grok's ack ('Anything else?') does not keep the
+        session open. Overlay tap-dismiss is a separate client hang-up path.
+        """
         self.closing_phrase_this_turn = True
         self._pending_end_reason = "dismiss"
         self.end_session_forget = True
@@ -636,6 +642,10 @@ class GrokBridge:
 
     def assistant_asked_followup(self) -> bool:
         return is_open_followup(self._assistant_turn or self._assistant_partial)
+
+    def has_assistant_turn(self) -> bool:
+        """True when this turn already has spoken/streamed assistant text."""
+        return bool((self._assistant_turn or self._assistant_partial).strip())
 
     def idle_timeout_seconds(self, base: float) -> float:
         """Quiet-time hang-up. Follow-up questions get extra time to hear and answer."""
@@ -671,11 +681,14 @@ class GrokBridge:
         reason = self._pending_end_reason
         if not reason:
             return
-        if self.assistant_asked_followup():
-            return
+        # A detected goodbye / thank-you always arms hang-up, even when the
+        # ack contains a soft "Anything else?". Q&A follow-ups without a
+        # closer still refuse dismiss below.
         if reason == "dismiss" and self.closing_phrase_this_turn:
             self.end_after_response = True
             self.end_session_forget = True
+            return
+        if self.assistant_asked_followup():
             return
         if reason == "command" and self.home_control_this_turn:
             self.end_after_response = True
@@ -686,12 +699,13 @@ class GrokBridge:
 
         Command hang-up is allowed only after a successful home-control tool this
         turn and only when the ack is not a follow-up question. Dismiss hangs up
-        only after a detected goodbye phrase, not because the model asked to
-        leave after Q&A. The browser then drains queued playback before closing
-        the duplex.
+        after a detected goodbye / thank-you even if Grok's ack is a soft
+        question. ``reason=dismiss`` without a closer is ignored so Q&A
+        follow-ups stay open. The browser then drains queued playback before
+        closing the duplex.
         """
         self._commit_end_session_if_allowed()
-        if self.assistant_asked_followup():
+        if self.assistant_asked_followup() and not self.closing_phrase_this_turn:
             if self.end_after_response or self._pending_end_reason:
                 log.info("voice end_session skipped open_followup")
             self._abort_end_session()

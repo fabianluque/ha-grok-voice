@@ -164,7 +164,7 @@ describe("kiosk status pill", () => {
     expect(isOverlayTap(null, { x: 10, y: 10, t: 0 })).toBe(false);
   });
 
-  it("dismisses the overlay on a tap", () => {
+  it("dismisses the overlay on a tap, including during a follow-up", () => {
     const listeners: Record<string, Array<(event: PointerEvent) => void>> = {};
     const root = {
       addEventListener(type: string, listener: (event: PointerEvent) => void) {

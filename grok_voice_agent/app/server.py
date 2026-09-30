@@ -317,10 +317,18 @@ async def handle_socket(websocket, settings, http, grok_connect=None, memory=Non
                     and is_closing_utterance(str(client_event.get("text") or ""))
                 ):
                     # Wait for the ack turn (same as end_session) so Grok can
-                    # finish speaking before the duplex closes. Forget only if
-                    # consume_end_session actually hangs up (a follow-up question
-                    # keeps the session open).
+                    # finish speaking before the duplex closes. A user goodbye
+                    # hangs up even if the ack asks a soft question. If ASR
+                    # completes after that ack is already done, hang up now
+                    # instead of waiting for another response.done.
                     bridge.note_closing_phrase()
+                    if (
+                        bridge.has_assistant_turn()
+                        and not watch.assistant_busy
+                        and not bridge.awaiting_tool_followup
+                    ):
+                        if bridge.consume_end_session():
+                            request_end("done", forget=bridge.end_session_forget)
 
     async def watch_idle() -> None:
         while not idle.is_set():
