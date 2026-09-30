@@ -4,6 +4,10 @@ Versions match `grok_voice_agent/config.yaml`. GitHub Releases list the
 merged pull requests since the previous tag. Issues closed with `Fixes #N`
 in those pull requests are included below when GitHub reports them.
 
+## [0.2.8] - 2026-09-30
+
+- Serve the kiosk IIFE from the add-on at a stable URL (`http://<HA-LAN>:8080/grok-voice.js`, same port as duplex). The attic Kiosk Satellite inject is a one-time bootstrap; updating the add-on refreshes the client without pasting the full script into Remote Admin. Dining-room dashboards that never load the bootstrap stay untouched.
+
 ## [0.2.7] - 2026-09-30
 
 - Restore snappy listen-start on the attic kiosk inject. 0.2.6 awaited Home Assistant device/entity/area registry lists (and `getDeviceInfo`) on every wake before `getUserMedia` and the duplex socket. The inject now prefetches the area at boot and sends the cached/explicit/Attic fallback on auth immediately. Registry lookups run in parallel in the background. The duplex WebSocket opens while the mic is claimed.

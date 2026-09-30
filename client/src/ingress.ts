@@ -119,6 +119,11 @@ export const VOICE_DEBUG_PORT = 8080;
 
 export const LAN_VOICE_DEBUG_URL = `ws://${LAN_HA_FALLBACK_HOST}:${VOICE_DEBUG_PORT}/`;
 
+/** Packaged kiosk IIFE served by the add-on on the debug (and ingress) HTTP ports. */
+export const KIOSK_CLIENT_PATH = "/grok-voice.js";
+
+export const LAN_VOICE_SCRIPT_URL = `http://${LAN_HA_FALLBACK_HOST}:${VOICE_DEBUG_PORT}${KIOSK_CLIENT_PATH}`;
+
 export type VoiceSocketHostSource =
   | "page"
   | "auth.hassUrl"
@@ -277,6 +282,45 @@ export function parseDebugPort(value: unknown): number {
 export function debugVoiceSocketUrl(protocol: string, host: string, debugPort = VOICE_DEBUG_PORT): string {
   const proto = protocol === "https:" ? "wss:" : "ws:";
   return `${proto}//${hostnameOf(host)}:${debugPort}/`;
+}
+
+/** HTTP origin of the add-on debug port (static JS, not the duplex WebSocket). */
+export function debugVoiceHttpOrigin(protocol: string, host: string, debugPort = VOICE_DEBUG_PORT): string {
+  const proto = protocol === "https:" ? "https:" : "http:";
+  return `${proto}//${hostnameOf(host)}:${debugPort}`;
+}
+
+/**
+ * Stable kiosk client URL: ``http://<HA-LAN>:8080/grok-voice.js``.
+ *
+ * Lovelace has no Supervisor ingress cookie, so do not use
+ * ``/api/hassio_ingress/...``. A classic ``<script src>`` cannot send a
+ * Bearer token either; this GET is unauthenticated on purpose. Duplex still
+ * authenticates on the WebSocket.
+ */
+export function debugVoiceScriptUrl(protocol: string, host: string, debugPort = VOICE_DEBUG_PORT): string {
+  return `${debugVoiceHttpOrigin(protocol, host, debugPort)}${KIOSK_CLIENT_PATH}`;
+}
+
+export function resolveKioskClientScript(input: {
+  hass?: HassLike | null;
+  pageProtocol: string;
+  pageHost: string;
+  debugPort?: number;
+  explicit?: string;
+}): { url: string; authority: VoiceSocketAuthority } {
+  const explicit = (input.explicit || "").trim();
+  if (explicit) {
+    return {
+      url: explicit,
+      authority: { protocol: "", host: "", source: "explicit" },
+    };
+  }
+  const socket = resolveKioskVoiceSocket(input);
+  return {
+    url: debugVoiceScriptUrl(socket.authority.protocol, socket.authority.host, socket.debugPort),
+    authority: socket.authority,
+  };
 }
 
 export interface KioskVoiceSocket {

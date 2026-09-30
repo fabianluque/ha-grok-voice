@@ -4,8 +4,8 @@
   "type": "module",
   "scripts": {
     "test": "vitest run",
-    "build": "vite build && vite build --config vite.ui.config.ts",
-    "build:kiosk": "vite build",
+    "build": "vite build --config vite.ui.config.ts && vite build && vite build --config vite.boot.config.ts",
+    "build:kiosk": "vite build && vite build --config vite.boot.config.ts",
     "build:ui": "vite build --config vite.ui.config.ts"
   },
   "devDependencies": {

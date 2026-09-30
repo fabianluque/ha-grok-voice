@@ -36,6 +36,7 @@ jobs:
         run: |
           npm ci
           npm test
+          npm run build
         working-directory: client
 
   image:

@@ -3,13 +3,14 @@ import { defineConfig } from "vite";
 import { clientRoot, copyLibToWww } from "./vite.www";
 
 export default defineConfig({
-  plugins: [copyLibToWww("grok-voice.js")],
+  plugins: [copyLibToWww("kiosk-boot.js")],
   build: {
+    emptyOutDir: false,
     lib: {
-      entry: resolve(clientRoot, "src/index.ts"),
-      name: "GrokVoice",
+      entry: resolve(clientRoot, "src/boot.ts"),
+      name: "GrokVoiceBoot",
       formats: ["iife"],
-      fileName: () => "grok-voice.js",
+      fileName: () => "kiosk-boot.js",
     },
   },
 });

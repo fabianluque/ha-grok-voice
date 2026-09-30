@@ -3,18 +3,22 @@ import {
   accessToken,
   authHandshake,
   authModeForUrl,
+  debugVoiceScriptUrl,
   debugVoiceSocketUrl,
   describeDuplexChoice,
+  KIOSK_CLIENT_PATH,
   isKioskSatelliteProxyHost,
   isLoopbackHostname,
   isOpenWebUiPath,
   LAN_HA_FALLBACK_HOST,
   LAN_VOICE_DEBUG_URL,
+  LAN_VOICE_SCRIPT_URL,
   pageHostNeedsHaIngressHost,
   pageVoiceSocketUrl,
   parseDebugPort,
   readHassTokens,
   resolveAccessToken,
+  resolveKioskClientScript,
   resolveKioskVoiceSocket,
   resolveVoiceSocketAuthority,
   resolveVoiceSocketUrl,
@@ -102,7 +106,27 @@ describe("voice socket URLs", () => {
   it("opens the add-on debug port on the Home Assistant host from a KS loopback dashboard", async () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
     expect(VOICE_DEBUG_PORT).toBe(8080);
+    expect(KIOSK_CLIENT_PATH).toBe("/grok-voice.js");
     expect(debugVoiceSocketUrl("http:", "192.168.86.38:8123")).toBe("ws://192.168.86.38:8080/");
+    expect(debugVoiceScriptUrl("http:", "192.168.86.38:8123")).toBe("http://192.168.86.38:8080/grok-voice.js");
+    expect(LAN_VOICE_SCRIPT_URL).toBe("http://192.168.86.38:8080/grok-voice.js");
+    expect(
+      resolveKioskClientScript({
+        hass: {
+          callWS: async () => ({}),
+          auth: { data: { hassUrl: "http://192.168.86.38:8123", access_token: "t" } },
+        },
+        pageProtocol: "http:",
+        pageHost: "127.0.0.1:2325",
+      }).url,
+    ).toBe("http://192.168.86.38:8080/grok-voice.js");
+    expect(
+      resolveKioskClientScript({
+        pageProtocol: "http:",
+        pageHost: "127.0.0.1:2325",
+        explicit: "http://192.168.86.38:8080/grok-voice.js?dev=1",
+      }).authority.source,
+    ).toBe("explicit");
     expect(parseDebugPort("9090")).toBe(9090);
     expect(parseDebugPort("nope")).toBe(8080);
     await expect(
