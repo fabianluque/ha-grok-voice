@@ -62,17 +62,198 @@ def test_end_session_is_local_and_does_not_call_mcp():
                 "type": "response.function_call_arguments.done",
                 "name": "end_session",
                 "call_id": "call-end",
+                "arguments": json.dumps({"reason": "dismiss"}),
+            }
+        )
+
+    message = asyncio.run(run())
+    assert json.loads(message["item"]["output"]) == {"ok": True, "ending": True, "reason": "dismiss"}
+    assert bridge.end_after_response is True
+    assert bridge.end_session_forget is True
+    assert bridge.consume_end_session() is False
+    assert bridge.followup_after_tools() == {"type": "response.create"}
+    assert bridge.consume_end_session() is True
+    assert bridge.consume_end_session() is False
+
+
+def test_end_session_command_requires_home_control():
+    bridge = GrokBridge(ToolGateway(FakeMcp(), frozenset({"HassTurnOn"})))
+
+    async def hang_up():
+        return await bridge.handle_function_call(
+            {
+                "type": "response.function_call_arguments.done",
+                "name": "end_session",
+                "call_id": "call-end",
+                "arguments": json.dumps({"reason": "command"}),
+            }
+        )
+
+    output = json.loads(asyncio.run(hang_up())["item"]["output"])
+    assert output["ending"] is False
+    assert output["error"] == "home_control_required"
+    assert bridge.end_after_response is False
+    assert bridge.followup_after_tools() == {"type": "response.create"}
+    assert bridge.consume_end_session() is False
+
+
+def test_end_session_command_after_home_control_hangs_up():
+    bridge = GrokBridge(ToolGateway(FakeMcp(), frozenset({"HassTurnOn"})))
+
+    async def run():
+        await bridge.handle_function_call(
+            {
+                "type": "response.function_call_arguments.done",
+                "name": "HassTurnOn",
+                "call_id": "call-1",
+                "arguments": json.dumps({"name": "attic light"}),
+            }
+        )
+        return await bridge.handle_function_call(
+            {
+                "type": "response.function_call_arguments.done",
+                "name": "end_session",
+                "call_id": "call-end",
                 "arguments": json.dumps({"reason": "command"}),
             }
         )
 
     message = asyncio.run(run())
     assert json.loads(message["item"]["output"]) == {"ok": True, "ending": True, "reason": "command"}
+    assert bridge.home_control_this_turn is True
     assert bridge.end_after_response is True
     assert bridge.end_session_forget is False
     assert bridge.consume_end_session() is False
     assert bridge.followup_after_tools() == {"type": "response.create"}
     assert bridge.consume_end_session() is True
+
+
+def test_end_session_command_then_home_control_still_hangs_up():
+    bridge = GrokBridge(ToolGateway(FakeMcp(), frozenset({"HassTurnOn"})))
+
+    async def run():
+        first = await bridge.handle_function_call(
+            {
+                "type": "response.function_call_arguments.done",
+                "name": "end_session",
+                "call_id": "call-end",
+                "arguments": json.dumps({"reason": "command"}),
+            }
+        )
+        await bridge.handle_function_call(
+            {
+                "type": "response.function_call_arguments.done",
+                "name": "HassTurnOn",
+                "call_id": "call-1",
+                "arguments": json.dumps({"name": "attic light"}),
+            }
+        )
+        return first
+
+    first = asyncio.run(run())
+    assert json.loads(first["item"]["output"])["ending"] is False
+    assert bridge.home_control_this_turn is True
+    assert bridge.end_after_response is True
+    assert bridge.end_session_forget is False
+    assert bridge.consume_end_session() is False
+    assert bridge.followup_after_tools() == {"type": "response.create"}
+    assert bridge.consume_end_session() is True
+
+
+def test_end_session_command_after_query_tool_stays_open():
+    bridge = GrokBridge(ToolGateway(FakeMcp(), frozenset({"GetLiveContext", "HassTurnOn"})))
+
+    async def run():
+        await bridge.handle_function_call(
+            {
+                "type": "response.function_call_arguments.done",
+                "name": "homeassistant__GetLiveContext",
+                "call_id": "call-1",
+                "arguments": "{}",
+            }
+        )
+        return await bridge.handle_function_call(
+            {
+                "type": "response.function_call_arguments.done",
+                "name": "end_session",
+                "call_id": "call-end",
+                "arguments": json.dumps({"reason": "command"}),
+            }
+        )
+
+    output = json.loads(asyncio.run(run())["item"]["output"])
+    assert output["ending"] is False
+    assert bridge.home_control_this_turn is False
+    assert bridge.followup_after_tools() == {"type": "response.create"}
+    assert bridge.consume_end_session() is False
+
+
+def test_failed_home_control_does_not_allow_command_hangup():
+    class FailingMcp:
+        async def call_tool(self, name, arguments):
+            return json.dumps({"error": "mcp_tool_failed"})
+
+    bridge = GrokBridge(ToolGateway(FailingMcp(), frozenset({"HassTurnOn"})))
+
+    async def run():
+        await bridge.handle_function_call(
+            {
+                "type": "response.function_call_arguments.done",
+                "name": "HassTurnOn",
+                "call_id": "call-1",
+                "arguments": json.dumps({"name": "attic light"}),
+            }
+        )
+        return await bridge.handle_function_call(
+            {
+                "type": "response.function_call_arguments.done",
+                "name": "end_session",
+                "call_id": "call-end",
+                "arguments": json.dumps({"reason": "command"}),
+            }
+        )
+
+    output = json.loads(asyncio.run(run())["item"]["output"])
+    assert output["ending"] is False
+    assert bridge.home_control_this_turn is False
+    assert bridge.consume_end_session() is False
+    assert bridge.followup_after_tools() == {"type": "response.create"}
+    assert bridge.consume_end_session() is False
+
+
+def test_new_user_turn_clears_home_control_so_later_qna_does_not_hang_up():
+    bridge = GrokBridge(ToolGateway(FakeMcp(), frozenset({"HassTurnOn"})))
+
+    async def lights():
+        await bridge.handle_function_call(
+            {
+                "type": "response.function_call_arguments.done",
+                "name": "HassTurnOn",
+                "call_id": "call-1",
+                "arguments": json.dumps({"name": "attic light"}),
+            }
+        )
+
+    asyncio.run(lights())
+    assert bridge.home_control_this_turn is True
+    bridge.followup_after_tools()
+    assert bridge.consume_end_session() is False
+    bridge.client_messages({"type": "input_audio_buffer.speech_started"})
+    assert bridge.home_control_this_turn is False
+
+    async def sports_hangup():
+        return await bridge.handle_function_call(
+            {
+                "type": "response.function_call_arguments.done",
+                "name": "end_session",
+                "call_id": "call-end",
+                "arguments": json.dumps({"reason": "command"}),
+            }
+        )
+
+    output = json.loads(asyncio.run(sports_hangup())["item"]["output"])
+    assert output["ending"] is False
+    assert bridge.followup_after_tools() == {"type": "response.create"}
     assert bridge.consume_end_session() is False
 
 
@@ -306,3 +487,5 @@ def test_session_instructions_include_client_area():
     assert "music" in text
     assert "Music Assistant" in text
     assert "end_session" in text
+    assert "Never call end_session after sports" in text
+    assert "short follow-up" in text

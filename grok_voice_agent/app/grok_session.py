@@ -9,14 +9,18 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import re
 import unicodedata
 from datetime import datetime
 from typing import Any
 
 from app.ha_context import HomeContext, with_home_context
+from app.mcp_client import bare_tool_name, tool_domain
 from app.memory import Turn, with_history_instructions
 from app.tools import ToolGateway
+
+log = logging.getLogger("grok_voice")
 
 AUDIO_DELTA_TYPES = {"response.output_audio.delta", "response.audio.delta"}
 TRANSCRIPT_ROLES = {
@@ -250,10 +254,12 @@ END_SESSION_TOOL = {
         "End this voice session and return the tablet to wake-word listening. "
         "Call after a brief spoken acknowledgment when the user dismisses you "
         "('you can go', 'you can go now', 'that's all', 'thanks I'm done', "
-        "'never mind', 'goodbye') or after a simple one-shot home command "
-        "(lights, garage, lock, volume, play/pause) that already succeeded "
-        "and needs no follow-up. Do not call during a multi-step task, while "
-        "asking a clarifying question, or when the user is listing several requests."
+        "'never mind', 'goodbye') or after a successful home device or in-home "
+        "media action (lights, garage, lock, climate, cover, play/pause/volume) "
+        "that already succeeded and needs no follow-up. Do not call after sports, "
+        "news, events, history, or general Q&A — keep listening and ask a brief "
+        "follow-up instead. Do not call during a multi-step task, while asking a "
+        "clarifying question, or when the user is listing several requests."
     ),
     "parameters": {
         "type": "object",
@@ -263,13 +269,75 @@ END_SESSION_TOOL = {
                 "enum": ["dismiss", "command"],
                 "description": (
                     "dismiss = the user told you to go; "
-                    "command = a short Home Assistant action finished successfully."
+                    "command = a Home Assistant device or in-home media action "
+                    "finished successfully. Do not use command after answering "
+                    "a question."
                 ),
             }
         },
         "required": ["reason"],
     },
 }
+# Assist intents / service tools that change a device or play media in the home.
+HOME_CONTROL_TOOLS = frozenset(
+    {
+        "HassTurnOn",
+        "HassTurnOff",
+        "HassToggle",
+        "HassLightSet",
+        "HassMediaPause",
+        "HassMediaUnpause",
+        "HassSetVolume",
+        "HassSetVolumeRelative",
+        "HassVolumeSet",
+        "HassMediaNext",
+        "HassMediaPrevious",
+        "HassMediaPlayerMute",
+        "HassMediaPlayerUnmute",
+        "HassMediaSearchAndPlay",
+        "play_media",
+        "play_announcement",
+        "HassOpenCover",
+        "HassCloseCover",
+        "HassSetCoverPosition",
+        "HassSetPosition",
+        "HassLock",
+        "HassUnlock",
+        "HassLockLock",
+        "HassLockUnlock",
+        "HassClimateSetTemperature",
+        "HassSetTemperature",
+        "HassSetHvacMode",
+        "HassClimateSetHvacMode",
+        "HassFanSetSpeed",
+        "HassFanSetPresetMode",
+        "HassSetValue",
+    }
+)
+HOME_CONTROL_DOMAINS = frozenset(
+    {
+        "light",
+        "switch",
+        "fan",
+        "cover",
+        "lock",
+        "climate",
+        "media_player",
+        "music_assistant",
+        "scene",
+        "script",
+        "input_boolean",
+        "humidifier",
+        "vacuum",
+        "button",
+        "valve",
+        "remote",
+        "alarm_control_panel",
+        "siren",
+        "water_heater",
+    }
+)
+HOME_QUERY_TOOLS = frozenset({"GetLiveContext", "GetDateTime", "HassGetState"})
 
 
 def is_end_session_tool(name: object) -> bool:
@@ -280,15 +348,38 @@ def is_end_session_tool(name: object) -> bool:
     return bare in END_SESSION_ALIASES or text in END_SESSION_ALIASES
 
 
+def is_home_control_tool(name: object) -> bool:
+    """True for device / in-home media actions, not queries or conversation tools."""
+    text = str(name or "").strip()
+    if not text or is_end_session_tool(text):
+        return False
+    bare = bare_tool_name(text)
+    if bare in HOME_QUERY_TOOLS:
+        return False
+    if bare in HOME_CONTROL_TOOLS:
+        return True
+    return tool_domain(text) in HOME_CONTROL_DOMAINS
+
+
+def tool_output_failed(output: str) -> bool:
+    try:
+        data = json.loads(output)
+    except (json.JSONDecodeError, TypeError):
+        return False
+    return isinstance(data, dict) and bool(data.get("error"))
+
+
 def with_session_end_instructions(base: str) -> str:
     extra = (
-        "When the user dismisses you, or after you complete one simple home "
-        "command that succeeded and you are not asking a question, speak a "
-        "very short acknowledgment and then call the end_session tool "
-        "(reason=dismiss or reason=command). That hangs up and hands the "
-        "microphone back to wake-word listening. Do not call end_session "
-        "while a multi-step task is unfinished, while you still need a "
-        "clarifying answer, or when they are giving a list of requests."
+        "Call end_session only in these cases: (1) the user dismissed you "
+        "(goodbye, that's all, you can go), reason=dismiss; or (2) you just "
+        "successfully ran a home device or in-home media action (lights, garage, "
+        "locks, climate, covers, play/pause/volume on a house speaker) and you "
+        "are not asking a question, reason=command. Speak a very short ack first. "
+        "Never call end_session after sports, news, events, history, calendars, "
+        "lists, trivia, or other conversation. For those, answer and ask one "
+        "short follow-up so you keep listening. Do not hang up mid multi-step "
+        "task or while waiting for a clarifying answer."
     )
     root = (base or "").rstrip()
     return f"{root}\n\n{extra}" if root else extra
@@ -430,6 +521,8 @@ class GrokBridge:
         self.awaiting_tool_followup = False
         self.end_after_response = False
         self.end_session_forget = False
+        self.home_control_this_turn = False
+        self._pending_end_reason: str | None = None
         self._assistant_partial = ""
         self._user_partial = ""
 
@@ -452,19 +545,30 @@ class GrokBridge:
         name = str(event.get("name") or "")
         if is_end_session_tool(name):
             reason = str(arguments.get("reason") or "dismiss").strip().casefold()
-            self.end_after_response = True
+            if reason not in ("dismiss", "command"):
+                reason = "dismiss"
+            self._pending_end_reason = reason
             self.end_session_forget = reason == "dismiss"
             self.awaiting_tool_followup = True
+            self._commit_end_session_if_allowed()
+            ending = self.end_after_response
+            output = {"ok": True, "ending": ending, "reason": reason}
+            if reason == "command" and not ending:
+                output["keep_open"] = True
+                output["error"] = "home_control_required"
             return {
                 "type": "conversation.item.create",
                 "item": {
                     "type": "function_call_output",
                     "call_id": event.get("call_id"),
-                    "output": json.dumps({"ok": True, "ending": True, "reason": reason}),
+                    "output": json.dumps(output),
                 },
             }
         output = await self.tools.execute(name, arguments)
         self.awaiting_tool_followup = True
+        if is_home_control_tool(name) and not tool_output_failed(output):
+            self.home_control_this_turn = True
+            self._commit_end_session_if_allowed()
         return {
             "type": "conversation.item.create",
             "item": {
@@ -478,16 +582,38 @@ class GrokBridge:
         if not self.awaiting_tool_followup:
             return None
         self.awaiting_tool_followup = False
+        self._commit_end_session_if_allowed()
         return {"type": "response.create"}
+
+    def _commit_end_session_if_allowed(self) -> None:
+        reason = self._pending_end_reason
+        if not reason:
+            return
+        if reason == "dismiss" or self.home_control_this_turn:
+            self.end_after_response = True
+            self.end_session_forget = reason == "dismiss"
 
     def consume_end_session(self) -> bool:
         """True once tools are done and the ack turn (if any) has finished generating.
 
-        The browser then drains queued playback before closing the duplex.
+        Command hang-up is allowed only after a successful home-control tool this
+        turn. Dismiss / goodbye still hangs up. The browser then drains queued
+        playback before closing the duplex.
         """
+        self._commit_end_session_if_allowed()
         if not self.end_after_response or self.awaiting_tool_followup:
+            if self._pending_end_reason == "command" and not self.awaiting_tool_followup:
+                log.info("voice end_session skipped no_home_control")
+                self._pending_end_reason = None
+            return False
+        if not self.end_session_forget and not self.home_control_this_turn:
+            log.info("voice end_session skipped no_home_control")
+            self.end_after_response = False
+            self._pending_end_reason = None
             return False
         self.end_after_response = False
+        self._pending_end_reason = None
+        self.home_control_this_turn = False
         return True
 
     def client_messages(self, event: dict) -> list[dict[str, Any]]:
@@ -496,6 +622,9 @@ class GrokBridge:
             self.playing = False
             self._assistant_partial = ""
             self._user_partial = ""
+            if not self.end_after_response:
+                self.home_control_this_turn = False
+                self._pending_end_reason = None
             return [{"type": "speech_started"}]
         if event_type == "input_audio_buffer.speech_stopped":
             return [{"type": "speech_stopped"}]

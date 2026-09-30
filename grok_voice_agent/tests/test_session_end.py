@@ -848,6 +848,16 @@ def test_end_session_tool_hangs_up_after_the_ack_turn():
             json.dumps(
                 {
                     "type": "response.function_call_arguments.done",
+                    "name": "HassTurnOn",
+                    "call_id": "c1",
+                    "arguments": json.dumps({"name": "lights"}),
+                }
+            )
+        )
+        await grok.incoming.put(
+            json.dumps(
+                {
+                    "type": "response.function_call_arguments.done",
                     "name": "end_session",
                     "call_id": "e1",
                     "arguments": json.dumps({"reason": "command"}),
@@ -879,6 +889,46 @@ def test_end_session_tool_hangs_up_after_the_ack_turn():
     assert any(item.get("type") == "response.create" for item in (json.loads(x) for x in grok_sent if isinstance(x, str) and x.startswith("{")))
 
 
+def test_end_session_command_without_home_control_stays_open():
+    async def run():
+        client = QueueSocket()
+        grok = QueueSocket()
+        await client.incoming.put(json.dumps({"type": "auth", "token": "good-token"}))
+        task = asyncio.create_task(_run_session(client, grok, idle=5))
+        await asyncio.sleep(0.03)
+        await grok.incoming.put(
+            json.dumps(
+                {
+                    "type": "response.function_call_arguments.done",
+                    "name": "end_session",
+                    "call_id": "e1",
+                    "arguments": json.dumps({"reason": "command"}),
+                }
+            )
+        )
+        await grok.incoming.put(json.dumps({"type": "response.done"}))
+        await asyncio.sleep(0.03)
+        await grok.incoming.put(b"\x11\x22\x33\x44")
+        await grok.incoming.put(
+            json.dumps(
+                {
+                    "type": "response.output_audio_transcript.done",
+                    "transcript": "The Mets won 4-2. Want last night's highlights?",
+                }
+            )
+        )
+        await grok.incoming.put(json.dumps({"type": "response.done"}))
+        await asyncio.sleep(0.05)
+        assert _end_reason(client.sent) is None
+        await client.incoming.put(json.dumps({"type": "stop", "reason": "stop"}))
+        await asyncio.wait_for(task, timeout=2)
+        return client.sent
+
+    sent = asyncio.run(run())
+    assert _end_reason(sent) == "stop"
+    assert b"\x11\x22\x33\x44" in sent
+
+
 def test_end_session_command_keeps_short_history():
     from app.memory import ConversationMemory
 
@@ -903,6 +953,16 @@ def test_end_session_command_keeps_short_history():
                 {
                     "type": "conversation.item.input_audio_transcription.completed",
                     "transcript": "turn on the lights",
+                }
+            )
+        )
+        await grok.incoming.put(
+            json.dumps(
+                {
+                    "type": "response.function_call_arguments.done",
+                    "name": "HassTurnOn",
+                    "call_id": "c1",
+                    "arguments": json.dumps({"name": "lights"}),
                 }
             )
         )

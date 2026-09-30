@@ -4,6 +4,10 @@ Versions match `grok_voice_agent/config.yaml`. GitHub Releases list the
 merged pull requests since the previous tag. Issues closed with `Fixes #N`
 in those pull requests are included below when GitHub reports them.
 
+## [0.2.15] - 2026-09-30
+
+- Hang up the duplex only after a **home device / in-home media** action (lights, garage, locks, climate, covers, play/pause/volume) or an explicit goodbye / tap-dismiss. Sports, events, history, news, and other Q&A stay open: Grok is told to answer and ask a short follow-up, and `end_session` with `reason=command` is ignored unless a home-control tool succeeded this turn. Idle timeout, goodbye phrases, overlay tap, and TTS drain before hang-up are unchanged.
+
 ## [0.2.14] - 2026-09-30
 
 - Keep **one in-place You: line** when Grok ASR revises the same utterance. 0.2.13 still appended another bubble when a later `updated` snapshot changed wording (not a prefix of the previous text), including after `speech_stopped` / `completed`. Overlay now keys the live bubble by ASR `item_id` and only starts a new You: line at a true turn boundary (new item, or `speech_started` after `speech_stopped`).
