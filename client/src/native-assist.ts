@@ -121,30 +121,155 @@ export function nodeFromKioskEntityId(entityId: string): string | null {
   return null;
 }
 
-function deviceLabel(device: HassDeviceRecord): string {
-  return (device.name_by_user || device.name || "").trim();
-}
+const DASHBOARD_SUFFIX = /\s+dashboard$/i;
 
 function sameName(left: string, right: string): boolean {
   return left.trim().toLowerCase() === right.trim().toLowerCase();
 }
 
-export function matchDeviceId(devices: HassDeviceRecord[], deviceName: string): string | null {
-  const matches = devices.filter((device) => device.id && sameName(deviceLabel(device), deviceName));
-  if (matches.length !== 1) {
+/** Both HA `name_by_user` and original `name` — Lovelace shows the first that is set. */
+export function deviceNames(device: HassDeviceRecord): string[] {
+  const names: string[] = [];
+  for (const value of [device.name_by_user, device.name]) {
+    const name = typeof value === "string" ? value.trim() : "";
+    if (name && !names.some((existing) => sameName(existing, name))) {
+      names.push(name);
+    }
+  }
+  return names;
+}
+
+/** KS often uses "{Room} Dashboard"; HA may store "{Room}" or the reverse. */
+export function kioskNameKeys(name: string): string[] {
+  const trimmed = name.trim();
+  if (!trimmed) {
+    return [];
+  }
+  const keys = [trimmed.toLowerCase()];
+  const stripped = trimmed.replace(DASHBOARD_SUFFIX, "").trim();
+  if (stripped && stripped.toLowerCase() !== keys[0]) {
+    keys.push(stripped.toLowerCase());
+  }
+  return keys;
+}
+
+function namesOverlap(left: string, right: string): boolean {
+  const rightKeys = kioskNameKeys(right);
+  return kioskNameKeys(left).some((key) => rightKeys.includes(key));
+}
+
+function uniqueDeviceId(matches: HassDeviceRecord[]): string | null {
+  const ids = [...new Set(matches.map((item) => item.id).filter((id): id is string => Boolean(id)))];
+  if (ids.length === 1) {
+    return ids[0];
+  }
+  if (ids.length > 1) {
+    const withArea = [
+      ...new Set(
+        matches
+          .filter((item) => item.id && typeof item.area_id === "string" && item.area_id.trim())
+          .map((item) => item.id as string),
+      ),
+    ];
+    if (withArea.length === 1) {
+      return withArea[0];
+    }
+  }
+  return null;
+}
+
+function matchByDeviceName(devices: HassDeviceRecord[], deviceName: string, overlap: boolean): string | null {
+  const matches = devices.filter((device) => {
+    if (!device.id) {
+      return false;
+    }
+    return deviceNames(device).some((name) => (overlap ? namesOverlap(name, deviceName) : sameName(name, deviceName)));
+  });
+  return uniqueDeviceId(matches);
+}
+
+function hyphenSlug(value: string): string {
+  return value.trim().toLowerCase().replace(/_/g, "-");
+}
+
+function kioskNodeSlugs(deviceName: string): string[] {
+  const slugs: string[] = [];
+  for (const name of [deviceName, deviceName.replace(DASHBOARD_SUFFIX, "").trim()]) {
+    const slug = esphomeNodeSlug(name);
+    if (!slug) {
+      continue;
+    }
+    for (const candidate of [slug, slug === "ks" || slug.startsWith("ks-") ? slug : `ks-${slug}`]) {
+      if (!slugs.includes(candidate)) {
+        slugs.push(candidate);
+      }
+    }
+  }
+  return slugs;
+}
+
+function matchByKioskEntities(entities: HassEntityRecord[], deviceName: string): string | null {
+  if (!entities.length) {
     return null;
   }
-  return matches[0].id ?? null;
+  const nodes = new Set(kioskNodeSlugs(deviceName));
+  const deviceIds = new Set<string>();
+  for (const entity of entities) {
+    const deviceId = typeof entity.device_id === "string" ? entity.device_id.trim() : "";
+    const entityId = entity.entity_id || "";
+    if (!deviceId || !entityId) {
+      continue;
+    }
+    const node = nodeFromKioskEntityId(entityId);
+    if (node && nodes.has(hyphenSlug(node))) {
+      deviceIds.add(deviceId);
+      continue;
+    }
+    if (entityId.startsWith("assist_satellite.")) {
+      const objectId = entityId.slice(entityId.indexOf(".") + 1);
+      if (nodes.has(hyphenSlug(objectId))) {
+        deviceIds.add(deviceId);
+      }
+    }
+  }
+  return deviceIds.size === 1 ? [...deviceIds][0] : null;
+}
+
+/**
+ * Find this kiosk in the HA device registry. Exact `name_by_user` / `name`
+ * match first, then "{Room} Dashboard" ↔ "{Room}", then unique ESPHome /
+ * assist_satellite object ids derived from the KS device name.
+ */
+export function matchDeviceId(
+  devices: HassDeviceRecord[],
+  deviceName: string,
+  entities: HassEntityRecord[] = [],
+): string | null {
+  const name = deviceName.trim();
+  if (!name) {
+    return null;
+  }
+  return (
+    matchByDeviceName(devices, name, false) ||
+    matchByDeviceName(devices, name, true) ||
+    matchByKioskEntities(entities, name)
+  );
 }
 
 function belongsToOtherDevice(service: string, devices: HassDeviceRecord[], deviceName: string): boolean {
+  const selfId = matchDeviceId(devices, deviceName);
   for (const device of devices) {
-    const label = deviceLabel(device);
-    if (!label || sameName(label, deviceName)) {
+    if (selfId && device.id === selfId) {
       continue;
     }
-    if (vsCancelCandidatesFromDeviceName(label).includes(service)) {
-      return true;
+    const names = deviceNames(device);
+    if (!names.length || names.some((name) => namesOverlap(name, deviceName))) {
+      continue;
+    }
+    for (const label of names) {
+      if (vsCancelCandidatesFromDeviceName(label).includes(service)) {
+        return true;
+      }
     }
   }
   return false;
@@ -175,7 +300,7 @@ export function cancelServiceForDevice(
     return service;
   };
 
-  const deviceId = matchDeviceId(devices, deviceName);
+  const deviceId = matchDeviceId(devices, deviceName, entities);
   const nodes = new Set<string>();
   if (deviceId) {
     for (const entity of entities) {

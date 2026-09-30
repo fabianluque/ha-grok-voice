@@ -1,10 +1,4 @@
-import {
-  describeArea,
-  immediateKioskArea,
-  immediateKioskDevice,
-  peekCachedKioskArea,
-  prefetchKioskArea,
-} from "./area";
+import { describeArea, immediateKioskDevice, prefetchKioskArea, sessionKioskArea } from "./area";
 import { createBrowserSession } from "./browser";
 import {
   accessToken,
@@ -110,12 +104,8 @@ function boot(): void {
       console.log(describeDuplexChoice({ authority: resolved.authority, host: hostLabel, authMode }));
       const token = accessToken(hass);
       console.log(`[Grok Voice] Opening duplex ${url} auth ${authMode}`);
-      const area = immediateKioskArea({
-        explicit: areaInput().explicit,
-        cached: peekCachedKioskArea(),
-      });
+      const area = await sessionKioskArea(areaInput());
       const device = immediateKioskDevice();
-      void prefetchKioskArea(areaInput());
       console.log(`[Grok Voice] Area ${describeArea(area)}`);
       console.log(`[Grok Voice] Device ${device.name} id=${device.id}`);
       const created = await createBrowserSession({

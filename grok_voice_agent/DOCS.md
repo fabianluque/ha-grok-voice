@@ -111,13 +111,13 @@ The microphone stays open while Grok is speaking. Talking over a reply flushes p
 
 Each kiosk session is scoped to **that tablet's Home Assistant area** so "turn on the lights" or "play music" targets this room, not the whole house. Bare "play X" / "play music" uses Music Assistant on this area's player and does not ask which speaker. The add-on fills Assist `area` / `area_id` (and `target.area_id` on Music Assistant `play_media`) when Grok omits them, and the voice prompt says not to ask which lights or which speaker.
 
-The kiosk **prefetches** the HA/KS area when the inject loads. Wake uses the cached or explicit area immediately (no invented room name), mounts the overlay on the wake event, and opens the mic and WebSocket together without waiting for Assist cancel lookup. Conversation memory uses a stable per-tablet id from `localStorage` on every auth, including the first wake before `getDeviceInfo` returns.
+The kiosk **prefetches** the HA/KS area when the inject loads. Listening paints immediately on wake. Duplex auth uses that cache, or waits briefly for Home Assistant registries once `callWS` is ready so the session is not stuck on `Area (none) source=fallback`. Conversation memory uses a stable per-tablet id from `localStorage` on every auth, including the first wake before `getDeviceInfo` returns.
 
 Resolution order:
 
 1. Optional inject override: `window.GROK_VOICE_AREA` (name) and `window.GROK_VOICE_AREA_ID` (slug). Add this near the top of the inject only if HA/KS lookup is wrong.
 2. Area fields on Kiosk Satellite `getDeviceInfo()` when the app exposes them (`area`, `area_name`, `area_id`, `assist_area`, …).
-3. The Home Assistant area assigned to this kiosk device (same device name as `getDeviceInfo().name`), including an `assist_satellite` entity area when that entity has its own area.
+3. The Home Assistant area assigned to this kiosk device. Matching uses KS `getDeviceInfo().name` against HA `name_by_user` and `name` (including `{Room} Dashboard` vs `{Room}`), then unique ESPHome / `assist_satellite` object ids. The area may sit on the device or on its `assist_satellite` entity.
 4. Add-on configuration **Default area** / **Default area ID** (`default_area`, `default_area_id`). Both ship blank. Set a name if Open Web UI or a failed lookup should still have a room; set `default_area_id` if Assist needs the slug and a blank id is not enough.
 5. If the name is set and the id is still blank, the add-on derives a slug (`Kitchen` → `kitchen`).
 
