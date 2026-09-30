@@ -159,7 +159,7 @@ export async function createBrowserSession(
   const wrapped = session.handleServerText.bind(session);
   session.handleServerText = (message) => {
     if (message.type === "transcript" && message.text) {
-      options.onTranscript?.(message.role || "assistant", message.text, message.final !== false);
+      options.onTranscript?.(message.role || "assistant", message.text, message.final === true);
     }
     // Only barge-in jumps the playback cursor. A tool follow-up
     // `response_started` must append after audio already scheduled.

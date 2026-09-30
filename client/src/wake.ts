@@ -115,6 +115,13 @@ export function restoreWakeClaim(): void {
     prototypePatched = false;
   }
   wakeHandler = null;
+  pageLeaveHandler = null;
+  if (pageLeaveTarget?.removeEventListener) {
+    for (const type of PAGE_LEAVE_EVENTS) {
+      pageLeaveTarget.removeEventListener(type, pageLeaveListener);
+    }
+  }
+  pageLeaveTarget = null;
 }
 
 function isWakePipelineStart(opts?: Record<string, unknown>): boolean {
@@ -261,6 +268,29 @@ export function claimWakeEvent(target: WakeEventTarget, handler: (event: Event) 
 }
 
 const QUICK_CLOSE_MS = 800;
+
+const PAGE_LEAVE_EVENTS = ["pagehide", "beforeunload"] as const;
+let pageLeaveHandler: (() => void) | null = null;
+let pageLeaveTarget: WakeEventTarget | null = null;
+const pageLeaveListener = (): void => {
+  pageLeaveHandler?.();
+};
+
+function bindPageLeave(target: WakeEventTarget, handler: () => void): void {
+  pageLeaveHandler = handler;
+  if (pageLeaveTarget === target) {
+    return;
+  }
+  if (pageLeaveTarget?.removeEventListener) {
+    for (const type of PAGE_LEAVE_EVENTS) {
+      pageLeaveTarget.removeEventListener(type, pageLeaveListener);
+    }
+  }
+  pageLeaveTarget = target;
+  for (const type of PAGE_LEAVE_EVENTS) {
+    target.addEventListener(type, pageLeaveListener);
+  }
+}
 
 /** Time for the dashboard WebView to leave the native Assist pause after vs_cancel. */
 export const CANCEL_SETTLE_MS = 400;
@@ -433,6 +463,34 @@ export function installGrokVoice(deps: WakeDeps): { installed: boolean } {
   const nativeCancel = lookupNativeCancel(deps);
 
   let active = false;
+  let live: VoiceSession | null = null;
+  let releaseWake: () => void = () => {};
+
+  const restoreWake = async () => {
+    if (active) {
+      return false;
+    }
+    const restored = await rearmNativeWake({
+      kiosk: deps.kiosk!,
+      session: deps.host?.__vsSession,
+      settleMs: 0,
+    });
+    if (active) {
+      void deps.kiosk!.setWakeWordActive(false).catch(() => undefined);
+      void deps.kiosk!.setInteractionActive(true, "voice").catch(() => undefined);
+      return false;
+    }
+    return restored;
+  };
+
+  void restoreWake();
+
+  const abandonPage = () => {
+    releaseWake();
+    live?.finish("unload");
+    void rearmNativeWake({ kiosk: deps.kiosk!, session: deps.host?.__vsSession, settleMs: 0 });
+  };
+
   const onWake = async () => {
     if (active) {
       return;
@@ -448,23 +506,33 @@ export function installGrokVoice(deps: WakeDeps): { installed: boolean } {
     } else {
       console.log("[Grok Voice] Native Assist cancel skipped; no esphome vs_cancel matched this kiosk");
     }
-    const releaseWake = holdNativeWakeOff(deps.kiosk!);
+    const release = holdNativeWakeOff(deps.kiosk!);
+    releaseWake = release;
     await deps.kiosk!.setInteractionActive(true, "voice");
     if (cancelled) {
       await wait(CANCEL_SETTLE_MS);
     }
     try {
-      await runDuplex(deps.openSession);
+      await runDuplex(async () => {
+        const session = await deps.openSession();
+        live = session;
+        return session;
+      });
     } catch (error) {
       console.error("[Grok Voice] Duplex session failed after wake", formatReject(error));
     } finally {
-      releaseWake();
+      release();
+      if (releaseWake === release) {
+        releaseWake = () => {};
+      }
+      live = null;
       active = false;
       await rearmNativeWake({ kiosk: deps.kiosk!, session: deps.host?.__vsSession });
     }
   };
 
   claimWakeEvent(deps.events, onWake as (event: Event) => void);
+  bindPageLeave(deps.events, abandonPage);
   console.log("[Grok Voice] Installed Kiosk Satellite wake override");
   return { installed: true };
 }

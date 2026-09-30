@@ -86,7 +86,7 @@ export class SessionEndWatch {
     if (
       message.type === "transcript" &&
       message.role === "user" &&
-      message.final !== false &&
+      message.final === true &&
       isClosingUtterance(message.text)
     ) {
       this.pendingDone = true;

@@ -4,6 +4,12 @@ Versions match `grok_voice_agent/config.yaml`. GitHub Releases list the
 merged pull requests since the previous tag. Issues closed with `Fixes #N`
 in those pull requests are included below when GitHub reports them.
 
+## [0.2.13] - 2026-09-30
+
+- Fix kiosk overlay user-transcript streaming. Each xAI `conversation.item.input_audio_transcription.updated` snapshot now replaces the single live You: line instead of appending another bubble that repeats the growing prompt. Extra `speech_started` events mid-utterance no longer finalize that bubble; hang-up still waits for a completed (`final: true`) closer.
+- If the dashboard or inject reloads mid-conversation, hang up the orphan duplex and hand the microphone back to Kiosk Satellite so “hey grok” is not left dead (`pagehide` / `beforeunload`, plus re-arm on inject boot).
+- Tap the full-screen conversation overlay to dismiss (same hang-up path as goodbye/`end_session`: drain ack TTS if Grok is speaking, then close the duplex and re-arm KS). Scrolls are ignored; a tap anywhere on the overlay hangs up.
+
 ## [0.2.12] - 2026-09-30
 
 - On a new wake/resume, the overlay shows **this session only**. Reinjected ~8 minute per-device history still goes to Grok (`session.update` instructions plus `conversation.item.create`) so follow-ups work, but those echoes are not painted on screen.

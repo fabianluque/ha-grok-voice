@@ -28,6 +28,35 @@ describe("voice session socket", () => {
     expect(ended).toBe("closed");
   });
 
+  it("closes immediately on dashboard unload without waiting for ack TTS", async () => {
+    let release!: () => void;
+    const ended = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const close = vi.fn();
+    const sent: string[] = [];
+    const session = new VoiceSession(
+      () => ({ stop() {}, ended }),
+      () => ({
+        send(data) {
+          if (typeof data === "string") {
+            sent.push(data);
+          }
+        },
+        close,
+      }),
+    );
+    await session.start();
+    session.handleServerText({ type: "response_started" });
+    session.handleServerBinary(new ArrayBuffer(2));
+    const reason = new Promise<string>((resolve) => session.onEnd(resolve));
+    session.finish("unload");
+    await expect(reason).resolves.toBe("unload");
+    expect(close).toHaveBeenCalledOnce();
+    expect(sent).toEqual([JSON.stringify({ type: "stop", reason: "unload" })]);
+    release();
+  });
+
   it("notifies every onEnd handler after playback drains", async () => {
     const first = vi.fn();
     const second = vi.fn();

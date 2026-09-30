@@ -16,8 +16,16 @@ export interface ServerMessage {
   idleTimeoutSeconds?: number;
 }
 
+/** Page teardown: close immediately. Do not wait for ack TTS. */
+export function isUnloadHangup(reason: string): boolean {
+  return reason === "unload";
+}
+
 /** Hang-up reasons that should let queued ack TTS finish first. */
 export function hangupWaitsForPlayback(reason: string): boolean {
+  if (isUnloadHangup(reason)) {
+    return false;
+  }
   return reason === "done" || reason === "idle" || reason === "stop" || reason === "closed";
 }
 
@@ -110,7 +118,7 @@ export class VoiceSession {
     }
     this.ended = true;
     this.endReason = reason;
-    if (this.socket && (reason === "done" || reason === "idle" || reason === "stop")) {
+    if (this.socket && (reason === "done" || reason === "idle" || reason === "stop" || reason === "unload")) {
       try {
         this.socket.send(JSON.stringify({ type: "stop", reason }));
       } catch {

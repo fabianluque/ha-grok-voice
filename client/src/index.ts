@@ -88,31 +88,33 @@ function boot(): void {
       void prefetchKioskArea(areaInput());
       console.log(`[Grok Voice] Area ${describeArea(area)}`);
       console.log(`[Grok Voice] Device ${device.name} id=${device.id}`);
-      const status = mountKioskStatus(document);
+      let session: { finish(reason: string): void } | null = null;
+      const status = mountKioskStatus(document, {
+        onDismiss: () => session?.finish("done"),
+      });
       try {
-        const { session } = await createBrowserSession({
+        const created = await createBrowserSession({
           url,
           token,
           ingress: authMode === "ingress",
           area,
           device,
           onTranscript: (role, text, final) => {
-            status.addMessage(role, text, final !== false);
+            status.addMessage(role, text, final === true);
           },
           onServerText: (message) => {
-            if (message.type === "speech_started") {
-              status.finalize("user");
-            }
+            status.handleDuplex(message.type);
             const next = voiceStatusFromMessage(message.type);
             if (next) {
               status.set(next);
             }
           },
         });
+        session = created.session;
         session.onEnd(() => {
           status.remove();
         });
-        return session;
+        return created.session;
       } catch (error) {
         status.remove();
         throw error;
