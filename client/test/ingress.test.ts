@@ -67,33 +67,33 @@ describe("voice socket URLs", () => {
     expect(isLoopbackHostname("127.0.0.1")).toBe(true);
     expect(isLoopbackHostname("localhost")).toBe(true);
     expect(isLoopbackHostname("::1")).toBe(true);
-    expect(isLoopbackHostname("192.168.86.38")).toBe(false);
+    expect(isLoopbackHostname("192.168.1.10")).toBe(false);
     expect(isKioskSatelliteProxyHost("127.0.0.1:2325")).toBe(true);
     expect(isKioskSatelliteProxyHost("localhost:2325")).toBe(true);
     expect(isKioskSatelliteProxyHost("127.0.0.1:8123")).toBe(false);
-    expect(isKioskSatelliteProxyHost("192.168.86.38:2325")).toBe(false);
+    expect(isKioskSatelliteProxyHost("192.168.1.10:2325")).toBe(false);
     expect(pageHostNeedsHaIngressHost("127.0.0.1")).toBe(true);
     expect(pageHostNeedsHaIngressHost("127.0.0.1:2325")).toBe(true);
     expect(pageHostNeedsHaIngressHost("localhost:2325")).toBe(true);
-    expect(pageHostNeedsHaIngressHost("192.168.86.38:8123")).toBe(false);
+    expect(pageHostNeedsHaIngressHost("192.168.1.10:8123")).toBe(false);
 
     const hass = {
       callWS: async () => ({}),
-      auth: { data: { hassUrl: "http://192.168.86.38:8123", access_token: "t" } },
+      auth: { data: { hassUrl: "http://192.168.1.10:8123", access_token: "t" } },
     };
     expect(resolveVoiceSocketAuthority("http:", "127.0.0.1:2325", hass)).toEqual({
       protocol: "http:",
-      host: "192.168.86.38:8123",
+      host: "192.168.1.10:8123",
       source: "auth.hassUrl",
     });
     expect(resolveVoiceSocketAuthority("http:", "127.0.0.1", hass)).toEqual({
       protocol: "http:",
-      host: "192.168.86.38:8123",
+      host: "192.168.1.10:8123",
       source: "auth.hassUrl",
     });
     expect(resolveVoiceSocketAuthority("http:", "localhost:2325", hass)).toEqual({
       protocol: "http:",
-      host: "192.168.86.38:8123",
+      host: "192.168.1.10:8123",
       source: "auth.hassUrl",
     });
     expect(resolveVoiceSocketAuthority("https:", "homeassistant.local:8123", hass)).toEqual({
@@ -107,24 +107,24 @@ describe("voice socket URLs", () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
     expect(VOICE_DEBUG_PORT).toBe(8080);
     expect(KIOSK_CLIENT_PATH).toBe("/grok-voice.js");
-    expect(debugVoiceSocketUrl("http:", "192.168.86.38:8123")).toBe("ws://192.168.86.38:8080/");
-    expect(debugVoiceScriptUrl("http:", "192.168.86.38:8123")).toBe("http://192.168.86.38:8080/grok-voice.js");
-    expect(LAN_VOICE_SCRIPT_URL).toBe("http://192.168.86.38:8080/grok-voice.js");
+    expect(debugVoiceSocketUrl("http:", "192.168.1.10:8123")).toBe("ws://192.168.1.10:8080/");
+    expect(debugVoiceScriptUrl("http:", "192.168.1.10:8123")).toBe("http://192.168.1.10:8080/grok-voice.js");
+    expect(LAN_VOICE_SCRIPT_URL).toBe(`http://${LAN_HA_FALLBACK_HOST}:8080/grok-voice.js`);
     expect(
       resolveKioskClientScript({
         hass: {
           callWS: async () => ({}),
-          auth: { data: { hassUrl: "http://192.168.86.38:8123", access_token: "t" } },
+          auth: { data: { hassUrl: "http://192.168.1.10:8123", access_token: "t" } },
         },
         pageProtocol: "http:",
         pageHost: "127.0.0.1:2325",
       }).url,
-    ).toBe("http://192.168.86.38:8080/grok-voice.js");
+    ).toBe("http://192.168.1.10:8080/grok-voice.js");
     expect(
       resolveKioskClientScript({
         pageProtocol: "http:",
         pageHost: "127.0.0.1:2325",
-        explicit: "http://192.168.86.38:8080/grok-voice.js?dev=1",
+        explicit: "http://192.168.1.10:8080/grok-voice.js?dev=1",
       }).authority.source,
     ).toBe("explicit");
     expect(parseDebugPort("9090")).toBe(9090);
@@ -135,13 +135,13 @@ describe("voice socket URLs", () => {
           callWS: async () => {
             throw new Error("kiosk inject must not look up ingress");
           },
-          auth: { data: { hassUrl: "http://192.168.86.38:8123", access_token: "t" } },
+          auth: { data: { hassUrl: "http://192.168.1.10:8123", access_token: "t" } },
         },
         "http:",
         "127.0.0.1:2325",
       ),
-    ).resolves.toBe("ws://192.168.86.38:8080/");
-    expect(log).toHaveBeenCalledWith("[Grok Voice] duplex host 192.168.86.38:8080 via auth.hassUrl auth token");
+    ).resolves.toBe("ws://192.168.1.10:8080/");
+    expect(log).toHaveBeenCalledWith("[Grok Voice] duplex host 192.168.1.10:8080 via auth.hassUrl auth token");
     log.mockRestore();
   });
 
@@ -150,12 +150,12 @@ describe("voice socket URLs", () => {
       resolveVoiceSocketUrl(
         {
           callWS: async () => ({}),
-          auth: { data: { hassUrl: "http://192.168.86.38:8123" } },
+          auth: { data: { hassUrl: "http://192.168.1.10:8123" } },
         },
         "http:",
         "127.0.0.1",
       ),
-    ).resolves.toBe("ws://192.168.86.38:8080/");
+    ).resolves.toBe("ws://192.168.1.10:8080/");
   });
 
   it("uses config.internal_url when the KS page host and hassUrl are both loopback", async () => {
@@ -167,15 +167,15 @@ describe("voice socket URLs", () => {
         wsUrl: "ws://127.0.0.1:2325/api/websocket",
       },
       hassUrl: () => "http://127.0.0.1:2325/",
-      config: { internal_url: "http://192.168.86.38:8123", external_url: "http://127.0.0.1:2325" },
+      config: { internal_url: "http://192.168.1.10:8123", external_url: "http://127.0.0.1:2325" },
     };
     expect(resolveVoiceSocketAuthority("http:", "127.0.0.1:2325", hass)).toEqual({
       protocol: "http:",
-      host: "192.168.86.38:8123",
+      host: "192.168.1.10:8123",
       source: "config.internal_url",
     });
-    await expect(resolveVoiceSocketUrl(hass, "http:", "127.0.0.1:2325")).resolves.toBe("ws://192.168.86.38:8080/");
-    expect(log).toHaveBeenCalledWith("[Grok Voice] duplex host 192.168.86.38:8080 via config.internal_url auth token");
+    await expect(resolveVoiceSocketUrl(hass, "http:", "127.0.0.1:2325")).resolves.toBe("ws://192.168.1.10:8080/");
+    expect(log).toHaveBeenCalledWith("[Grok Voice] duplex host 192.168.1.10:8080 via config.internal_url auth token");
     log.mockRestore();
   });
 
@@ -183,12 +183,12 @@ describe("voice socket URLs", () => {
     const hass = {
       callWS: async () => ({}),
       auth: { data: { hassUrl: "http://127.0.0.1:2325" } },
-      connection: { host: "192.168.86.38" },
+      connection: { host: "192.168.1.10" },
       config: { internal_url: "http://127.0.0.1:2325" },
     };
     expect(resolveVoiceSocketAuthority("http:", "127.0.0.1:2325", hass)).toEqual({
       protocol: "http:",
-      host: "192.168.86.38",
+      host: "192.168.1.10",
       source: "connection.host",
     });
     expect(
@@ -198,7 +198,7 @@ describe("voice socket URLs", () => {
         pageHost: "127.0.0.1:2325",
       }),
     ).toMatchObject({
-      url: "ws://192.168.86.38:8080/",
+      url: "ws://192.168.1.10:8080/",
       authMode: "token",
       debugPort: 8080,
     });
@@ -221,30 +221,32 @@ describe("voice socket URLs", () => {
       host: LAN_HA_FALLBACK_HOST,
       source: "lan-fallback",
     });
-    expect(LAN_VOICE_DEBUG_URL).toBe("ws://192.168.86.38:8080/");
+    expect(LAN_VOICE_DEBUG_URL).toBe(`ws://${LAN_HA_FALLBACK_HOST}:8080/`);
     const url = await resolveVoiceSocketUrl(hass, "http:", "127.0.0.1:2325");
     expect(url).toBe(LAN_VOICE_DEBUG_URL);
     expect(url).not.toMatch(/hassio_ingress|:8123\//);
-    expect(log).toHaveBeenCalledWith("[Grok Voice] duplex host 192.168.86.38:8080 via lan-fallback auth token");
+    expect(log).toHaveBeenCalledWith(
+      `[Grok Voice] duplex host ${LAN_HA_FALLBACK_HOST}:8080 via lan-fallback auth token`,
+    );
     log.mockRestore();
   });
 
   it("honors GROK_VOICE_DEBUG_PORT on the kiosk debug socket", () => {
     const resolved = resolveKioskVoiceSocket({
-      hass: { callWS: async () => ({}), auth: { data: { hassUrl: "http://192.168.86.38:8123" } } },
+      hass: { callWS: async () => ({}), auth: { data: { hassUrl: "http://192.168.1.10:8123" } } },
       pageProtocol: "http:",
       pageHost: "127.0.0.1:2325",
       debugPort: 9099,
     });
-    expect(resolved.url).toBe("ws://192.168.86.38:9099/");
+    expect(resolved.url).toBe("ws://192.168.1.10:9099/");
     expect(resolved.authMode).toBe("token");
     expect(
       describeDuplexChoice({
         authority: resolved.authority,
-        host: "192.168.86.38:9099",
+        host: "192.168.1.10:9099",
         authMode: resolved.authMode,
       }),
-    ).toBe("[Grok Voice] duplex host 192.168.86.38:9099 via auth.hassUrl auth token");
+    ).toBe("[Grok Voice] duplex host 192.168.1.10:9099 via auth.hassUrl auth token");
   });
 });
 
@@ -303,7 +305,7 @@ describe("browser access tokens", () => {
 
 describe("Open Web UI session", () => {
   it("treats the ingress iframe as a signed-in session and hides the token field", () => {
-    const path = "/api/hassio_ingress/OMwnLs6XGmfQ-r0Fn5pc_Fblx9OpR8BUERKIrvOBLuA/";
+    const path = "/api/hassio_ingress/exampleIngressToken/";
     expect(isOpenWebUiPath(path)).toBe(true);
     expect(isOpenWebUiPath("/")).toBe(false);
     expect(shouldOfferTokenField({ pathname: path, authFailed: false })).toBe(false);
@@ -318,10 +320,10 @@ describe("Open Web UI session", () => {
       authHandshake({
         ingress: false,
         token: "long-lived",
-        url: "ws://192.168.86.38:8123/api/hassio_ingress/OMwnLs6XGmfQ-r0Fn5pc_Fblx9OpR8BUERKIrvOBLuA/",
+        url: "ws://192.168.1.10:8123/api/hassio_ingress/exampleIngressToken/",
       }),
     ).toEqual({ type: "auth", via: "ingress" });
-    expect(authModeForUrl("ws://192.168.86.38:8080/")).toBe("token");
+    expect(authModeForUrl("ws://192.168.1.10:8080/")).toBe("token");
     expect(authHandshake({ ingress: false, token: "long-lived" })).toEqual({
       type: "auth",
       token: "long-lived",
@@ -330,7 +332,7 @@ describe("Open Web UI session", () => {
       authHandshake({
         ingress: false,
         token: "long-lived",
-        url: "ws://192.168.86.38:8080/",
+        url: "ws://192.168.1.10:8080/",
         area: { name: "Attic", id: "attic" },
         device: { name: "Attic Dashboard", id: "attic-tablet" },
       }),

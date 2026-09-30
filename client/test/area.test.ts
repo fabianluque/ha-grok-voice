@@ -64,13 +64,14 @@ describe("kiosk area", () => {
     expect(area).toEqual({ id: "dining_room", name: "Dining Room", source: "ha" });
   });
 
-  it("falls back to Attic when nothing is readable yet", async () => {
+  it("falls back to no room when nothing is readable yet", async () => {
     const area = await resolveKioskArea({
       kiosk: { getDeviceInfo: async () => ({ name: "Attic Dashboard" }) },
       hass: { callWS: async () => [] },
     });
     expect(area).toEqual({ name: FALLBACK_AREA_NAME, source: "fallback" });
-    expect(describeArea(area)).toBe("Attic source=fallback");
+    expect(area.name).toBe("");
+    expect(describeArea(area)).toBe("(none) source=fallback");
   });
 
   it("resolves the HA area from this kiosk's device name", async () => {

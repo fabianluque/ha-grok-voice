@@ -123,11 +123,13 @@ export function shouldOfferTokenField(input: { pathname: string; authFailed: boo
 export const KIOSK_SATELLITE_PROXY_PORT = "2325";
 
 /**
- * This install's Home Assistant LAN hostname. Kiosk duplex never uses
- * Core :8123 `/api/hassio_ingress/` — Lovelace has no ingress_session cookie.
- * TODO: discover the installed HA LAN host instead of hardcoding it.
+ * Last-resort Home Assistant hostname when the kiosk page is loopback
+ * (Kiosk Satellite :2325) and hassUrl / internal_url are also loopback.
+ * Kiosk duplex never uses Core :8123 `/api/hassio_ingress/` — Lovelace has
+ * no ingress_session cookie. Override with ``GROK_VOICE_URL`` /
+ * ``GROK_VOICE_SCRIPT`` if mDNS ``homeassistant.local`` does not resolve.
  */
-export const LAN_HA_FALLBACK_HOST = "192.168.86.38";
+export const LAN_HA_FALLBACK_HOST = "homeassistant.local";
 
 /** Add-on debug port mapped on the HA host. Token auth; not ingress. */
 export const VOICE_DEBUG_PORT = 8080;

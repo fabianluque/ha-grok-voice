@@ -61,10 +61,10 @@ def test_legacy_hassio_token_file_is_used_when_supervisor_token_is_absent(tmp_pa
     assert settings.mcp_token == "legacy-token"
 
 
-def test_default_area_is_attic_and_can_be_overridden(tmp_path, monkeypatch):
+def test_default_area_is_blank_and_can_be_overridden(tmp_path, monkeypatch):
     monkeypatch.setenv("SUPERVISOR_TOKEN", "addon-token")
     settings = load_settings(_options(tmp_path, {}), env_dirs=())
-    assert settings.default_area == "Attic"
+    assert settings.default_area == ""
     assert settings.default_area_id == ""
     custom = load_settings(
         _options(tmp_path, {"default_area": "Kitchen", "default_area_id": "kitchen"}),

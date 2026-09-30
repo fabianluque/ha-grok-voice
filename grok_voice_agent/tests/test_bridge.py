@@ -161,7 +161,7 @@ def test_end_session_command_after_home_control_followup_stays_open():
 
 
 def test_closing_phrase_then_anything_else_still_hangs_up():
-    """Fabian 0.2.16: thank you + 'Anything else?' left the duplex open."""
+    """Regression: thank you + 'Anything else?' used to leave the duplex open."""
     bridge = GrokBridge(ToolGateway(FakeMcp(), frozenset({"HassTurnOn"})))
     bridge.note_closing_phrase()
     assert bridge.end_after_response is True

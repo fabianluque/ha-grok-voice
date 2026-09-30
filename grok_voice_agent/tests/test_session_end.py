@@ -310,7 +310,7 @@ def test_auth_area_is_written_into_session_instructions():
     assert "attic" in update["session"]["instructions"]
 
 
-def test_missing_client_area_uses_addon_default_attic():
+def test_missing_client_area_does_not_invent_a_room():
     async def run():
         client = QueueSocket()
         grok = QueueSocket()
@@ -321,7 +321,25 @@ def test_missing_client_area_uses_addon_default_attic():
 
     sent = asyncio.run(run())
     update = next(json.loads(item) for item in sent if isinstance(item, str) and "session.update" in item)
-    assert "Attic" in update["session"]["instructions"]
+    assert "Attic" not in update["session"]["instructions"]
+    assert "Do not ask which lights" not in update["session"]["instructions"]
+
+
+def test_missing_client_area_uses_configured_addon_default():
+    async def run():
+        client = QueueSocket()
+        grok = QueueSocket()
+        await client.incoming.put(json.dumps({"type": "auth", "token": "good-token"}))
+        task = asyncio.create_task(
+            _run_session(client, grok, idle=0.1, default_area="Kitchen", default_area_id="kitchen")
+        )
+        await asyncio.wait_for(task, timeout=2)
+        return grok.sent
+
+    sent = asyncio.run(run())
+    update = next(json.loads(item) for item in sent if isinstance(item, str) and "session.update" in item)
+    assert "Kitchen" in update["session"]["instructions"]
+    assert "kitchen" in update["session"]["instructions"]
     assert "Do not ask which lights" in update["session"]["instructions"]
 
 
@@ -917,7 +935,7 @@ def test_end_session_tool_hangs_up_after_the_ack_turn():
 
 
 def test_end_session_dismiss_after_qna_followup_stays_open():
-    """Fabian 0.2.15: Grok asked a follow-up then the duplex still hung up."""
+    """Regression: a Q&A follow-up used to hang up the duplex."""
 
     async def run():
         client = QueueSocket()
@@ -965,7 +983,7 @@ def test_end_session_dismiss_after_qna_followup_stays_open():
 
 
 def test_thank_you_hangs_up_even_if_ack_asks_anything_else():
-    """Fabian 0.2.16: thank you left the duplex open when Grok asked anything else."""
+    """Regression: thank you used to leave the duplex open when Grok asked anything else."""
 
     async def run():
         client = QueueSocket()

@@ -7,3 +7,17 @@ __pycache__/
 client/dist/
 client/node_modules/
 node_modules/
+
+# Secrets and local add-on options — never commit real keys.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets.yaml
+secrets.yml
+secrets.json
+options.json
+data/options.json

@@ -2,7 +2,7 @@
 
 Computed at session open so event questions use *this* local date, not a
 stale training-data calendar. Location comes from add-on ``home_location``
-(Summit, NJ / zip) plus Home Assistant ``/api/config`` and ``zone.home``.
+(city / region / ZIP) plus Home Assistant ``/api/config`` and ``zone.home``.
 """
 
 from __future__ import annotations
@@ -149,7 +149,7 @@ def format_local_now(time_zone: str, now: datetime | None = None) -> str:
     return f"{clock} (ISO date {iso}, time zone {zone_name})"
 
 
-# Two-letter USPS abbreviations so "Summit, NJ" is a named city, not a vague label.
+# Two-letter USPS abbreviations so "Austin, TX" is a named city, not a vague label.
 _US_STATES = {
     "AL": "Alabama",
     "AK": "Alaska",
@@ -207,10 +207,10 @@ _GENERIC_PLACE_NAMES = frozenset({"home", "house", "residence", "zone.home"})
 
 
 def expand_city_name(value: str) -> tuple[str, str]:
-    """Turn ``Summit, NJ`` into a city the model can say out loud.
+    """Turn ``Austin, TX`` into a city the model can say out loud.
 
-    Returns ``(display, city_name)`` where display is ``Summit, NJ / Summit, New Jersey``
-    and city_name is ``Summit, New Jersey``. Unrecognized labels are returned as-is.
+    Returns ``(display, city_name)`` where display is ``Austin, TX / Austin, Texas``
+    and city_name is ``Austin, Texas``. Unrecognized labels are returned as-is.
     """
     raw = " ".join((value or "").split())
     if not raw:
