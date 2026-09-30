@@ -514,17 +514,35 @@ class GrokBridge:
             text = event.get("transcript") or event.get("delta") or ""
             if text:
                 return [
-                    {
-                        "type": "transcript",
-                        "role": role,
-                        "text": text,
-                        "final": event_type in FINAL_TRANSCRIPT_TYPES,
-                    }
+                    _transcript_payload(
+                        role,
+                        str(text),
+                        event_type in FINAL_TRANSCRIPT_TYPES,
+                        event,
+                    )
                 ]
         item_transcript = _message_item_transcript(event)
         if item_transcript:
             return [item_transcript]
         return []
+
+
+def _event_item_id(event: dict) -> str:
+    raw = event.get("item_id") or event.get("itemId")
+    if raw:
+        return str(raw)
+    item = event.get("item")
+    if isinstance(item, dict) and item.get("id"):
+        return str(item.get("id"))
+    return ""
+
+
+def _transcript_payload(role: str, text: str, final: bool, event: dict) -> dict[str, Any]:
+    payload: dict[str, Any] = {"type": "transcript", "role": role, "text": text, "final": final}
+    item_id = _event_item_id(event)
+    if item_id:
+        payload["itemId"] = item_id
+    return payload
 
 
 def _extend_partial(current: str, piece: str) -> str:
@@ -551,18 +569,13 @@ def _stream_transcript(bridge: GrokBridge, event_type: object, event: dict) -> d
         bridge._assistant_partial = _extend_partial(bridge._assistant_partial, piece)
         if not bridge._assistant_partial.strip():
             return None
-        return {
-            "type": "transcript",
-            "role": "assistant",
-            "text": bridge._assistant_partial,
-            "final": False,
-        }
+        return _transcript_payload("assistant", bridge._assistant_partial, False, event)
     if kind in USER_SNAPSHOT_TYPES:
         piece = str(event.get("transcript") or event.get("delta") or event.get("text") or "")
         if not piece.strip():
             return None
         bridge._user_partial = piece
-        return {"type": "transcript", "role": "user", "text": piece, "final": False}
+        return _transcript_payload("user", piece, False, event)
     if kind in USER_DELTA_TYPES:
         piece = str(event.get("delta") or event.get("transcript") or event.get("text") or "")
         if not piece:
@@ -570,7 +583,7 @@ def _stream_transcript(bridge: GrokBridge, event_type: object, event: dict) -> d
         bridge._user_partial = _extend_partial(bridge._user_partial, piece)
         if not bridge._user_partial.strip():
             return None
-        return {"type": "transcript", "role": "user", "text": bridge._user_partial, "final": False}
+        return _transcript_payload("user", bridge._user_partial, False, event)
     if kind in FINAL_TRANSCRIPT_TYPES:
         role = TRANSCRIPT_ROLES.get(kind)
         if role == "assistant":
@@ -628,12 +641,7 @@ def _message_item_transcript(event: dict) -> dict[str, Any] | None:
     text = _item_text(item)
     if not text:
         return None
-    return {
-        "type": "transcript",
-        "role": role,
-        "text": text,
-        "final": True,
-    }
+    return _transcript_payload(str(role), text, True, event)
 
 
 def _item_text(item: dict) -> str:

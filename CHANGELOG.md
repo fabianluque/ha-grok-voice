@@ -4,6 +4,10 @@ Versions match `grok_voice_agent/config.yaml`. GitHub Releases list the
 merged pull requests since the previous tag. Issues closed with `Fixes #N`
 in those pull requests are included below when GitHub reports them.
 
+## [0.2.14] - 2026-09-30
+
+- Keep **one in-place You: line** when Grok ASR revises the same utterance. 0.2.13 still appended another bubble when a later `updated` snapshot changed wording (not a prefix of the previous text), including after `speech_stopped` / `completed`. Overlay now keys the live bubble by ASR `item_id` and only starts a new You: line at a true turn boundary (new item, or `speech_started` after `speech_stopped`).
+
 ## [0.2.13] - 2026-09-30
 
 - Fix kiosk overlay user-transcript streaming. Each xAI `conversation.item.input_audio_transcription.updated` snapshot now replaces the single live You: line instead of appending another bubble that repeats the growing prompt. Extra `speech_started` events mid-utterance no longer finalize that bubble; hang-up still waits for a completed (`final: true`) closer.
