@@ -23,7 +23,12 @@ from app.grok_session import (
     xai_realtime_error_log,
     xai_session_tools_log,
 )
-from app.ha_context import CONFIG_FETCH_TIMEOUT_SECONDS, fallback_home_context, fetch_home_context
+from app.ha_context import (
+    CONFIG_FETCH_TIMEOUT_SECONDS,
+    fallback_home_context,
+    fetch_home_context,
+    merge_home_location,
+)
 from app.mcp_client import McpHttpClient, function_tools, voice_tool_log
 from app.memory import ConversationMemory, SessionTranscript, conversation_key, history_conversation_events
 from app.static import process_http_request
@@ -91,13 +96,14 @@ def install_redacting_logs(secrets: list[str]) -> None:
 
 async def _home_context(http, settings):
     try:
-        return await asyncio.wait_for(
+        context = await asyncio.wait_for(
             fetch_home_context(http, settings),
             timeout=CONFIG_FETCH_TIMEOUT_SECONDS,
         )
     except Exception as exc:
         log.info("home context fallback (%s)", type(exc).__name__)
-        return fallback_home_context(settings)
+        context = fallback_home_context(settings)
+    return merge_home_location(context, settings)
 
 
 async def _list_tools(gateway):
@@ -168,8 +174,9 @@ async def handle_socket(websocket, settings, http, grok_connect=None, memory=Non
     level, tool_message = voice_tool_log(listed, grok_tools)
     getattr(log, level)(tool_message)
     log.info(
-        "voice context tz=%s city=%s",
+        "voice context tz=%s home_location=%s city=%s",
         context.time_zone,
+        context.home_location or "(unset)",
         context.home_location or context.zone_name or context.location_name or "",
     )
     await connection.grok.send(

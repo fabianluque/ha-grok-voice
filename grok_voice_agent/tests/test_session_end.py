@@ -352,11 +352,38 @@ def test_session_update_injects_live_date_and_home_location():
     sent = asyncio.run(run())
     update = next(json.loads(item) for item in sent if isinstance(item, str) and "session.update" in item)
     text = update["session"]["instructions"]
+    assert "The user lives in Summit, NJ" in text
     assert "Summit, NJ" in text
     assert "Summit, New Jersey" in text
+    assert "where they live" in text
     assert "America/New_York" in text
     assert "current local date and time" in text
     assert update["session"]["turn_detection"]["prefix_padding_ms"] == 800
+
+
+def test_custom_instructions_do_not_drop_home_location():
+    async def run():
+        client = QueueSocket()
+        grok = QueueSocket()
+        await client.incoming.put(json.dumps({"type": "auth", "token": "good-token"}))
+        task = asyncio.create_task(
+            _run_session(
+                client,
+                grok,
+                idle=0.1,
+                instructions="You are a pirate. Keep answers salty.",
+            )
+        )
+        await asyncio.wait_for(task, timeout=2)
+        return grok.sent
+
+    sent = asyncio.run(run())
+    update = next(json.loads(item) for item in sent if isinstance(item, str) and "session.update" in item)
+    text = update["session"]["instructions"]
+    assert "You are a pirate. Keep answers salty." in text
+    assert "The user lives in Summit, NJ" in text
+    assert "Summit, NJ" in text
+    assert "current local date and time" in text
 
 
 def test_idle_keeps_short_history_for_the_same_device():

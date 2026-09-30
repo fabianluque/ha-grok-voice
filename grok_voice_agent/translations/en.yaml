@@ -40,7 +40,7 @@ configuration:
     description: Optional Home Assistant area_id slug (for example attic). Leave blank to derive it from the area name. Set this if Assist needs the id and the name slug is wrong.
   home_location:
     name: Home location
-    description: City, region, or ZIP for local events (for example Summit, NJ). Spoken as a named city (Summit, New Jersey). Combined with Home Assistant's timezone, GPS, and zone.home at each session start. Leave blank to use HA only.
+    description: City, region, or ZIP (for example Summit, NJ). Injected into every Grok session so it can answer where you live, what's nearby, and weather here. Leave blank if unset — Grok will not know the city.
   conversation_memory_ttl_seconds:
     name: Conversation memory
     description: Seconds to keep recent turns after a session ends so a new wake on the same device can follow up. Default 480 (8 minutes). Idle hang-up keeps the turns; goodbye clears them. Keyed by a stable per-tablet id, not the room name.

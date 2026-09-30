@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -31,8 +31,27 @@ class HomeContext:
     zone_name: str = ""
 
 
+def option_home_location(settings) -> str:
+    """Add-on **Home location** value. Empty means Grok is not told a city."""
+    return str(getattr(settings, "home_location", "") or "").strip()
+
+
 def fallback_home_context(settings) -> HomeContext:
-    return HomeContext(home_location=str(getattr(settings, "home_location", "") or "").strip())
+    return HomeContext(home_location=option_home_location(settings))
+
+
+def merge_home_location(context: HomeContext | None, settings) -> HomeContext:
+    """Keep HA timezone/GPS, but always use the add-on Home location when set.
+
+    ``build_session`` used to skip ``settings.home_location`` whenever a
+    (possibly city-less) ``HomeContext`` was passed in. Customized Instructions
+    never replace this block; they are the base the location is appended to.
+    """
+    ctx = context or HomeContext()
+    option = option_home_location(settings)
+    if not option or ctx.home_location == option:
+        return ctx
+    return replace(ctx, home_location=option)
 
 
 def _json_body(response: object) -> dict[str, Any]:
@@ -80,7 +99,7 @@ def parse_ha_config(payload: dict[str, Any], settings) -> HomeContext:
     return HomeContext(
         time_zone=time_zone,
         location_name=_text(payload.get("location_name")),
-        home_location=str(getattr(settings, "home_location", "") or "").strip(),
+        home_location=option_home_location(settings),
         country=_text(payload.get("country")),
         latitude=_float(payload.get("latitude")),
         longitude=_float(payload.get("longitude")),
@@ -250,18 +269,30 @@ def _format_coords(latitude: float, longitude: float) -> str:
     return f"{abs(latitude):.4f}°{ns}, {abs(longitude):.4f}°{ew}"
 
 
-def with_home_context(base: str, context: HomeContext | None, now: datetime | None = None) -> str:
-    ctx = context or HomeContext()
-    when = format_local_now(ctx.time_zone, now)
+def _location_prompt(ctx: HomeContext) -> str:
+    """Pin the configured city so 'where do I live?' does not need a tool."""
+    configured = (ctx.home_location or "").strip()
     where = format_home_location(ctx)
-    extra = (
-        f"The current local date and time is {when}. "
-        "Use this clock for today, tonight, this week, this weekend, this season, "
-        "and this year. Do not guess a date from training data."
-    )
     display, city_name = named_city(ctx)
+    if configured:
+        extra = f" The user lives in {configured}."
+        if where:
+            extra += f" This home is in {where}."
+        if city_name:
+            extra += (
+                f" The city name is {city_name}. Use that city name for local events, "
+                "weather, sports, and 'near me' questions. Do not call this place only "
+                "'home' or an unnamed location."
+            )
+        extra += (
+            " When they ask where they live, what is nearby, or the weather here, "
+            "answer from that location. Do not say you do not know. Do not ask them. "
+            "This is true even if Home Assistant, GetLiveContext, or zone.home only "
+            "says Home or has no city."
+        )
+        return extra
     if where:
-        extra += f" This home is in {where}."
+        extra = f" This home is in {where}."
         if city_name:
             extra += (
                 f" The city name is {city_name}. Use that city name for local events, "
@@ -270,11 +301,24 @@ def with_home_context(base: str, context: HomeContext | None, now: datetime | No
             )
         else:
             extra += " Use that place for local events, weather, and 'near me' questions."
-    elif display or city_name:
-        extra += (
+        return extra
+    if display or city_name:
+        return (
             f" This home's city is {city_name or display}. Use that city name for local "
             "events, weather, and 'near me' questions."
         )
+    return ""
+
+
+def with_home_context(base: str, context: HomeContext | None, now: datetime | None = None) -> str:
+    ctx = context or HomeContext()
+    when = format_local_now(ctx.time_zone, now)
+    extra = (
+        f"The current local date and time is {when}. "
+        "Use this clock for today, tonight, this week, this weekend, this season, "
+        "and this year. Do not guess a date from training data."
+    )
+    extra += _location_prompt(ctx)
     root = (base or "").rstrip()
     return f"{root}\n\n{extra}" if root else extra
 

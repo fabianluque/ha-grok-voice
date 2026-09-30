@@ -13,6 +13,7 @@ from app.ha_context import (
     fetch_home_context,
     format_home_location,
     format_local_now,
+    merge_home_location,
     parse_ha_config,
     with_home_context,
     with_zone_home,
@@ -74,10 +75,13 @@ def test_instructions_include_fresh_date_and_location():
     text = with_home_context("Speak briefly.", context, now=NOW)
     assert "Speak briefly." in text
     assert "September 30, 2026" in text
+    assert "The user lives in Summit, NJ" in text
     assert "Summit, NJ" in text
     assert "Summit, New Jersey" in text
     assert "city name" in text
     assert "training data" in text
+    assert "where they live" in text
+    assert "Do not say you do not know" in text
 
 
 def test_session_update_gets_context_at_open():
@@ -91,12 +95,54 @@ def test_session_update_gets_context_at_open():
     text = payload["session"]["instructions"]
     assert "Attic" in text
     assert "September 30, 2026" in text
+    assert "The user lives in Summit, NJ" in text
     assert "Summit, NJ" in text
     assert "Summit, New Jersey" in text
     assert payload["session"]["turn_detection"]["prefix_padding_ms"] == 800
     assert payload["session"]["turn_detection"]["threshold"] == 0.35
     assert "idle_timeout_ms" not in str(payload)
     assert "silence_duration_ms" not in str(payload)
+
+
+def test_session_instructions_include_configured_home_location():
+    """Live session.update must carry the Home location option, not only date."""
+    payload = build_session(
+        _settings(instructions="Be a pirate. Never mention tools.", home_location="Summit, NJ"),
+        [],
+        {"name": "Attic", "id": "attic"},
+        context=HomeContext(location_name="Home", zone_name="Home", time_zone="America/New_York"),
+        now=NOW,
+    )
+    text = payload["session"]["instructions"]
+    assert "Be a pirate. Never mention tools." in text
+    assert "The user lives in Summit, NJ" in text
+    assert "Summit, NJ" in text
+    assert "Summit, New Jersey" in text
+    assert "where they live" in text
+    assert "Attic" in text
+    assert "September 30, 2026" in text
+
+
+def test_merge_home_location_prefers_addon_option():
+    context = HomeContext(location_name="Home", zone_name="Home", time_zone="America/New_York")
+    merged = merge_home_location(context, _settings(home_location="Summit, NJ"))
+    assert merged.home_location == "Summit, NJ"
+    assert merged.location_name == "Home"
+    blank = merge_home_location(HomeContext(home_location="keep-me"), _settings(home_location=""))
+    assert blank.home_location == "keep-me"
+
+
+def test_empty_home_location_does_not_invent_a_city():
+    text = with_home_context(
+        "Speak briefly.",
+        HomeContext(location_name="Home", zone_name="Home", time_zone="America/New_York"),
+        now=NOW,
+    )
+    assert "The user lives in" not in text
+    assert "Summit" not in text
+    payload = build_session(_settings(home_location=""), [], now=NOW)
+    assert "The user lives in" not in payload["session"]["instructions"]
+    assert "Summit" not in payload["session"]["instructions"]
 
 
 def test_parse_ha_config_and_zone_home():
@@ -177,6 +223,7 @@ def test_generic_ha_home_name_does_not_hide_addon_city():
         time_zone="America/New_York",
     )
     text = with_home_context("Speak briefly.", context, now=NOW)
+    assert "The user lives in Summit, NJ" in text
     assert "Summit, New Jersey" in text
     assert "city name" in text
     assert "unnamed location" in text

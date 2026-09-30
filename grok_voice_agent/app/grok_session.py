@@ -15,7 +15,7 @@ import unicodedata
 from datetime import datetime
 from typing import Any
 
-from app.ha_context import HomeContext, with_home_context
+from app.ha_context import HomeContext, merge_home_location, with_home_context
 from app.mcp_client import bare_tool_name, tool_domain
 from app.memory import Turn, with_history_instructions
 from app.tools import ToolGateway
@@ -495,8 +495,9 @@ def compose_instructions(
     history: list[Turn] | None = None,
     now: datetime | None = None,
 ) -> str:
-    text = with_area_instructions(base, area)
-    text = with_home_context(text, context, now=now)
+    # Location is appended after customized Instructions, never replaced by them.
+    text = with_home_context(base, context, now=now)
+    text = with_area_instructions(text, area)
     text = with_session_end_instructions(text)
     return with_history_instructions(text, history)
 
@@ -516,7 +517,7 @@ def build_session(
         tools.append({"type": "web_search"})
     if settings.enable_x_search:
         tools.append({"type": "x_search"})
-    home = context or HomeContext(home_location=str(getattr(settings, "home_location", "") or ""))
+    home = merge_home_location(context, settings)
     return {
         "type": "session.update",
         "session": {
