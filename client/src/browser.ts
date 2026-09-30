@@ -2,6 +2,7 @@ import { downsample, floatToPcm16, PcmPreroll, schedulePcm } from "./audio";
 import { authHandshake } from "./ingress";
 import { SessionEndWatch } from "./session-end";
 import { VoiceSession, type ServerMessage, type WebSocketLike } from "./session";
+import { scheduleTimeout } from "./timers";
 
 export const SAMPLE_RATE = 24000;
 
@@ -144,7 +145,10 @@ export async function createBrowserSession(
     closed = true;
     endWatch.dispose();
     mic?.stop();
-    void context.close();
+    const remainingMs = Math.max(0, Math.ceil((nextTime.t - context.currentTime) * 1000));
+    scheduleTimeout(() => {
+      void context.close();
+    }, remainingMs + 80);
     originalFinish(reason);
   };
   const wrapped = session.handleServerText.bind(session);

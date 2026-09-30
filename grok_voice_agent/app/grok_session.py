@@ -35,7 +35,8 @@ _APOS = str.maketrans({"\u2019": "'", "\u2018": "'", "`": "'"})
 _FILLERS = frozenset(
     {"ok", "okay", "alright", "please", "hey", "yeah", "yep", "yup", "grok", "uh", "um", "oh"}
 )
-_CLOSERS = frozenset(
+# Match the whole utterance, or as a suffix ("oh, that's great, thank you").
+_SUFFIX_CLOSERS = frozenset(
     {
         "thank you",
         "thanks",
@@ -58,14 +59,42 @@ _CLOSERS = frozenset(
         "thanks thats it",
         "thank you thats all",
         "thank you thats it",
+        "thats all for now",
         "goodbye",
         "good bye",
         "bye",
         "bye bye",
         "stop listening",
         "please stop listening",
+        "you can go",
+        "you can go now",
+        "you may go",
+        "you may go now",
+        "thats enough",
+        "that is enough",
+        "thanks im done",
+        "thank you im done",
+        "im done thanks",
+        "im all set",
+        "were good",
+        "we are good",
+        "were all set",
+        "we are all set",
     }
 )
+# Short phrases that appear inside real requests ("tell me when I'm done").
+_EXACT_CLOSERS = frozenset(
+    {
+        "im done",
+        "i am done",
+        "all set",
+        "never mind",
+        "nevermind",
+        "carry on",
+        "go now",
+    }
+)
+_CLOSERS = _SUFFIX_CLOSERS | _EXACT_CLOSERS
 
 
 def normalize_utterance(text: str) -> str:
@@ -97,7 +126,7 @@ def is_closing_utterance(text: str | None) -> bool:
         return False
     if normalized in _CLOSERS:
         return True
-    return any(normalized.endswith(f" {closer}") for closer in _CLOSERS)
+    return any(normalized.endswith(f" {closer}") for closer in _SUFFIX_CLOSERS)
 
 
 def parse_client_area(value: object) -> dict[str, str] | None:
@@ -190,6 +219,59 @@ def with_area_instructions(base: str, area: dict[str, str] | None) -> str:
     return f"{root}\n\n{extra}" if root else extra
 
 
+END_SESSION_TOOL_NAME = "end_session"
+END_SESSION_ALIASES = frozenset({END_SESSION_TOOL_NAME, "hang_up"})
+END_SESSION_TOOL = {
+    "type": "function",
+    "name": END_SESSION_TOOL_NAME,
+    "description": (
+        "End this voice session and return the tablet to wake-word listening. "
+        "Call after a brief spoken acknowledgment when the user dismisses you "
+        "('you can go', 'you can go now', 'that's all', 'thanks I'm done', "
+        "'never mind', 'goodbye') or after a simple one-shot home command "
+        "(lights, garage, lock, volume, play/pause) that already succeeded "
+        "and needs no follow-up. Do not call during a multi-step task, while "
+        "asking a clarifying question, or when the user is listing several requests."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "reason": {
+                "type": "string",
+                "enum": ["dismiss", "command"],
+                "description": (
+                    "dismiss = the user told you to go; "
+                    "command = a short Home Assistant action finished successfully."
+                ),
+            }
+        },
+        "required": ["reason"],
+    },
+}
+
+
+def is_end_session_tool(name: object) -> bool:
+    text = str(name or "").strip()
+    if not text:
+        return False
+    bare = text.rsplit("__", 1)[-1]
+    return bare in END_SESSION_ALIASES or text in END_SESSION_ALIASES
+
+
+def with_session_end_instructions(base: str) -> str:
+    extra = (
+        "When the user dismisses you, or after you complete one simple home "
+        "command that succeeded and you are not asking a question, speak a "
+        "very short acknowledgment and then call the end_session tool "
+        "(reason=dismiss or reason=command). That hangs up and hands the "
+        "microphone back to wake-word listening. Do not call end_session "
+        "while a multi-step task is unfinished, while you still need a "
+        "clarifying answer, or when they are giving a list of requests."
+    )
+    root = (base or "").rstrip()
+    return f"{root}\n\n{extra}" if root else extra
+
+
 class ConversationWatch:
     """Idle only after the assistant is done and the user is not mid-utterance.
 
@@ -268,6 +350,7 @@ def compose_instructions(
 ) -> str:
     text = with_area_instructions(base, area)
     text = with_home_context(text, context, now=now)
+    text = with_session_end_instructions(text)
     return with_history_instructions(text, history)
 
 
@@ -280,6 +363,8 @@ def build_session(
     now: datetime | None = None,
 ) -> dict:
     tools: list[dict] = list(function_tools)
+    if not any(str(tool.get("name") or "") == END_SESSION_TOOL_NAME for tool in tools):
+        tools.append(dict(END_SESSION_TOOL))
     if settings.enable_web_search:
         tools.append({"type": "web_search"})
     if settings.enable_x_search:
@@ -315,6 +400,8 @@ class GrokBridge:
         self.tools = tools
         self.playing = False
         self.awaiting_tool_followup = False
+        self.end_after_response = False
+        self.end_session_forget = False
 
     def client_audio(self, pcm: bytes) -> dict:
         """Always append mic audio, including while the assistant is speaking."""
@@ -331,8 +418,22 @@ class GrokBridge:
             except json.JSONDecodeError:
                 arguments = {}
         else:
-            arguments = raw_arguments
-        output = await self.tools.execute(str(event.get("name") or ""), arguments)
+            arguments = raw_arguments if isinstance(raw_arguments, dict) else {}
+        name = str(event.get("name") or "")
+        if is_end_session_tool(name):
+            reason = str(arguments.get("reason") or "dismiss").strip().casefold()
+            self.end_after_response = True
+            self.end_session_forget = reason == "dismiss"
+            self.awaiting_tool_followup = True
+            return {
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "function_call_output",
+                    "call_id": event.get("call_id"),
+                    "output": json.dumps({"ok": True, "ending": True, "reason": reason}),
+                },
+            }
+        output = await self.tools.execute(name, arguments)
         self.awaiting_tool_followup = True
         return {
             "type": "conversation.item.create",
@@ -348,6 +449,13 @@ class GrokBridge:
             return None
         self.awaiting_tool_followup = False
         return {"type": "response.create"}
+
+    def consume_end_session(self) -> bool:
+        """True once tools are done and the ack turn (if any) has finished."""
+        if not self.end_after_response or self.awaiting_tool_followup:
+            return False
+        self.end_after_response = False
+        return True
 
     def client_messages(self, event: dict) -> list[dict[str, Any]]:
         event_type = event.get("type")

@@ -52,6 +52,30 @@ def test_function_call_becomes_one_function_call_output():
     assert followup == {"type": "response.create"}
 
 
+def test_end_session_is_local_and_does_not_call_mcp():
+    mcp = FakeMcp()
+    bridge = GrokBridge(ToolGateway(mcp, frozenset({"HassTurnOn"})))
+
+    async def run():
+        return await bridge.handle_function_call(
+            {
+                "type": "response.function_call_arguments.done",
+                "name": "end_session",
+                "call_id": "call-end",
+                "arguments": json.dumps({"reason": "command"}),
+            }
+        )
+
+    message = asyncio.run(run())
+    assert json.loads(message["item"]["output"]) == {"ok": True, "ending": True, "reason": "command"}
+    assert bridge.end_after_response is True
+    assert bridge.end_session_forget is False
+    assert bridge.consume_end_session() is False
+    assert bridge.followup_after_tools() == {"type": "response.create"}
+    assert bridge.consume_end_session() is True
+    assert bridge.consume_end_session() is False
+
+
 def test_speech_started_is_forwarded_immediately():
     bridge = GrokBridge(ToolGateway(FakeMcp(), frozenset({"HassTurnOn"})))
     bridge.playing = True
@@ -142,6 +166,8 @@ def test_session_is_full_duplex_server_vad():
     assert session["audio"]["input"]["format"]["rate"] == 24000
     assert "interruptible" not in json.dumps(payload)
     assert {"type": "web_search"} in session["tools"]
+    assert any(tool.get("name") == "end_session" for tool in session["tools"])
+    assert "end_session" in session["instructions"]
 
 
 def test_session_instructions_include_client_area():
@@ -152,3 +178,4 @@ def test_session_instructions_include_client_area():
     assert "lights" in text
     assert "music" in text
     assert "Music Assistant" in text
+    assert "end_session" in text

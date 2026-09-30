@@ -17,6 +17,7 @@ from app.grok_session import (
     GrokBridge,
     build_session,
     is_closing_utterance,
+    is_end_session_tool,
     merge_session_area,
     parse_client_device,
     xai_realtime_error_log,
@@ -192,12 +193,17 @@ async def handle_socket(websocket, settings, http, grok_connect=None, memory=Non
     idle = asyncio.Event()
     activity = asyncio.Event()
     end_reason = "idle"
+    forget_memory = False
 
-    def request_end(reason: str) -> None:
-        nonlocal end_reason
+    def request_end(reason: str, *, forget: bool | None = None) -> None:
+        nonlocal end_reason, forget_memory
         if idle.is_set():
             return
         end_reason = reason
+        if forget is not None:
+            forget_memory = forget
+        elif reason == "done":
+            forget_memory = True
         idle.set()
         activity.set()
 
@@ -251,6 +257,9 @@ async def handle_socket(websocket, settings, http, grok_connect=None, memory=Non
             if event_type == "response.function_call_arguments.done":
                 output = await bridge.handle_function_call(event)
                 denied = "tool_not_allowed" in output["item"]["output"]
+                name = str(event.get("name") or "")
+                if is_end_session_tool(name):
+                    log.info("voice end_session reason=%s", "dismiss" if bridge.end_session_forget else "command")
                 await websocket.send(
                     json.dumps(
                         {
@@ -272,6 +281,8 @@ async def handle_socket(websocket, settings, http, grok_connect=None, memory=Non
                 transcript.flush_pending("assistant")
                 persist_turns()
                 await websocket.send(json.dumps({"type": "response_done"}))
+                if bridge.consume_end_session():
+                    request_end("done", forget=bridge.end_session_forget)
                 continue
             for client_event in bridge.client_messages(event):
                 if client_event.get("type") == "binary":
@@ -327,7 +338,7 @@ async def handle_socket(websocket, settings, http, grok_connect=None, memory=Non
         log.error("grok connection ended: %s", type(grok_task.exception()).__name__)
     elif client_task.done() and not client_task.cancelled() and end_reason == "idle":
         reason = "stop"
-    if reason == "done":
+    if forget_memory:
         store.forget(memory_key)
     else:
         transcript.flush_pending()

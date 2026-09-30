@@ -20,6 +20,12 @@ describe("closing utterances", () => {
       "alright, goodbye",
       "ok bye",
       "that's all for now, thank you",
+      "you can go now",
+      "you can go",
+      "thanks I'm done",
+      "I'm done",
+      "never mind",
+      "all set",
     ]) {
       expect(isClosingUtterance(text), text).toBe(true);
     }
@@ -33,6 +39,8 @@ describe("closing utterances", () => {
       "that's all the lights in the attic",
       "could you thank you later for me",
       "don't stop listening until I say so",
+      "tell me when I'm done",
+      "never mind the kitchen lights",
       "",
       undefined,
     ]) {

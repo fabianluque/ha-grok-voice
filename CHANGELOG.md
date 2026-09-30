@@ -9,6 +9,7 @@ in those pull requests are included below when GitHub reports them.
 - Name the city in session location context. Add-on **Home location** (`Summit, NJ`) is expanded to **Summit, New Jersey** in the Grok instructions so answers can say the city, not only a vague home/GPS string.
 - Keep short per-device conversation memory across wakes within the TTL. History is keyed by a stable tablet id (not area fallback), written as turns complete (including xAI `updated` transcripts after VAD stop), and reinjected on the next `session.update` both as instructions and as `conversation.item.create` messages so follow-ups like “do I have a meeting today?” use what the user just said, not only the calendar tool. Attic vs dining stay separate. Goodbye still clears that device; idle hang-up keeps the turns (~8 minutes).
 - Increase local mic pre-roll to **900ms** and flush it when the duplex session is `ready` (not at WebSocket open). Server VAD `prefix_padding_ms` is **800ms** and threshold **0.35**. getUserMedia is still not delayed.
+- Hang up after a one-shot home command or a dismissal without an exact goodbye phrase. Grok gets a local **`end_session`** tool (`reason=command` or `reason=dismiss`). After a short ack, the duplex ends and wake-word listening resumes (same path as goodbye). Phrase matching also accepts “you can go now” / “thanks I’m done”. Do not auto-end mid-multi-step or while asking a question. Command hang-up keeps the 8-minute tablet history; dismiss/goodbye still clears it.
 
 ## [0.2.9] - 2026-09-30
 

@@ -13,7 +13,7 @@ const FILLERS = new Set([
   "oh",
 ]);
 
-const CLOSERS = new Set([
+const SUFFIX_CLOSERS = new Set([
   "thank you",
   "thanks",
   "thank you so much",
@@ -35,13 +35,40 @@ const CLOSERS = new Set([
   "thanks thats it",
   "thank you thats all",
   "thank you thats it",
+  "thats all for now",
   "goodbye",
   "good bye",
   "bye",
   "bye bye",
   "stop listening",
   "please stop listening",
+  "you can go",
+  "you can go now",
+  "you may go",
+  "you may go now",
+  "thats enough",
+  "that is enough",
+  "thanks im done",
+  "thank you im done",
+  "im done thanks",
+  "im all set",
+  "were good",
+  "we are good",
+  "were all set",
+  "we are all set",
 ]);
+
+const EXACT_CLOSERS = new Set([
+  "im done",
+  "i am done",
+  "all set",
+  "never mind",
+  "nevermind",
+  "carry on",
+  "go now",
+]);
+
+const CLOSERS = new Set([...SUFFIX_CLOSERS, ...EXACT_CLOSERS]);
 
 export function normalizeUtterance(text: string): string {
   return text
@@ -71,7 +98,8 @@ export function stripFillers(text: string): string {
  *
  * Match the whole utterance, or a closer at the end after normalize
  * ("oh, that's great, thank you"). A closer in the middle of a request
- * ("thank you for turning on the lights") is not a hang-up.
+ * ("thank you for turning on the lights") is not a hang-up. Short phrases
+ * like "I'm done" are exact-only so "tell me when I'm done" stays a request.
  */
 export function isClosingUtterance(text: string | undefined): boolean {
   if (!text || !text.trim()) {
@@ -84,7 +112,7 @@ export function isClosingUtterance(text: string | undefined): boolean {
   if (CLOSERS.has(normalized)) {
     return true;
   }
-  for (const closer of CLOSERS) {
+  for (const closer of SUFFIX_CLOSERS) {
     if (normalized.endsWith(` ${closer}`)) {
       return true;
     }

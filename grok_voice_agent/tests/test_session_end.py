@@ -645,3 +645,112 @@ def test_goodbye_clears_history_for_that_device():
     sent = asyncio.run(second())
     update = next(json.loads(item) for item in sent if isinstance(item, str) and "session.update" in item)
     assert "what's this weekend" not in update["session"]["instructions"]
+
+
+def test_end_session_tool_hangs_up_after_the_ack_turn():
+    async def run():
+        client = QueueSocket()
+        grok = QueueSocket()
+        await client.incoming.put(json.dumps({"type": "auth", "token": "good-token"}))
+        task = asyncio.create_task(_run_session(client, grok, idle=5))
+        await asyncio.sleep(0.03)
+        await grok.incoming.put(
+            json.dumps(
+                {
+                    "type": "response.function_call_arguments.done",
+                    "name": "end_session",
+                    "call_id": "e1",
+                    "arguments": json.dumps({"reason": "command"}),
+                }
+            )
+        )
+        await grok.incoming.put(json.dumps({"type": "response.done"}))
+        await asyncio.sleep(0.03)
+        assert _end_reason(client.sent) is None
+        await grok.incoming.put(
+            json.dumps(
+                {
+                    "type": "response.output_audio_transcript.done",
+                    "transcript": "Lights on.",
+                }
+            )
+        )
+        await grok.incoming.put(json.dumps({"type": "response.done"}))
+        await asyncio.wait_for(task, timeout=2)
+        return client.sent, grok.sent
+
+    sent, grok_sent = asyncio.run(run())
+    assert _end_reason(sent) == "done"
+    assert any(item.get("type") == "response.create" for item in (json.loads(x) for x in grok_sent if isinstance(x, str) and x.startswith("{")))
+
+
+def test_end_session_command_keeps_short_history():
+    from app.memory import ConversationMemory
+
+    memory = ConversationMemory(ttl_seconds=480)
+
+    async def first():
+        client = QueueSocket()
+        grok = QueueSocket()
+        await client.incoming.put(
+            json.dumps(
+                {
+                    "type": "auth",
+                    "token": "good-token",
+                    "device": {"name": "Attic Dashboard", "id": "attic-tablet"},
+                }
+            )
+        )
+        task = asyncio.create_task(_run_session(client, grok, idle=5, memory=memory))
+        await asyncio.sleep(0.03)
+        await grok.incoming.put(
+            json.dumps(
+                {
+                    "type": "conversation.item.input_audio_transcription.completed",
+                    "transcript": "turn on the lights",
+                }
+            )
+        )
+        await grok.incoming.put(
+            json.dumps(
+                {
+                    "type": "response.function_call_arguments.done",
+                    "name": "end_session",
+                    "call_id": "e1",
+                    "arguments": json.dumps({"reason": "command"}),
+                }
+            )
+        )
+        await grok.incoming.put(json.dumps({"type": "response.done"}))
+        await asyncio.sleep(0.03)
+        await grok.incoming.put(
+            json.dumps(
+                {
+                    "type": "response.output_audio_transcript.done",
+                    "transcript": "On.",
+                }
+            )
+        )
+        await grok.incoming.put(json.dumps({"type": "response.done"}))
+        await asyncio.wait_for(task, timeout=2)
+
+    async def second():
+        client = QueueSocket()
+        grok = QueueSocket()
+        await client.incoming.put(
+            json.dumps(
+                {
+                    "type": "auth",
+                    "token": "good-token",
+                    "device": {"name": "Attic Dashboard", "id": "attic-tablet"},
+                }
+            )
+        )
+        task = asyncio.create_task(_run_session(client, grok, idle=0.1, memory=memory))
+        await asyncio.wait_for(task, timeout=2)
+        return grok.sent
+
+    asyncio.run(first())
+    sent = asyncio.run(second())
+    update = next(json.loads(item) for item in sent if isinstance(item, str) and "session.update" in item)
+    assert "turn on the lights" in update["session"]["instructions"]
