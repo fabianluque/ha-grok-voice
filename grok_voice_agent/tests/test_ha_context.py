@@ -8,6 +8,7 @@ from app.config import Settings, load_settings
 from app.grok_session import build_session
 from app.ha_context import (
     HomeContext,
+    expand_city_name,
     fallback_home_context,
     fetch_home_context,
     format_home_location,
@@ -62,6 +63,7 @@ def test_location_prefers_addon_label_then_ha_coords():
     )
     text = format_home_location(context)
     assert "Summit, NJ" in text
+    assert "Summit, New Jersey" in text
     assert "40.7155°N" in text
     assert "74.3646°W" in text
     assert "US" in text
@@ -73,6 +75,8 @@ def test_instructions_include_fresh_date_and_location():
     assert "Speak briefly." in text
     assert "September 30, 2026" in text
     assert "Summit, NJ" in text
+    assert "Summit, New Jersey" in text
+    assert "city name" in text
     assert "training data" in text
 
 
@@ -88,8 +92,9 @@ def test_session_update_gets_context_at_open():
     assert "Attic" in text
     assert "September 30, 2026" in text
     assert "Summit, NJ" in text
-    assert payload["session"]["turn_detection"]["prefix_padding_ms"] == 400
-    assert payload["session"]["turn_detection"]["threshold"] == 0.4
+    assert "Summit, New Jersey" in text
+    assert payload["session"]["turn_detection"]["prefix_padding_ms"] == 800
+    assert payload["session"]["turn_detection"]["threshold"] == 0.35
     assert "idle_timeout_ms" not in str(payload)
     assert "silence_duration_ms" not in str(payload)
 
@@ -155,6 +160,26 @@ def test_fetch_home_context_reads_ha_config():
     assert context.time_zone == "America/New_York"
     assert context.home_location == "Summit, NJ"
     assert context.latitude == 40.7155
+
+
+def test_expand_city_name_surfaces_summit_new_jersey():
+    display, city = expand_city_name("Summit, NJ")
+    assert display == "Summit, NJ / Summit, New Jersey"
+    assert city == "Summit, New Jersey"
+    assert expand_city_name("Summit NJ")[1] == "Summit, New Jersey"
+
+
+def test_generic_ha_home_name_does_not_hide_addon_city():
+    context = HomeContext(
+        location_name="Home",
+        home_location="Summit, NJ",
+        zone_name="Home",
+        time_zone="America/New_York",
+    )
+    text = with_home_context("Speak briefly.", context, now=NOW)
+    assert "Summit, New Jersey" in text
+    assert "city name" in text
+    assert "unnamed location" in text
 
 
 def test_load_settings_reads_home_location_and_memory_ttl(tmp_path, monkeypatch):

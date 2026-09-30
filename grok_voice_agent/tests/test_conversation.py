@@ -2,12 +2,15 @@
 
 from app.grok_session import (
     ConversationWatch,
+    END_SESSION_TOOL_NAME,
     is_closing_utterance,
+    is_end_session_tool,
     merge_session_area,
     parse_client_area,
     parse_client_device,
     slug_area_id,
     with_area_instructions,
+    with_session_end_instructions,
 )
 
 
@@ -29,6 +32,12 @@ def test_closing_utterances_match_natural_variants():
         "alright, goodbye",
         "ok bye",
         "that's all for now, thank you",
+        "you can go now",
+        "you can go",
+        "thanks I'm done",
+        "I'm done",
+        "never mind",
+        "all set",
     ):
         assert is_closing_utterance(text), text
 
@@ -41,6 +50,8 @@ def test_requests_are_not_closing_utterances():
         "that's all the lights in the attic",
         "could you thank you later for me",
         "don't stop listening until I say so",
+        "tell me when I'm done",
+        "never mind the kitchen lights",
         "",
         None,
     ):
@@ -97,3 +108,13 @@ def test_watch_is_quiet_only_after_assistant_done_and_user_not_speaking():
     assert watch.is_quiet() is True
     watch.on_response_done(awaiting_tools=True)
     assert watch.is_quiet() is False
+
+
+def test_end_session_tool_is_local_and_prompted():
+    assert is_end_session_tool("end_session") is True
+    assert is_end_session_tool("hang_up") is True
+    assert is_end_session_tool("HassTurnOn") is False
+    text = with_session_end_instructions("Speak briefly.")
+    assert END_SESSION_TOOL_NAME in text
+    assert "one simple home command" in text
+    assert "clarifying" in text

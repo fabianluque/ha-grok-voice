@@ -11,20 +11,23 @@ const STYLE_ID = "grok-voice-overlay-style";
 
 const STYLE = `
 #grok-voice-overlay{
-  position:fixed;left:50%;bottom:20px;transform:translateX(-50%);
-  z-index:10000;display:flex;flex-direction:column;gap:10px;
-  width:min(560px,calc(100vw - 28px));max-height:min(52vh,440px);
-  padding:14px 16px 16px;border-radius:20px;pointer-events:none;
-  background:rgba(17,19,24,.9);color:#f4f6fb;
-  font:16px/1.35 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
-  box-shadow:0 10px 40px rgba(0,0,0,.38);
-  backdrop-filter:blur(12px);
+  position:fixed;inset:0;z-index:10000;
+  display:flex;flex-direction:column;gap:clamp(12px,2vh,24px);
+  box-sizing:border-box;
+  padding:clamp(18px,4vh,40px) clamp(18px,4.5vw,48px) clamp(22px,4vh,44px);
+  pointer-events:auto;
+  background:rgba(6,8,14,.82);
+  color:#f4f6fb;
+  font:clamp(26px,4.2vw,40px)/1.35 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  backdrop-filter:blur(22px) saturate(1.15);
+  -webkit-backdrop-filter:blur(22px) saturate(1.15);
 }
 #grok-voice-overlay .header{
-  display:flex;align-items:center;gap:8px;flex-shrink:0;
+  display:flex;align-items:center;gap:12px;flex-shrink:0;
+  font-size:clamp(28px,4.6vw,44px);
 }
 #grok-voice-overlay .dot{
-  width:8px;height:8px;border-radius:50%;background:#18bc9c;
+  width:14px;height:14px;border-radius:50%;background:#18bc9c;
   box-shadow:0 0 0 0 rgba(24,188,156,.45);
   animation:grok-voice-pulse 1.6s ease-out infinite;
 }
@@ -32,28 +35,36 @@ const STYLE = `
   background:#5b9dff;box-shadow:0 0 0 0 rgba(91,157,255,.45);
 }
 #grok-voice-overlay .status{
-  font-weight:700;letter-spacing:.01em;
+  font-weight:800;letter-spacing:.01em;
 }
 #grok-voice-overlay[data-status="speaking"] .status{color:#c9ddff}
 #grok-voice-overlay .brand{
-  margin-left:auto;color:#9aa3b5;font-size:13px;font-weight:600;
+  margin-left:auto;color:#9aa3b5;font-size:clamp(18px,2.6vw,26px);font-weight:700;
 }
 #grok-voice-overlay .messages{
-  overflow:auto;min-height:4.5rem;max-height:min(40vh,340px);
-  display:flex;flex-direction:column;gap:8px;
+  flex:1 1 auto;overflow:auto;min-height:0;
+  display:flex;flex-direction:column;gap:clamp(10px,1.8vh,20px);
 }
 #grok-voice-overlay .messages:empty{display:none}
-#grok-voice-overlay .msg{margin:0;white-space:pre-wrap;word-break:break-word}
+#grok-voice-overlay .msg{
+  margin:0;white-space:pre-wrap;word-break:break-word;
+  font-size:clamp(26px,4.2vw,40px);line-height:1.35;
+}
+#grok-voice-overlay .msg[data-final="false"]{opacity:.88}
 #grok-voice-overlay .msg[data-role="user"]{color:#d7deea}
 #grok-voice-overlay .msg[data-role="assistant"]{color:#7dffcf}
-#grok-voice-overlay .who{font-weight:700;margin-right:.35em;color:#9aa3b5}
+#grok-voice-overlay .who{font-weight:800;margin-right:.35em;color:#9aa3b5}
 #grok-voice-overlay .msg[data-role="assistant"] .who{color:#18bc9c}
 @keyframes grok-voice-pulse{
   0%{box-shadow:0 0 0 0 currentColor;opacity:1}
-  70%{box-shadow:0 0 0 8px transparent;opacity:.85}
+  70%{box-shadow:0 0 0 10px transparent;opacity:.85}
   100%{box-shadow:0 0 0 0 transparent;opacity:1}
 }
 `;
+
+export function overlayStyle(): string {
+  return STYLE;
+}
 
 export function voiceStatusFromMessage(type: string): VoiceStatus | null {
   if (
@@ -144,6 +155,7 @@ export function mountKioskStatus(doc: Document): KioskOverlay {
       const line = doc.createElement("p");
       line.className = "msg";
       line.dataset.role = message.role === "user" ? "user" : "assistant";
+      line.dataset.final = message.final ? "true" : "false";
       const who = doc.createElement("span");
       who.className = "who";
       who.textContent = `${speakerLabel(message.role)}:`;

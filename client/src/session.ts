@@ -72,7 +72,9 @@ export class VoiceSession {
     this.ended = true;
     this.endReason = reason;
     this.captureActive = false;
-    this.playback.speechStarted();
+    if (reason === "error" || reason === "unauthorized" || reason === "closed") {
+      this.playback.speechStarted();
+    }
     if (this.socket && (reason === "done" || reason === "idle" || reason === "stop")) {
       try {
         this.socket.send(JSON.stringify({ type: "stop", reason }));

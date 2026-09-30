@@ -1,18 +1,29 @@
 """Short per-device conversation memory with a sliding TTL."""
 
 from app.grok_session import parse_client_device
-from app.memory import ConversationMemory, SessionTranscript, Turn, conversation_key, with_history_instructions
+from app.memory import (
+    ConversationMemory,
+    SessionTranscript,
+    Turn,
+    conversation_key,
+    history_conversation_events,
+    with_history_instructions,
+)
 
 
 def test_memory_key_prefers_device_then_area():
     device = parse_client_device({"name": "Attic Dashboard", "id": "attic-tablet"})
     area = {"name": "Attic", "id": "attic"}
-    assert conversation_key(device, area) == "device:attic_tablet|area:attic"
+    assert conversation_key(device, area) == "device:attic_tablet"
     assert conversation_key(None, area) == "area:attic"
     assert conversation_key(device, None) == "device:attic_tablet"
     assert conversation_key(None, None) == "default"
     dining = parse_client_device({"name": "Dining Room Dashboard"})
     assert conversation_key(dining, {"name": "Dining Room", "id": "dining_room"}) != conversation_key(
+        device, area
+    )
+    # Same tablet, different area (Attic fallback then Dining Room) keeps history.
+    assert conversation_key(device, {"name": "Dining Room", "id": "dining_room"}) == conversation_key(
         device, area
     )
 
@@ -24,7 +35,7 @@ def test_ttl_expires_and_goodbye_forgets():
         return clock["t"]
 
     memory = ConversationMemory(ttl_seconds=300, clock=now)
-    key = "device:attic_tablet|area:attic"
+    key = "device:attic_tablet"
     memory.remember(key, [Turn("user", "what's this weekend"), Turn("assistant", "a concert in Summit")])
     assert memory.get(key)[0].text == "what's this weekend"
     clock["t"] = 120
@@ -54,6 +65,18 @@ def test_history_is_injected_as_instructions_not_forever():
     assert "Speak briefly." in text
     assert "what's on this weekend" in text
     assert "do not recap" in text.lower()
+    assert "calendar" in text.lower()
+
+
+def test_history_is_also_emitted_as_conversation_items():
+    events = history_conversation_events(
+        [Turn("user", "I have a meeting today at 7pm"), Turn("assistant", "Got it")]
+    )
+    assert events[0]["type"] == "conversation.item.create"
+    assert events[0]["item"]["role"] == "user"
+    assert events[0]["item"]["content"][0] == {"type": "input_text", "text": "I have a meeting today at 7pm"}
+    assert events[1]["item"]["role"] == "assistant"
+    assert events[1]["item"]["content"][0]["text"] == "Got it"
 
 
 def test_session_transcript_keeps_final_turns_only():
@@ -65,4 +88,14 @@ def test_session_transcript_keeps_final_turns_only():
     assert [(turn.role, turn.text) for turn in transcript.turns] == [
         ("user", "turn on the lights"),
         ("assistant", "on"),
+    ]
+
+
+def test_session_transcript_commits_pending_user_on_vad_stop():
+    transcript = SessionTranscript()
+    transcript.add("user", "I have a meeting today at 7pm", final=False)
+    assert transcript.turns == []
+    transcript.flush_pending("user")
+    assert [(turn.role, turn.text) for turn in transcript.turns] == [
+        ("user", "I have a meeting today at 7pm"),
     ]

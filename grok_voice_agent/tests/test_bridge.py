@@ -52,6 +52,30 @@ def test_function_call_becomes_one_function_call_output():
     assert followup == {"type": "response.create"}
 
 
+def test_end_session_is_local_and_does_not_call_mcp():
+    mcp = FakeMcp()
+    bridge = GrokBridge(ToolGateway(mcp, frozenset({"HassTurnOn"})))
+
+    async def run():
+        return await bridge.handle_function_call(
+            {
+                "type": "response.function_call_arguments.done",
+                "name": "end_session",
+                "call_id": "call-end",
+                "arguments": json.dumps({"reason": "command"}),
+            }
+        )
+
+    message = asyncio.run(run())
+    assert json.loads(message["item"]["output"]) == {"ok": True, "ending": True, "reason": "command"}
+    assert bridge.end_after_response is True
+    assert bridge.end_session_forget is False
+    assert bridge.consume_end_session() is False
+    assert bridge.followup_after_tools() == {"type": "response.create"}
+    assert bridge.consume_end_session() is True
+    assert bridge.consume_end_session() is False
+
+
 def test_speech_started_is_forwarded_immediately():
     bridge = GrokBridge(ToolGateway(FakeMcp(), frozenset({"HassTurnOn"})))
     bridge.playing = True
@@ -61,6 +85,51 @@ def test_speech_started_is_forwarded_immediately():
     assert bridge.playing is False
     assert bridge.client_messages({"type": "input_audio_buffer.speech_stopped"}) == [
         {"type": "speech_stopped"}
+    ]
+
+
+def test_assistant_transcript_deltas_stream_then_finalize():
+    bridge = GrokBridge(ToolGateway(FakeMcp(), frozenset({"HassTurnOn"})))
+    assert bridge.client_messages({"type": "response.audio_transcript.delta", "delta": "The lights"}) == [
+        {"type": "transcript", "role": "assistant", "text": "The lights", "final": False}
+    ]
+    assert bridge.client_messages(
+        {"type": "response.output_audio_transcript.delta", "delta": " are on."}
+    ) == [{"type": "transcript", "role": "assistant", "text": "The lights are on.", "final": False}]
+    assert bridge.client_messages(
+        {"type": "response.audio_transcript.done", "transcript": "The lights are on."}
+    ) == [{"type": "transcript", "role": "assistant", "text": "The lights are on.", "final": True}]
+    assert bridge.client_messages({"type": "response.audio_transcript.delta", "delta": "Okay"}) == [
+        {"type": "transcript", "role": "assistant", "text": "Okay", "final": False}
+    ]
+
+
+def test_assistant_cumulative_delta_replaces_partial():
+    bridge = GrokBridge(ToolGateway(FakeMcp(), frozenset({"HassTurnOn"})))
+    assert bridge.client_messages(
+        {"type": "response.output_audio_transcript.delta", "delta": "Hi"}
+    ) == [{"type": "transcript", "role": "assistant", "text": "Hi", "final": False}]
+    assert bridge.client_messages(
+        {"type": "response.output_audio_transcript.delta", "delta": "Hi there"}
+    ) == [{"type": "transcript", "role": "assistant", "text": "Hi there", "final": False}]
+
+
+def test_user_transcript_delta_streams():
+    bridge = GrokBridge(ToolGateway(FakeMcp(), frozenset({"HassTurnOn"})))
+    assert bridge.client_messages(
+        {"type": "conversation.item.input_audio_transcription.delta", "delta": "turn on"}
+    ) == [{"type": "transcript", "role": "user", "text": "turn on", "final": False}]
+    assert bridge.client_messages(
+        {"type": "conversation.item.input_audio_transcription.delta", "delta": " the lights"}
+    ) == [{"type": "transcript", "role": "user", "text": "turn on the lights", "final": False}]
+
+
+def test_speech_started_resets_assistant_partial():
+    bridge = GrokBridge(ToolGateway(FakeMcp(), frozenset({"HassTurnOn"})))
+    bridge.client_messages({"type": "response.audio_transcript.delta", "delta": "Hello"})
+    assert bridge.client_messages({"type": "input_audio_buffer.speech_started"}) == [{"type": "speech_started"}]
+    assert bridge.client_messages({"type": "response.audio_transcript.delta", "delta": "Yes"}) == [
+        {"type": "transcript", "role": "assistant", "text": "Yes", "final": False}
     ]
 
 
@@ -78,6 +147,23 @@ def test_completed_user_transcript_is_marked_final():
             "transcript": "thank you",
         }
     ) == [{"type": "transcript", "role": "user", "text": "thank you", "final": False}]
+    assert bridge.client_messages(
+        {
+            "type": "conversation.item.done",
+            "item": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "I have a meeting today at 7pm"}],
+            },
+        }
+    ) == [
+        {
+            "type": "transcript",
+            "role": "user",
+            "text": "I have a meeting today at 7pm",
+            "final": True,
+        }
+    ]
 
 
 def test_uplink_continues_while_audio_is_playing():
@@ -118,13 +204,15 @@ def test_session_is_full_duplex_server_vad():
     payload = build_session(_settings(), [{"type": "function", "name": "HassTurnOn"}])
     session = payload["session"]
     assert session["turn_detection"]["type"] == "server_vad"
-    assert session["turn_detection"]["prefix_padding_ms"] == 400
-    assert session["turn_detection"]["threshold"] == 0.4
+    assert session["turn_detection"]["prefix_padding_ms"] == 800
+    assert session["turn_detection"]["threshold"] == 0.35
     assert "idle_timeout_ms" not in json.dumps(payload)
     assert "silence_duration_ms" not in json.dumps(payload)
     assert session["audio"]["input"]["format"]["rate"] == 24000
     assert "interruptible" not in json.dumps(payload)
     assert {"type": "web_search"} in session["tools"]
+    assert any(tool.get("name") == "end_session" for tool in session["tools"])
+    assert "end_session" in session["instructions"]
 
 
 def test_session_instructions_include_client_area():
@@ -135,3 +223,4 @@ def test_session_instructions_include_client_area():
     assert "lights" in text
     assert "music" in text
     assert "Music Assistant" in text
+    assert "end_session" in text

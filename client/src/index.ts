@@ -87,6 +87,7 @@ function boot(): void {
       const device = immediateKioskDevice();
       void prefetchKioskArea(areaInput());
       console.log(`[Grok Voice] Area ${describeArea(area)}`);
+      console.log(`[Grok Voice] Device ${device.name} id=${device.id}`);
       const status = mountKioskStatus(document);
       try {
         const { session } = await createBrowserSession({
@@ -94,7 +95,7 @@ function boot(): void {
           token,
           ingress: authMode === "ingress",
           area,
-          device: device ?? undefined,
+          device,
           onTranscript: (role, text, final) => {
             status.addMessage(role, text, final !== false);
           },

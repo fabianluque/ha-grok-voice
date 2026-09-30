@@ -4,6 +4,14 @@ Versions match `grok_voice_agent/config.yaml`. GitHub Releases list the
 merged pull requests since the previous tag. Issues closed with `Fixes #N`
 in those pull requests are included below when GitHub reports them.
 
+## [0.2.10] - 2026-09-30
+
+- Name the city in session location context. Add-on **Home location** (`Summit, NJ`) is expanded to **Summit, New Jersey** in the Grok instructions so answers can say the city, not only a vague home/GPS string.
+- Keep short per-device conversation memory across wakes within the TTL. History is keyed by a stable tablet id (not area fallback), written as turns complete (including xAI `updated` transcripts after VAD stop), and reinjected on the next `session.update` both as instructions and as `conversation.item.create` messages so follow-ups like “do I have a meeting today?” use what the user just said, not only the calendar tool. Attic vs dining stay separate. Goodbye still clears that device; idle hang-up keeps the turns (~8 minutes).
+- Increase local mic pre-roll to **900ms** and flush it when the duplex session is `ready` (not at WebSocket open). Server VAD `prefix_padding_ms` is **800ms** and threshold **0.35**. getUserMedia is still not delayed.
+- Hang up after a one-shot home command or a dismissal without an exact goodbye phrase. Grok gets a local **`end_session`** tool (`reason=command` or `reason=dismiss`). After a short ack, the duplex ends and wake-word listening resumes (same path as goodbye). Phrase matching also accepts “you can go now” / “thanks I’m done”. Do not auto-end mid-multi-step or while asking a question. Command hang-up keeps the 8-minute tablet history; dismiss/goodbye still clears it.
+- Kiosk overlay is full-screen (blur + dim over the dashboard, Listening/Speaking on top) with larger conversation type (`clamp(26px, 4.2vw, 40px)`) so Fire tablets can read it across a room. User and Grok text update as transcript/response deltas arrive, not only on the final chunk. Each tablet still has its own overlay and session.
+
 ## [0.2.9] - 2026-09-30
 
 - Inject the current local date/time and home location into every Grok session at open (server-side `session.update` instructions). Timezone and GPS come from Home Assistant `/api/config` plus `zone.home`; the add-on **Home location** option supplies a city/ZIP such as Summit, NJ. The clock is computed when the session starts, not baked into the add-on.
