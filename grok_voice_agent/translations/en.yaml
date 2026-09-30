@@ -31,16 +31,16 @@ configuration:
     description: Comma-separated tool names. Blank uses lights, media/Music Assistant, todo, Mealie, and live context (including 2026.9 names such as intent__HassTurnOn and music_assistant__play_media). * allows every tool the MCP server offers.
   idle_timeout_seconds:
     name: Idle timeout
-    description: After Grok finishes speaking, seconds without user speech before the session ends and the wake word is re-armed. Default 30. A follow-up question adds 15 seconds so you can hear it and answer. Mic audio alone does not keep the session open.
+    description: After Grok finishes speaking, seconds without user speech before the session ends and the wake word is re-armed. Default 30. Mic audio alone does not keep the session open.
   default_area:
     name: Default area
-    description: Home Assistant area name used when the user does not name a room (lights, Music Assistant playback, and other room-scoped commands). The kiosk inject prefers this tablet's HA/KS area; this value is the fallback. Attic is the attic tablet.
+    description: Home Assistant area name used when the user does not name a room (lights, Music Assistant playback, and other room-scoped commands). The kiosk inject prefers this tablet's HA/KS area; this value is the fallback when lookup fails or you use Open Web UI. Leave blank if you have not set one.
   default_area_id:
     name: Default area ID
-    description: Optional Home Assistant area_id slug (for example attic). Leave blank to derive it from the area name. Set this if Assist needs the id and the name slug is wrong.
+    description: Optional Home Assistant area_id slug (for example kitchen). Leave blank to derive it from the area name. Set this if Assist needs the id and the name slug is wrong.
   home_location:
     name: Home location
-    description: City, region, or ZIP (for example Summit, NJ). Injected into every Grok session so it can answer where you live, what's nearby, and weather here. Leave blank if unset — Grok will not know the city.
+    description: City, region, or ZIP (for example Austin, TX). Injected into every Grok session so it can answer where you live, what's nearby, and weather here. Leave blank if unset — Grok will not know the city.
   conversation_memory_ttl_seconds:
     name: Conversation memory
     description: Seconds to keep recent turns after a session ends so a new wake on the same device can follow up. Default 480 (8 minutes). Idle hang-up keeps the turns; goodbye clears them. Keyed by a stable per-tablet id, not the room name.

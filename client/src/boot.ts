@@ -57,8 +57,8 @@ export function kioskClientScriptUrl(host: BootWindow): string {
 }
 
 /**
- * One-time attic inject: load the add-on's current grok-voice.js.
- * Dining-room dashboards that never call this stay untouched.
+ * One-time kiosk inject: load the add-on's current grok-voice.js.
+ * Dashboards that never call this stay untouched.
  */
 export function bootKioskClient(host: BootWindow): string | null {
   if (host.__grokVoiceBoot) {

@@ -85,6 +85,8 @@ def test_merge_session_area_prefers_kiosk_then_addon_default():
     assert named_only == {"name": "Attic", "id": "attic"}
     other_room = merge_session_area({"name": "Kitchen"}, settings)
     assert other_room == {"name": "Kitchen", "id": "kitchen"}
+    blank = type("Settings", (), {"default_area": "", "default_area_id": ""})()
+    assert merge_session_area(None, blank) is None
     assert slug_area_id("Dining Room") == "dining_room"
     assert parse_client_device({"name": "Attic Dashboard", "id": "attic-tablet"}) == {
         "name": "Attic Dashboard",

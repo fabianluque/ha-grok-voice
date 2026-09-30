@@ -1,7 +1,7 @@
 import { matchDeviceId, type HassDeviceRecord, type HassEntityRecord, type NativeAssistHass } from "./native-assist";
 
-/** Last-resort name when this kiosk's HA area is not readable yet. */
-export const FALLBACK_AREA_NAME = "Attic";
+/** Last-resort name when this kiosk's HA area is not readable yet. Empty: do not invent a room. */
+export const FALLBACK_AREA_NAME = "";
 
 export type AreaSource = "explicit" | "kiosk" | "ha" | "fallback";
 
@@ -146,8 +146,8 @@ export async function areaFromHomeAssistant(
 
 /**
  * Prefer an explicit inject override, then Kiosk Satellite's own area fields,
- * then the Home Assistant area on this kiosk device. Fall back to Attic only
- * when none of those are readable yet.
+ * then the Home Assistant area on this kiosk device. If none of those are
+ * readable yet, send no room name (the add-on default_area is the next fallback).
  */
 export async function resolveKioskArea(input: {
   kiosk?: { getDeviceInfo?: () => Promise<unknown> } | null;
@@ -181,7 +181,7 @@ export async function resolveKioskArea(input: {
         return fromHa;
       }
     } catch {
-      // Registry lookup is best-effort; fall through to Attic.
+      // Registry lookup is best-effort; fall through to an empty area.
     }
   }
 
@@ -256,7 +256,8 @@ export function prefetchKioskArea(input: {
 
 export function describeArea(area: KioskArea): string {
   const id = area.id ? ` id=${area.id}` : "";
-  return `${area.name}${id} source=${area.source}`;
+  const label = area.name.trim() || "(none)";
+  return `${label}${id} source=${area.source}`;
 }
 
 const DEVICE_ID_KEYS = ["id", "deviceId", "device_id", "ha_device_id", "serial"];
@@ -283,7 +284,7 @@ function randomDeviceId(): string {
   return `kiosk-${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
-/** Stable per-browser id so attic vs dining history never share a key. */
+/** Stable per-browser id so two kiosks never share conversation memory. */
 export function readOrCreateDeviceId(storage?: Storage | null): string {
   const store = storage === undefined ? defaultStorage() : storage;
   const existing = store?.getItem(DEVICE_ID_STORAGE_KEY)?.trim();

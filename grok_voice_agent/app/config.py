@@ -68,7 +68,7 @@ class Settings:
     allowlist: frozenset[str]
     idle_timeout_seconds: int
     ha_api_url: str
-    default_area: str = "Attic"
+    default_area: str = ""
     default_area_id: str = ""
     home_location: str = ""
     conversation_memory_ttl_seconds: int = DEFAULT_TTL_SECONDS
@@ -150,7 +150,7 @@ def load_settings(
         allowlist=parse_allowlist(options.get("mcp_tool_allowlist")),
         idle_timeout_seconds=int(options.get("idle_timeout_seconds") or 30),
         ha_api_url=HOME_ASSISTANT_API_URL,
-        default_area=str(options.get("default_area") or "Attic").strip() or "Attic",
+        default_area=str(options.get("default_area") or "").strip(),
         default_area_id=str(options.get("default_area_id") or "").strip(),
         home_location=str(options.get("home_location") or "").strip(),
         conversation_memory_ttl_seconds=clamp_memory_ttl(

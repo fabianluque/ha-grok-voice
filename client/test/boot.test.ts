@@ -53,11 +53,11 @@ function fakeHost(options: {
 
 describe("kiosk bootstrap", () => {
   it("injects grok-voice.js from the add-on debug port using the HA LAN host", () => {
-    const { page, scripts } = fakeHost({ hassUrl: "http://192.168.86.38:8123" });
-    expect(kioskClientScriptUrl(page)).toBe("http://192.168.86.38:8080/grok-voice.js");
-    expect(bootKioskClient(page)).toBe("http://192.168.86.38:8080/grok-voice.js");
+    const { page, scripts } = fakeHost({ hassUrl: "http://192.168.1.10:8123" });
+    expect(kioskClientScriptUrl(page)).toBe("http://192.168.1.10:8080/grok-voice.js");
+    expect(bootKioskClient(page)).toBe("http://192.168.1.10:8080/grok-voice.js");
     expect(scripts).toHaveLength(1);
-    expect(scripts[0]?.src).toBe("http://192.168.86.38:8080/grok-voice.js");
+    expect(scripts[0]?.src).toBe("http://192.168.1.10:8080/grok-voice.js");
     expect(scripts[0]?.async).toBe(true);
     expect(scripts[0]?.dataset.grokVoice).toBe("client");
     expect(bootKioskClient(page)).toBeNull();
@@ -71,16 +71,16 @@ describe("kiosk bootstrap", () => {
   });
 
   it("honors GROK_VOICE_SCRIPT and GROK_VOICE_DEBUG_PORT", () => {
-    const custom = fakeHost({ explicit: "http://192.168.86.38:8080/grok-voice.js?dev=1" });
-    expect(bootKioskClient(custom.page)).toBe("http://192.168.86.38:8080/grok-voice.js?dev=1");
-    const port = fakeHost({ hassUrl: "http://192.168.86.38:8123", debugPort: 9099 });
-    expect(kioskClientScriptUrl(port.page)).toBe("http://192.168.86.38:9099/grok-voice.js");
+    const custom = fakeHost({ explicit: "http://192.168.1.10:8080/grok-voice.js?dev=1" });
+    expect(bootKioskClient(custom.page)).toBe("http://192.168.1.10:8080/grok-voice.js?dev=1");
+    const port = fakeHost({ hassUrl: "http://192.168.1.10:8123", debugPort: 9099 });
+    expect(kioskClientScriptUrl(port.page)).toBe("http://192.168.1.10:9099/grok-voice.js");
   });
 
   it("does not inject twice when a client script tag is already on the page", () => {
-    const { page, scripts } = fakeHost({ hassUrl: "http://192.168.86.38:8123" });
-    scripts.push({ src: "http://192.168.86.38:8080/grok-voice.js", async: true, dataset: { grokVoice: "client" } });
-    expect(bootKioskClient(page)).toBe("http://192.168.86.38:8080/grok-voice.js");
+    const { page, scripts } = fakeHost({ hassUrl: "http://192.168.1.10:8123" });
+    scripts.push({ src: "http://192.168.1.10:8080/grok-voice.js", async: true, dataset: { grokVoice: "client" } });
+    expect(bootKioskClient(page)).toBe("http://192.168.1.10:8080/grok-voice.js");
     expect(scripts).toHaveLength(1);
   });
 });

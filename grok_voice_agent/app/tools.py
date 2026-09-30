@@ -35,8 +35,8 @@ MUSIC_SERVICE_TOOLS = frozenset({"play_media", "play_announcement"})
 def apply_default_area(name: str, arguments: dict, area: dict[str, str] | None) -> dict:
     """Fill area on room-scoped tools when the model omitted it.
 
-    Bare "play music" / "play X" from the attic tablet must target the Attic
-    Music Assistant player (HomePod Mini), not ask which speaker.
+    Bare "play music" / "play X" from a kiosk must target that session's
+    Music Assistant player, not ask which speaker.
     """
     if not area or not isinstance(arguments, dict):
         return arguments

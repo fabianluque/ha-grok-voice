@@ -255,7 +255,7 @@ def test_packaged_www_serves_the_kiosk_client():
     assert "kiosksatellite" in client
     assert "__grokVoiceInstalled" in client
     assert "/grok-voice.js" in loader
-    assert "192.168.86.38" in loader
+    assert "homeassistant.local" in loader
     served = http_file_response("/grok-voice.js", root)
     assert served.status_code == 200
     assert "javascript" in served.headers["Content-Type"]

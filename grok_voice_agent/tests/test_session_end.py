@@ -917,7 +917,7 @@ def test_end_session_tool_hangs_up_after_the_ack_turn():
 
 
 def test_end_session_dismiss_after_qna_followup_stays_open():
-    """Fabian 0.2.15: Grok asked a follow-up then the duplex still hung up."""
+    """Regression: a Q&A follow-up used to hang up the duplex."""
 
     async def run():
         client = QueueSocket()
@@ -965,7 +965,7 @@ def test_end_session_dismiss_after_qna_followup_stays_open():
 
 
 def test_thank_you_hangs_up_even_if_ack_asks_anything_else():
-    """Fabian 0.2.16: thank you left the duplex open when Grok asked anything else."""
+    """Regression: thank you used to leave the duplex open when Grok asked anything else."""
 
     async def run():
         client = QueueSocket()

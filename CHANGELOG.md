@@ -4,6 +4,10 @@ Versions match `grok_voice_agent/config.yaml`. GitHub Releases list the
 merged pull requests since the previous tag. Issues closed with `Fixes #N`
 in those pull requests are included below when GitHub reports them.
 
+## [0.2.19] - 2026-09-30
+
+- Public-repo defaults: blank **Default area** and **Home location**, generic voice instructions (no Attic / HomePod Mini, and no “ask a follow-up” after Q&A — answer then listen). Kiosk LAN fallback uses `homeassistant.local` instead of a private IP. README is a first-run guide; DOCS.md no longer describes a personal LAN.
+
 ## [0.2.18] - 2026-09-30
 
 - Restore goodbye / thank-you hang-up after 0.2.16. Saying **thank you**, **thanks**, **that's all**, or similar still closes the duplex after the ack TTS drains, even if Grok's ack asks a soft “Anything else?”. Overlay tap-dismiss and home-command hang-up are unchanged. Sports/events/Q&A follow-ups without a closer still stay open (`end_session(reason=dismiss)` is ignored unless a goodbye phrase was detected).
