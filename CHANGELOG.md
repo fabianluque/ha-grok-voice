@@ -4,6 +4,10 @@ Versions match `grok_voice_agent/config.yaml`. GitHub Releases list the
 merged pull requests since the previous tag. Issues closed with `Fixes #N`
 in those pull requests are included below when GitHub reports them.
 
+## [0.2.23] - 2026-09-30
+
+- Fix the attic kiosk wake race after snappy Listening-on-wake: native Assist `vs_cancel` could close the first duplex (and its AudioContext) while `getUserMedia` was still in flight, so the mic graph was built on a closed context (`MediaStreamAudioSourceNode` / `ScriptProcessor` / `Gain` / “Connecting nodes after the context has been closed”), the overlay flashed Listening then disappeared, and KS re-armed without a live session. Ensure a fresh open AudioContext (or resume) before attaching the mic graph; abort instead of connecting after close; retry a duplex that dies during open without dismissing the overlay. Listening still paints immediately. Hang-up and Q&A policy are unchanged. A first-boot area fallback no longer blocks a later Home Assistant attic/area lookup.
+
 ## [0.2.22] - 2026-09-30
 
 - Public README for first-time Home Assistant users: clear install / configure / Open Web UI / kiosk / hang-up sections, CI and Release badges, and no private-repo “does not appear” caveats.

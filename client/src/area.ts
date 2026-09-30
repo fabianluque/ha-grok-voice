@@ -239,7 +239,9 @@ export function prefetchKioskArea(input: {
   explicit?: { area?: string; areaId?: string } | null;
   fallbackName?: string;
 }): Promise<KioskArea> {
-  if (areaCache) {
+  // A first-boot fallback must not lock the attic (or any kiosk) out of a
+  // later HA registry lookup once hass/callWS is actually available.
+  if (areaCache && areaCache.source !== "fallback") {
     return Promise.resolve(areaCache);
   }
   if (areaPrefetch) {

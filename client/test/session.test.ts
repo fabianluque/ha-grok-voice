@@ -13,6 +13,11 @@ describe("voice session socket", () => {
     await session.start();
     expect(factory).toHaveBeenCalledOnce();
     expect(session.captureActive).toBe(true);
+    session.finish("closed");
+    expect(session.isEnded).toBe(true);
+    await session.start();
+    expect(session.captureActive).toBe(false);
+    expect(factory).toHaveBeenCalledOnce();
   });
 
   it("replays an end that happened before onEnd was registered", async () => {
@@ -26,6 +31,7 @@ describe("voice session socket", () => {
       session.onEnd(resolve);
     });
     expect(ended).toBe("closed");
+    expect(session.isEnded).toBe(true);
   });
 
   it("closes immediately on dashboard unload without waiting for ack TTS", async () => {

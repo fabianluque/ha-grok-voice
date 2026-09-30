@@ -3,8 +3,10 @@ import type { NativeAssistHass } from "../src/native-assist";
 import { VoiceSession } from "../src/session";
 import {
   MIC_RELEASE_MS,
+  QUICK_CLOSE_MS,
   formatReject,
   installGrokVoice,
+  isQuickDuplexCollapse,
   rearmNativeWake,
   restoreWakeClaim,
   WAKE_EVENT,
@@ -342,6 +344,103 @@ describe("kiosk wake handoff", () => {
     expect(session.captureActive).toBe(true);
     await finishAndSettle(session);
     expect(onWakeEnd).toHaveBeenCalled();
+  });
+
+  it("treats a socket close during a slow open as a collapse, not a finished session", () => {
+    expect(isQuickDuplexCollapse("closed", 0)).toBe(true);
+    expect(isQuickDuplexCollapse("closed", QUICK_CLOSE_MS - 1)).toBe(true);
+    expect(isQuickDuplexCollapse("closed", QUICK_CLOSE_MS)).toBe(false);
+    expect(isQuickDuplexCollapse("idle", 10)).toBe(false);
+    expect(isQuickDuplexCollapse("done", 10)).toBe(false);
+  });
+
+  it("keeps Listening overlay up when the first duplex dies during a slow mic open", async () => {
+    const onWakeVisual = vi.fn();
+    const onWakeEnd = vi.fn();
+    let created = 0;
+    let kept!: VoiceSession;
+    const events = wakeTarget();
+    const openSession = vi.fn(async () => {
+      created += 1;
+      const session = new VoiceSession(
+        () => ({ stop() {} }),
+        () => ({ send() {}, close() {} }),
+      );
+      if (created === 1) {
+        await delay(QUICK_CLOSE_MS + 120);
+        await session.start();
+        session.finish("closed");
+        return session;
+      }
+      kept = session;
+      return session;
+    });
+    installGrokVoice({
+      kiosk: {
+        platform: "kiosksatellite",
+        setInteractionActive: vi.fn(async () => true),
+        setWakeWordActive: vi.fn(async () => true),
+      },
+      events,
+      openSession,
+      onWakeVisual,
+      onWakeEnd,
+    });
+    events.dispatchEvent(new Event(WAKE_EVENT));
+    expect(onWakeVisual).toHaveBeenCalledOnce();
+    expect(onWakeEnd).not.toHaveBeenCalled();
+    await delay(QUICK_CLOSE_MS + 160);
+    await flush();
+    expect(onWakeEnd).not.toHaveBeenCalled();
+    await delay(300);
+    await flush();
+    expect(openSession.mock.calls.length).toBeGreaterThan(1);
+    expect(kept.captureActive).toBe(true);
+    expect(onWakeEnd).not.toHaveBeenCalled();
+    await finishAndSettle(kept);
+    expect(onWakeEnd).toHaveBeenCalledOnce();
+  });
+
+  it("keeps Listening overlay across an Assist-cancel open failure and retries duplex", async () => {
+    const onWakeVisual = vi.fn();
+    const onWakeEnd = vi.fn();
+    let created = 0;
+    let kept!: VoiceSession;
+    const events = wakeTarget();
+    const openSession = vi.fn(async () => {
+      created += 1;
+      if (created === 1) {
+        await delay(40);
+        throw new Error("session ended before mic graph");
+      }
+      kept = new VoiceSession(
+        () => ({ stop() {} }),
+        () => ({ send() {}, close() {} }),
+      );
+      return kept;
+    });
+    installGrokVoice({
+      kiosk: {
+        platform: "kiosksatellite",
+        setInteractionActive: vi.fn(async () => true),
+        setWakeWordActive: vi.fn(async () => true),
+      },
+      events,
+      openSession,
+      onWakeVisual,
+      onWakeEnd,
+    });
+    events.dispatchEvent(new Event(WAKE_EVENT));
+    expect(onWakeVisual).toHaveBeenCalledOnce();
+    await delay(80);
+    await flush();
+    expect(onWakeEnd).not.toHaveBeenCalled();
+    await delay(300);
+    await flush();
+    expect(openSession.mock.calls.length).toBeGreaterThan(1);
+    expect(kept.captureActive).toBe(true);
+    await finishAndSettle(kept);
+    expect(onWakeEnd).toHaveBeenCalledOnce();
   });
 
   it("opens duplex before a slow native Assist cancel lookup finishes", async () => {
