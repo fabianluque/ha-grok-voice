@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import base64
 import json
+import re
+import unicodedata
 from typing import Any
 
 from app.tools import ToolGateway
@@ -20,6 +22,97 @@ TRANSCRIPT_ROLES = {
     "response.output_audio_transcript.done": "assistant",
     "response.audio_transcript.done": "assistant",
 }
+FINAL_TRANSCRIPT_TYPES = {
+    "conversation.item.input_audio_transcription.completed",
+    "response.output_audio_transcript.done",
+    "response.audio_transcript.done",
+}
+
+_APOS = str.maketrans({"\u2019": "'", "\u2018": "'", "`": "'"})
+_FILLERS = frozenset(
+    {"ok", "okay", "alright", "please", "hey", "yeah", "yep", "yup", "grok", "uh", "um", "oh"}
+)
+_CLOSERS = frozenset(
+    {
+        "thank you",
+        "thanks",
+        "thank you so much",
+        "thanks a lot",
+        "thanks so much",
+        "thank you very much",
+        "thanks very much",
+        "thats all",
+        "thats it",
+        "that is all",
+        "that is it",
+        "thatll be all",
+        "that will be all",
+        "thats everything",
+        "that is everything",
+        "thats all thanks",
+        "thats it thanks",
+        "thanks thats all",
+        "thanks thats it",
+        "thank you thats all",
+        "thank you thats it",
+        "goodbye",
+        "good bye",
+        "bye",
+        "bye bye",
+        "stop listening",
+        "please stop listening",
+    }
+)
+
+
+def normalize_utterance(text: str) -> str:
+    folded = unicodedata.normalize("NFKC", text).translate(_APOS).lower().replace("'", "")
+    folded = re.sub(r"[^a-z0-9\s]", " ", folded)
+    return " ".join(folded.split())
+
+
+def strip_fillers(text: str) -> str:
+    words = text.split()
+    while words and words[0] in _FILLERS:
+        words.pop(0)
+    while words and words[-1] in _FILLERS:
+        words.pop()
+    return " ".join(word for word in words if word != "grok")
+
+
+def is_closing_utterance(text: str | None) -> bool:
+    """True when a completed user turn is a goodbye / that's-all phrase."""
+    if not text or not str(text).strip():
+        return False
+    return strip_fillers(normalize_utterance(text)) in _CLOSERS
+
+
+class ConversationWatch:
+    """Idle only after the assistant is done and the user is not mid-utterance.
+
+    xAI ``turn_detection.idle_timeout_ms`` does not close the session; it
+    commits a silent user turn and generates a proactive check-in
+    (``input_audio_buffer.timeout_triggered``). Session hang-up is ours.
+    """
+
+    def __init__(self) -> None:
+        self.user_speaking = False
+        self.assistant_busy = False
+
+    def on_speech_started(self) -> None:
+        self.user_speaking = True
+
+    def on_speech_stopped(self) -> None:
+        self.user_speaking = False
+
+    def on_response_started(self) -> None:
+        self.assistant_busy = True
+
+    def on_response_done(self, awaiting_tools: bool = False) -> None:
+        self.assistant_busy = awaiting_tools
+
+    def is_quiet(self) -> bool:
+        return not self.user_speaking and not self.assistant_busy
 
 
 def xai_session_tools_log(event: dict) -> str | None:
@@ -63,6 +156,9 @@ def build_session(settings, function_tools: list[dict]) -> dict:
             "voice": settings.voice,
             "instructions": settings.instructions,
             "reasoning": {"effort": settings.reasoning_effort},
+            # server_vad ends the user turn. Do not set idle_timeout_ms: xAI
+            # treats that as a check-in, not a hang-up. Session end uses our
+            # idle_timeout_seconds after VAD-quiet (see ConversationWatch).
             "turn_detection": {"type": "server_vad"},
             "audio": {
                 "input": {"format": {"type": "audio/pcm", "rate": 24000}},
@@ -117,6 +213,8 @@ class GrokBridge:
         if event_type == "input_audio_buffer.speech_started":
             self.playing = False
             return [{"type": "speech_started"}]
+        if event_type == "input_audio_buffer.speech_stopped":
+            return [{"type": "speech_stopped"}]
         if event_type == "response.created":
             response = event.get("response") or {}
             return [{"type": "response_started", "responseId": response.get("id")}]
@@ -127,5 +225,12 @@ class GrokBridge:
         if role:
             text = event.get("transcript") or event.get("delta") or ""
             if text:
-                return [{"type": "transcript", "role": role, "text": text}]
+                return [
+                    {
+                        "type": "transcript",
+                        "role": role,
+                        "text": text,
+                        "final": event_type in FINAL_TRANSCRIPT_TYPES,
+                    }
+                ]
         return []

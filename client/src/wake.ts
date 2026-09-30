@@ -5,10 +5,17 @@ export const WAKE_EVENT = "kiosksatellite:wakeword";
 
 const SESSION_KEY = "__vsSession";
 
+export interface WakeWordState {
+  listening?: boolean;
+  active?: boolean;
+  status?: string;
+}
+
 export interface KioskApi {
   platform: string;
   setInteractionActive(active: boolean, reason?: string): Promise<boolean>;
   setWakeWordActive(active: boolean): Promise<boolean>;
+  getWakeWordState?(): Promise<WakeWordState | null | undefined>;
   pipelineRun?(params: unknown): Promise<unknown>;
   getDeviceInfo?(): Promise<{ name?: string } | null | undefined>;
 }
@@ -257,6 +264,9 @@ const QUICK_CLOSE_MS = 800;
 /** Time for the dashboard WebView to leave the native Assist pause after vs_cancel. */
 export const CANCEL_SETTLE_MS = 400;
 
+/** Let getUserMedia tracks drop so native wake can reclaim the microphone. */
+export const MIC_RELEASE_MS = 150;
+
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
@@ -281,7 +291,7 @@ export function formatReject(error: unknown): string {
 /**
  * Native Assist pauses the dashboard as soon as its overlay is up, which
  * closes the duplex socket in about 100ms. Retry that collapse. A real end
- * (`idle`, `end`) returns immediately. Four quick closes is a real failure
+ * (`idle`, `done`, `end`) returns immediately. Four quick closes is a real failure
  * (wrong host, proxy drop), not a successful session.
  */
 async function runDuplex(open: () => Promise<VoiceSession>): Promise<void> {
@@ -340,6 +350,57 @@ function lookupNativeCancel(deps: WakeDeps): Promise<string | null> {
  * While Grok holds the microphone, native onIdle tries to re-arm the wake
  * word and take the mic back. Keep it suspended until the duplex session ends.
  */
+/**
+ * KS handoff: native capture is already stopped on wakeword. After duplex,
+ * stop VS chrome, wait for the browser mic to drop, then setWakeWordActive(true).
+ * Do not call releaseWakeWord — that hard-closes the mic until a new config push.
+ */
+export async function rearmNativeWake(input: {
+  kiosk: KioskApi;
+  session?: VoiceSatelliteSession | null;
+  settleMs?: number;
+  wait?: (ms: number) => Promise<void>;
+}): Promise<boolean> {
+  const vs = input.session;
+  try {
+    vs?.pipeline?.stop?.();
+  } catch {
+    // No run was active.
+  }
+  try {
+    vs?.ui?.hideBlurOverlay?.("pipeline");
+  } catch {
+    // Overlay may already be gone.
+  }
+  try {
+    vs?.ui?.hideBar?.();
+  } catch {
+    // Bar may already be gone.
+  }
+
+  const pause = input.wait ?? wait;
+  const settle = input.settleMs ?? MIC_RELEASE_MS;
+  if (settle > 0) {
+    await pause(settle);
+  }
+
+  await input.kiosk.setInteractionActive(false, "voice").catch(() => false);
+  let ok = (await input.kiosk.setWakeWordActive(true).catch(() => false)) === true;
+  const state = await input.kiosk.getWakeWordState?.().catch(() => undefined);
+  const blocked =
+    state?.status === "suspended" || state?.status === "browser" || state?.active === false;
+  if (!ok || blocked) {
+    await pause(200);
+    ok = (await input.kiosk.setWakeWordActive(true).catch(() => false)) === true;
+  }
+  console.log(
+    ok
+      ? "[Grok Voice] Re-armed native wake listening"
+      : "[Grok Voice] Native wake re-arm did not confirm; Voice Satellite may still show listening off",
+  );
+  return ok;
+}
+
 function holdNativeWakeOff(kiosk: KioskApi): () => void {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -398,8 +459,7 @@ export function installGrokVoice(deps: WakeDeps): { installed: boolean } {
     } finally {
       releaseWake();
       active = false;
-      await deps.kiosk!.setWakeWordActive(true);
-      await deps.kiosk!.setInteractionActive(false, "voice");
+      await rearmNativeWake({ kiosk: deps.kiosk!, session: deps.host?.__vsSession });
     }
   };
 

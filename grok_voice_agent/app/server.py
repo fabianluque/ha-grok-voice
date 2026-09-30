@@ -12,7 +12,14 @@ from websockets.asyncio.server import ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
 
 from app.auth import HaAuth, redact, trusted_ingress_user
-from app.grok_session import GrokBridge, build_session, xai_realtime_error_log, xai_session_tools_log
+from app.grok_session import (
+    ConversationWatch,
+    GrokBridge,
+    build_session,
+    is_closing_utterance,
+    xai_realtime_error_log,
+    xai_session_tools_log,
+)
 from app.mcp_client import McpHttpClient, function_tools, voice_tool_log
 from app.static import process_http_request
 from app.tools import ToolGateway
@@ -129,18 +136,35 @@ async def handle_socket(websocket, settings, http, grok_connect=None) -> None:
     level, message = voice_tool_log(listed, grok_tools)
     getattr(log, level)(message)
     await connection.grok.send(json.dumps(build_session(settings, grok_tools)))
-    await websocket.send(json.dumps({"type": "ready", "sampleRate": 24000}))
+    await websocket.send(
+        json.dumps(
+            {
+                "type": "ready",
+                "sampleRate": 24000,
+                "idleTimeoutSeconds": settings.idle_timeout_seconds,
+            }
+        )
+    )
 
     bridge = GrokBridge(gateway)
+    watch = ConversationWatch()
     idle = asyncio.Event()
     activity = asyncio.Event()
+    end_reason = "idle"
 
-    async def touch() -> None:
+    def request_end(reason: str) -> None:
+        nonlocal end_reason
+        if idle.is_set():
+            return
+        end_reason = reason
+        idle.set()
+        activity.set()
+
+    def mark_turn() -> None:
         activity.set()
 
     async def pump_client() -> None:
         async for incoming in websocket:
-            await touch()
             if isinstance(incoming, bytes):
                 await connection.grok.send(json.dumps(bridge.client_audio(incoming)))
                 continue
@@ -149,24 +173,35 @@ async def handle_socket(websocket, settings, http, grok_connect=None) -> None:
             except json.JSONDecodeError:
                 continue
             if control.get("type") == "stop":
-                idle.set()
+                request_end(str(control.get("reason") or "stop"))
                 return
 
     async def pump_grok() -> None:
         async for incoming in connection.grok:
-            await touch()
             if isinstance(incoming, bytes):
                 bridge.playing = True
+                watch.on_response_started()
+                mark_turn()
                 await websocket.send(incoming)
                 continue
             event = json.loads(incoming)
+            event_type = event.get("type")
             error_line = xai_realtime_error_log(event)
             if error_line:
                 log.error("%s", error_line)
             session_line = xai_session_tools_log(event)
             if session_line:
                 log.info("%s", session_line)
-            if event.get("type") == "response.function_call_arguments.done":
+            if event_type == "input_audio_buffer.speech_started":
+                watch.on_speech_started()
+                mark_turn()
+            elif event_type == "input_audio_buffer.speech_stopped":
+                watch.on_speech_stopped()
+                mark_turn()
+            elif event_type == "response.created":
+                watch.on_response_started()
+                mark_turn()
+            if event_type == "response.function_call_arguments.done":
                 output = await bridge.handle_function_call(event)
                 denied = "tool_not_allowed" in output["item"]["output"]
                 await websocket.send(
@@ -180,25 +215,42 @@ async def handle_socket(websocket, settings, http, grok_connect=None) -> None:
                 )
                 await connection.grok.send(json.dumps(output))
                 continue
-            if event.get("type") == "response.done":
+            if event_type == "response.done":
                 followup = bridge.followup_after_tools()
+                watch.on_response_done(awaiting_tools=followup is not None)
+                mark_turn()
                 if followup:
                     await connection.grok.send(json.dumps(followup))
+                    continue
+                await websocket.send(json.dumps({"type": "response_done"}))
                 continue
             for client_event in bridge.client_messages(event):
                 if client_event.get("type") == "binary":
                     await websocket.send(client_event["pcm"])
-                else:
-                    await websocket.send(json.dumps(client_event))
+                    continue
+                await websocket.send(json.dumps(client_event))
+                if (
+                    client_event.get("type") == "transcript"
+                    and client_event.get("role") == "user"
+                    and client_event.get("final")
+                    and is_closing_utterance(str(client_event.get("text") or ""))
+                ):
+                    request_end("done")
 
     async def watch_idle() -> None:
         while not idle.is_set():
+            while not watch.is_quiet() and not idle.is_set():
+                activity.clear()
+                await activity.wait()
+            if idle.is_set():
+                return
             activity.clear()
             try:
                 await asyncio.wait_for(activity.wait(), timeout=settings.idle_timeout_seconds)
             except asyncio.TimeoutError:
-                idle.set()
-                return
+                if watch.is_quiet() and not idle.is_set():
+                    request_end("idle")
+                    return
 
     client_task = asyncio.create_task(pump_client())
     grok_task = asyncio.create_task(pump_grok())
@@ -212,12 +264,12 @@ async def handle_socket(websocket, settings, http, grok_connect=None) -> None:
     for task in done:
         with contextlib.suppress(Exception):
             task.result()
-    reason = "idle"
-    if client_task.done() and not client_task.cancelled():
-        reason = "stop"
+    reason = end_reason
     if grok_task.done() and not grok_task.cancelled() and grok_task.exception() is not None:
         reason = "error"
         log.error("grok connection ended: %s", type(grok_task.exception()).__name__)
+    elif client_task.done() and not client_task.cancelled() and end_reason == "idle":
+        reason = "stop"
     await _end(websocket, reason)
     with contextlib.suppress(Exception):
         await connection.grok.close()

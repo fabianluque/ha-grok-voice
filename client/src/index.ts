@@ -8,6 +8,7 @@ import {
   parseDebugPort,
   resolveKioskVoiceSocket,
 } from "./ingress";
+import { mountKioskStatus, voiceStatusFromMessage } from "./kiosk-status";
 import type { NativeAssistHass } from "./native-assist";
 import { installGrokVoice, type KioskApi, type WakeHost } from "./wake";
 
@@ -15,12 +16,6 @@ interface KioskWindow extends Window {
   kioskSatellite?: KioskApi;
   GROK_VOICE_URL?: string;
   GROK_VOICE_DEBUG_PORT?: number | string;
-}
-
-function showLine(overlay: HTMLElement, role: string, text: string): void {
-  const line = document.createElement("p");
-  line.textContent = `${role === "user" ? "You" : "Grok"}: ${text}`;
-  overlay.appendChild(line);
 }
 
 function boot(): void {
@@ -61,26 +56,27 @@ function boot(): void {
       console.log(describeDuplexChoice({ authority: resolved.authority, host: hostLabel, authMode }));
       const token = accessToken(hass);
       console.log(`[Grok Voice] Opening duplex ${url} auth ${authMode}`);
-      const overlay = document.createElement("div");
-      overlay.id = "grok-voice-overlay";
-      overlay.style.cssText =
-        "position:fixed;left:16px;right:16px;bottom:16px;z-index:9999;color:white;font:16px sans-serif;text-shadow:0 1px 2px black;";
-      document.body.appendChild(overlay);
+      const status = mountKioskStatus(document);
       try {
         const { session } = await createBrowserSession({
           url,
           token,
           ingress: authMode === "ingress",
-          onTranscript: (role, text) => showLine(overlay, role, text),
+          onServerText: (message) => {
+            const next = voiceStatusFromMessage(message.type);
+            if (next) {
+              status.set(next);
+            }
+          },
         });
         const originalFinish = session.finish.bind(session);
         session.finish = (reason) => {
-          overlay.remove();
+          status.remove();
           originalFinish(reason);
         };
         return session;
       } catch (error) {
-        overlay.remove();
+        status.remove();
         throw error;
       }
     },

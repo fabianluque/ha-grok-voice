@@ -12,6 +12,8 @@ export interface ServerMessage {
   text?: string;
   name?: string;
   status?: string;
+  final?: boolean;
+  idleTimeoutSeconds?: number;
 }
 
 export class VoiceSession {
@@ -64,6 +66,13 @@ export class VoiceSession {
     this.ended = true;
     this.captureActive = false;
     this.playback.speechStarted();
+    if (this.socket && (reason === "done" || reason === "idle" || reason === "stop")) {
+      try {
+        this.socket.send(JSON.stringify({ type: "stop", reason }));
+      } catch {
+        // Socket may already be closing.
+      }
+    }
     this.socket?.close();
     this.endHandler?.(reason);
   }

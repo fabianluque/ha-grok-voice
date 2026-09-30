@@ -59,6 +59,25 @@ def test_speech_started_is_forwarded_immediately():
         {"type": "speech_started"}
     ]
     assert bridge.playing is False
+    assert bridge.client_messages({"type": "input_audio_buffer.speech_stopped"}) == [
+        {"type": "speech_stopped"}
+    ]
+
+
+def test_completed_user_transcript_is_marked_final():
+    bridge = GrokBridge(ToolGateway(FakeMcp(), frozenset({"HassTurnOn"})))
+    assert bridge.client_messages(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "transcript": "thank you",
+        }
+    ) == [{"type": "transcript", "role": "user", "text": "thank you", "final": True}]
+    assert bridge.client_messages(
+        {
+            "type": "conversation.item.input_audio_transcription.updated",
+            "transcript": "thank you",
+        }
+    ) == [{"type": "transcript", "role": "user", "text": "thank you", "final": False}]
 
 
 def test_uplink_continues_while_audio_is_playing():
@@ -99,6 +118,8 @@ def test_session_is_full_duplex_server_vad():
     payload = build_session(_settings(), [{"type": "function", "name": "HassTurnOn"}])
     session = payload["session"]
     assert session["turn_detection"] == {"type": "server_vad"}
+    assert "idle_timeout_ms" not in json.dumps(payload)
+    assert "silence_duration_ms" not in json.dumps(payload)
     assert session["audio"]["input"]["format"]["rate"] == 24000
     assert "interruptible" not in json.dumps(payload)
     assert {"type": "web_search"} in session["tools"]
