@@ -4,6 +4,11 @@ Versions match `grok_voice_agent/config.yaml`. GitHub Releases list the
 merged pull requests since the previous tag. Issues closed with `Fixes #N`
 in those pull requests are included below when GitHub reports them.
 
+## [0.2.21] - 2026-09-30
+
+- Stream overlay Grok and You: text **letter by letter** with a short slide/fade instead of dumping whole token chunks. A typewriter buffer drains new characters as they arrive and catches up when the stream ends so the line does not lag seconds behind TTS.
+- Show the full-screen **Listening** overlay as soon as the wake word fires. Do not wait for native Assist `vs_cancel` lookup or the old 400ms dashboard-unpause settle before painting or opening duplex; mic capture still starts with the socket. Hang-up and Q&A policy are unchanged.
+
 ## [0.2.20] - 2026-09-30
 
 - Stop Q&A monologues. After sports/events/history/news, Grok gives a **short first answer**, may ask **one** brief offer of more (“Want his term?”), then **stops and waits**. It must not keep talking and answer that offer itself. Hang-up is unchanged from 0.2.18: home-control success, thank you / goodbye, overlay tap, and idle still close the duplex; Q&A stays open quietly.

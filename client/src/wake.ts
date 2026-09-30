@@ -66,6 +66,10 @@ export interface WakeDeps {
   /** Home Assistant page object, used to cancel this kiosk's native Assist turn. */
   hass?: () => NativeAssistHass | null | undefined;
   openSession(): Promise<VoiceSession>;
+  /** Paint Listening immediately on wake, before cancel / socket / mic. */
+  onWakeVisual?: () => void;
+  /** Hide the overlay when this wake is fully finished (including retries). */
+  onWakeEnd?: () => void;
 }
 
 const protoDispatch = EventTarget.prototype.dispatchEvent;
@@ -292,7 +296,11 @@ function bindPageLeave(target: WakeEventTarget, handler: () => void): void {
   }
 }
 
-/** Time for the dashboard WebView to leave the native Assist pause after vs_cancel. */
+/**
+ * Kept for tests and docs. Overlay and duplex no longer wait this long after
+ * vs_cancel: Assist pause that kills the first socket is handled by runDuplex
+ * retries so Listening can paint immediately.
+ */
 export const CANCEL_SETTLE_MS = 400;
 
 /** Let getUserMedia tracks drop so native wake can reclaim the microphone. */
@@ -488,6 +496,7 @@ export function installGrokVoice(deps: WakeDeps): { installed: boolean } {
   const abandonPage = () => {
     releaseWake();
     live?.finish("unload");
+    deps.onWakeEnd?.();
     void rearmNativeWake({ kiosk: deps.kiosk!, session: deps.host?.__vsSession, settleMs: 0 });
   };
 
@@ -496,22 +505,24 @@ export function installGrokVoice(deps: WakeDeps): { installed: boolean } {
       return;
     }
     active = true;
+    deps.onWakeVisual?.();
     blockAssistWake(deps.host?.__vsSession);
-    const service = await nativeCancel;
-    const cancelled = await cancelNativeAssist(deps.hass?.() ?? null, service);
-    if (cancelled && service) {
-      console.log(`[Grok Voice] Cancelled native Assist via esphome.${service}`);
-    } else if (service) {
-      console.log(`[Grok Voice] Native Assist cancel failed for esphome.${service}`);
-    } else {
-      console.log("[Grok Voice] Native Assist cancel skipped; no esphome vs_cancel matched this kiosk");
-    }
     const release = holdNativeWakeOff(deps.kiosk!);
     releaseWake = release;
-    await deps.kiosk!.setInteractionActive(true, "voice");
-    if (cancelled) {
-      await wait(CANCEL_SETTLE_MS);
-    }
+    void (async () => {
+      const service = await nativeCancel;
+      const cancelled = await cancelNativeAssist(deps.hass?.() ?? null, service);
+      if (cancelled && service) {
+        console.log(`[Grok Voice] Cancelled native Assist via esphome.${service}`);
+      } else if (service) {
+        console.log(`[Grok Voice] Native Assist cancel failed for esphome.${service}`);
+      } else {
+        console.log("[Grok Voice] Native Assist cancel skipped; no esphome vs_cancel matched this kiosk");
+      }
+    })().catch((error) => {
+      console.warn("[Grok Voice] Native Assist cancel failed", formatReject(error));
+    });
+    await deps.kiosk!.setInteractionActive(true, "voice").catch(() => false);
     try {
       await runDuplex(async () => {
         const session = await deps.openSession();
@@ -527,6 +538,7 @@ export function installGrokVoice(deps: WakeDeps): { installed: boolean } {
       }
       live = null;
       active = false;
+      deps.onWakeEnd?.();
       await rearmNativeWake({ kiosk: deps.kiosk!, session: deps.host?.__vsSession });
     }
   };
