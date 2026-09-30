@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { NativeAssistHass } from "../src/native-assist";
 import { VoiceSession } from "../src/session";
 import {
-  CANCEL_SETTLE_MS,
   MIC_RELEASE_MS,
   formatReject,
   installGrokVoice,
@@ -296,10 +295,7 @@ describe("kiosk wake handoff", () => {
     events.dispatchEvent(new Event(WAKE_EVENT));
     await flush();
     expect(log).toHaveBeenCalledWith("[Grok Voice] Cancelled native Assist via esphome.ks_attic_dashboard_vs_cancel");
-    expect(openSession).not.toHaveBeenCalled();
-
-    await delay(CANCEL_SETTLE_MS + 20);
-    await flush();
+    expect(openSession).toHaveBeenCalledOnce();
     expect(callService).toHaveBeenCalledTimes(1);
     expect(callService).toHaveBeenCalledWith("esphome", "ks_attic_dashboard_vs_cancel", {});
     expect(pipelineRun).not.toHaveBeenCalled();
@@ -313,6 +309,82 @@ describe("kiosk wake handoff", () => {
     expect(kiosk.setWakeWordActive).toHaveBeenLastCalledWith(true);
     expect(openSession).toHaveBeenCalledOnce();
     log.mockRestore();
+  });
+
+  it("paints Listening immediately on wake without waiting for vs_cancel settle", async () => {
+    const onWakeVisual = vi.fn();
+    const onWakeEnd = vi.fn();
+    let session!: VoiceSession;
+    const events = wakeTarget();
+    const openSession = vi.fn(async () => {
+      session = new VoiceSession(
+        () => ({ stop() {} }),
+        () => ({ send() {}, close() {} }),
+      );
+      return session;
+    });
+    installGrokVoice({
+      kiosk: {
+        platform: "kiosksatellite",
+        setInteractionActive: vi.fn(async () => true),
+        setWakeWordActive: vi.fn(async () => true),
+      },
+      events,
+      openSession,
+      onWakeVisual,
+      onWakeEnd,
+    });
+    events.dispatchEvent(new Event(WAKE_EVENT));
+    expect(onWakeVisual).toHaveBeenCalledOnce();
+    expect(onWakeEnd).not.toHaveBeenCalled();
+    await flush();
+    expect(openSession).toHaveBeenCalledOnce();
+    expect(session.captureActive).toBe(true);
+    await finishAndSettle(session);
+    expect(onWakeEnd).toHaveBeenCalled();
+  });
+
+  it("opens duplex before a slow native Assist cancel lookup finishes", async () => {
+    const onWakeVisual = vi.fn();
+    let releaseInfo: (info: { name: string }) => void = () => undefined;
+    const pendingInfo = new Promise<{ name: string }>((resolve) => {
+      releaseInfo = resolve;
+    });
+    const callService = vi.fn(async () => undefined);
+    const hass: NativeAssistHass = {
+      callService,
+      services: { esphome: { ks_attic_dashboard_vs_cancel: {} } },
+      callWS: async () => [],
+    };
+    let session!: VoiceSession;
+    const events = wakeTarget();
+    const openSession = vi.fn(async () => {
+      session = new VoiceSession(
+        () => ({ stop() {} }),
+        () => ({ send() {}, close() {} }),
+      );
+      return session;
+    });
+    installGrokVoice({
+      kiosk: {
+        platform: "kiosksatellite",
+        getDeviceInfo: () => pendingInfo,
+        setInteractionActive: vi.fn(async () => true),
+        setWakeWordActive: vi.fn(async () => true),
+      },
+      events,
+      hass: () => hass,
+      openSession,
+      onWakeVisual,
+    });
+    events.dispatchEvent(new Event(WAKE_EVENT));
+    expect(onWakeVisual).toHaveBeenCalledOnce();
+    await flush();
+    expect(openSession).toHaveBeenCalledOnce();
+    expect(callService).not.toHaveBeenCalled();
+    releaseInfo({ name: "Attic Dashboard" });
+    await flush();
+    await finishAndSettle(session);
   });
 
   it("formats Home Assistant plain-object rejects for the console", () => {

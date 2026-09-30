@@ -2,12 +2,18 @@ import { describe, expect, it, vi } from "vitest";
 import {
   applyOverlaySpeech,
   attachOverlayDismiss,
+  charsPerTick,
+  CATCHUP_TICK_MS,
+  emptyReveal,
   finalizeTranscript,
   isOverlayTap,
+  isRevealCaughtUp,
   mergeTranscript,
   overlayStyle,
+  retargetReveal,
   speakerLabel,
   statusLabel,
+  stepReveal,
   upsertTranscript,
   voiceStatusFromMessage,
   type OverlaySpeechState,
@@ -58,6 +64,58 @@ describe("kiosk status pill", () => {
     expect(css).toContain("clamp(18px,2.9vw,28px)");
     expect(css).toContain("clamp(20px,3.2vw,32px)");
     expect(css).not.toContain("clamp(26px,4.2vw,40px)");
+    expect(css).toContain("grok-voice-ch-in");
+    expect(css).toContain(".body .fresh");
+    expect(css).toContain("translate3d(.14em,.3em,0)");
+  });
+
+  it("drains new characters one or two at a time, then catches up after the stream ends", () => {
+    expect(charsPerTick(1, false)).toBe(1);
+    expect(charsPerTick(8, false)).toBe(1);
+    expect(charsPerTick(20, false)).toBe(2);
+    expect(charsPerTick(50, false)).toBe(3);
+    expect(charsPerTick(20, true)).toBe(6);
+    expect(charsPerTick(80, true)).toBe(80);
+    expect(CATCHUP_TICK_MS).toBeLessThan(25);
+
+    let { state } = retargetReveal(emptyReveal(), "The lights", false);
+    const first = stepReveal(state);
+    expect(first.added).toBe("T");
+    state = first.next;
+    ({ state } = retargetReveal(state, "The lights are on.", false));
+    while (!isRevealCaughtUp(state) && state.shown.length < 10) {
+      const step = stepReveal(state);
+      expect(step.added.length).toBeGreaterThan(0);
+      expect(step.added.length).toBeLessThanOrEqual(2);
+      state = step.next;
+    }
+    ({ state } = retargetReveal(state, "The lights are on.", true));
+    const rest = stepReveal(state);
+    expect(state.catchUp).toBe(true);
+    expect(rest.added.length).toBeGreaterThan(1);
+    expect(isRevealCaughtUp(rest.next) || rest.next.shown.length > state.shown.length).toBe(true);
+  });
+
+  it("keeps a typed prefix when ASR revises the rest of a user snapshot", () => {
+    let { state } = retargetReveal(emptyReveal(), "Hello?", false);
+    state = { ...state, shown: "Hello?" };
+    const revised = retargetReveal(state, "Hello, my name is", false);
+    expect(revised.reset).toBe(true);
+    expect(revised.state.shown).toBe("Hello");
+    expect(revised.state.target).toBe("Hello, my name is");
+    const next = stepReveal(revised.state);
+    expect(next.added.startsWith(",")).toBe(true);
+  });
+
+  it("reveals a token-sized burst letter by letter", () => {
+    let { state } = retargetReveal(emptyReveal(), "Hello", false);
+    const seen: string[] = [];
+    while (!isRevealCaughtUp(state)) {
+      const step = stepReveal(state);
+      seen.push(step.added);
+      state = step.next;
+    }
+    expect(seen).toEqual(["H", "e", "l", "l", "o"]);
   });
 
   it("merges incremental pieces and cumulative snapshots", () => {

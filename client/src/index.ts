@@ -44,13 +44,35 @@ function boot(): void {
     },
   });
   void prefetchKioskArea(areaInput());
+  let session: { finish(reason: string): void } | null = null;
+  let overlay: ReturnType<typeof mountKioskStatus> | null = null;
+  const showOverlay = () => {
+    if (!overlay) {
+      overlay = mountKioskStatus(document, {
+        onDismiss: () => session?.finish("done"),
+      });
+    } else {
+      overlay.set("listening");
+    }
+    return overlay;
+  };
+  const hideOverlay = () => {
+    overlay?.remove();
+    overlay = null;
+  };
   installGrokVoice({
     kiosk,
     events: window,
     host: window as Window & WakeHost,
     document,
     hass: () => pageHass() as NativeAssistHass | null,
+    onWakeVisual: showOverlay,
+    onWakeEnd: () => {
+      session = null;
+      hideOverlay();
+    },
     openSession: async () => {
+      const status = showOverlay();
       const hass = pageHass();
       const explicit = (window as KioskWindow).GROK_VOICE_URL;
       const debugPort = parseDebugPort((window as KioskWindow).GROK_VOICE_DEBUG_PORT);
@@ -88,37 +110,25 @@ function boot(): void {
       void prefetchKioskArea(areaInput());
       console.log(`[Grok Voice] Area ${describeArea(area)}`);
       console.log(`[Grok Voice] Device ${device.name} id=${device.id}`);
-      let session: { finish(reason: string): void } | null = null;
-      const status = mountKioskStatus(document, {
-        onDismiss: () => session?.finish("done"),
+      const created = await createBrowserSession({
+        url,
+        token,
+        ingress: authMode === "ingress",
+        area,
+        device,
+        onTranscript: (role, text, final, itemId) => {
+          status.addMessage(role, text, final === true, itemId);
+        },
+        onServerText: (message) => {
+          status.handleDuplex(message.type);
+          const next = voiceStatusFromMessage(message.type);
+          if (next) {
+            status.set(next);
+          }
+        },
       });
-      try {
-        const created = await createBrowserSession({
-          url,
-          token,
-          ingress: authMode === "ingress",
-          area,
-          device,
-          onTranscript: (role, text, final, itemId) => {
-            status.addMessage(role, text, final === true, itemId);
-          },
-          onServerText: (message) => {
-            status.handleDuplex(message.type);
-            const next = voiceStatusFromMessage(message.type);
-            if (next) {
-              status.set(next);
-            }
-          },
-        });
-        session = created.session;
-        session.onEnd(() => {
-          status.remove();
-        });
-        return created.session;
-      } catch (error) {
-        status.remove();
-        throw error;
-      }
+      session = created.session;
+      return created.session;
     },
   });
 }

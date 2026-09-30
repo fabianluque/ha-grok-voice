@@ -1,3 +1,5 @@
+import { cancelTimeout, scheduleTimeout } from "./timers";
+
 export type VoiceStatus = "listening" | "speaking";
 
 export interface OverlayMessage {
@@ -58,6 +60,15 @@ const STYLE = `
 #grok-voice-overlay .who{font-weight:800;margin-right:.35em;color:#9aa3b5}
 #grok-voice-overlay .msg[data-role="assistant"] .who{color:#18bc9c}
 #grok-voice-overlay .body{font-weight:400}
+#grok-voice-overlay .body .stable{white-space:pre-wrap}
+#grok-voice-overlay .body .fresh{
+  display:inline-block;white-space:pre;vertical-align:baseline;
+  animation:grok-voice-ch-in .18s cubic-bezier(.22,.7,.25,1) both;
+}
+@keyframes grok-voice-ch-in{
+  from{opacity:0;transform:translate3d(.14em,.3em,0)}
+  to{opacity:1;transform:translate3d(0,0,0)}
+}
 @keyframes grok-voice-pulse{
   0%{box-shadow:0 0 0 0 currentColor;opacity:1}
   70%{box-shadow:0 0 0 10px transparent;opacity:.85}
@@ -110,6 +121,86 @@ export function mergeTranscript(current: string, incoming: string, mode: "merge"
     return current;
   }
   return current + incoming;
+}
+
+export interface TextReveal {
+  target: string;
+  shown: string;
+  catchUp: boolean;
+}
+
+export const REVEAL_TICK_MS = 20;
+export const CATCHUP_TICK_MS = 16;
+const REVEAL_LAG_SOFT = 16;
+const REVEAL_LAG_HARD = 40;
+const CATCHUP_DUMP = 72;
+const FRESH_KEEP = 6;
+
+export function commonPrefixLength(left: string, right: string): number {
+  const limit = Math.min(left.length, right.length);
+  let index = 0;
+  while (index < limit && left.charAt(index) === right.charAt(index)) {
+    index += 1;
+  }
+  return index;
+}
+
+export function emptyReveal(): TextReveal {
+  return { target: "", shown: "", catchUp: false };
+}
+
+/** How many new characters to paint this frame so we stay near speech without chunk dumps. */
+export function charsPerTick(remaining: number, catchUp: boolean): number {
+  if (remaining <= 0) {
+    return 0;
+  }
+  if (catchUp) {
+    if (remaining >= CATCHUP_DUMP) {
+      return remaining;
+    }
+    return Math.min(remaining, 6);
+  }
+  if (remaining > REVEAL_LAG_HARD) {
+    return Math.min(remaining, 3);
+  }
+  if (remaining > REVEAL_LAG_SOFT) {
+    return Math.min(remaining, 2);
+  }
+  return 1;
+}
+
+export function tickDelayMs(catchUp: boolean): number {
+  return catchUp ? CATCHUP_TICK_MS : REVEAL_TICK_MS;
+}
+
+/**
+ * Point the typewriter at a new target. Keep already-shown text when the
+ * target extends it. ASR revisions snap to the common prefix (no delete-typing).
+ */
+export function retargetReveal(state: TextReveal, target: string, final = false): { state: TextReveal; reset: boolean } {
+  const catchUp = state.catchUp || final;
+  if (target.startsWith(state.shown)) {
+    return { state: { shown: state.shown, target, catchUp }, reset: false };
+  }
+  const prefix = commonPrefixLength(state.shown, target);
+  return { state: { shown: target.slice(0, prefix), target, catchUp }, reset: true };
+}
+
+export function stepReveal(state: TextReveal): { next: TextReveal; added: string } {
+  if (state.shown === state.target) {
+    return { next: state, added: "" };
+  }
+  if (!state.target.startsWith(state.shown)) {
+    const prefix = commonPrefixLength(state.shown, state.target);
+    return { next: { ...state, shown: state.target.slice(0, prefix) }, added: "" };
+  }
+  const n = charsPerTick(state.target.length - state.shown.length, state.catchUp);
+  const added = state.target.slice(state.shown.length, state.shown.length + n);
+  return { next: { ...state, shown: state.shown + added }, added };
+}
+
+export function isRevealCaughtUp(state: TextReveal): boolean {
+  return state.shown === state.target;
 }
 
 function lastIndexWhere(messages: OverlayMessage[], match: (message: OverlayMessage) => boolean): number {
@@ -353,33 +444,106 @@ export function mountKioskStatus(doc: Document, options: MountKioskStatusOptions
 
   const messages: OverlayMessage[] = [];
   const speech: OverlaySpeechState = { userSpeaking: false, heardStop: false, newUserUtterance: false };
+  const reveals: Array<{ state: TextReveal; timer?: ReturnType<typeof setTimeout> }> = [];
 
-  const paintLine = (message: OverlayMessage, index: number) => {
-    const existing = log.children[index] as HTMLParagraphElement | undefined;
-    if (existing) {
-      existing.dataset.final = message.final ? "true" : "false";
-      existing.dataset.role = message.role === "user" ? "user" : "assistant";
-      const body = existing.querySelector(".body");
-      if (body) {
-        body.textContent = message.text;
+  const stopReveal = (entry: { timer?: ReturnType<typeof setTimeout> } | undefined) => {
+    if (entry?.timer) {
+      cancelTimeout(entry.timer);
+      entry.timer = undefined;
+    }
+  };
+
+  const syncBody = (body: HTMLElement, shown: string, added: string, animate: boolean) => {
+    let stable = body.querySelector(":scope > .stable") as HTMLElement | null;
+    if (!stable) {
+      body.textContent = "";
+      stable = doc.createElement("span");
+      stable.className = "stable";
+      body.appendChild(stable);
+    }
+    if (!added || !animate) {
+      for (const node of [...body.querySelectorAll(":scope > .fresh")]) {
+        node.remove();
       }
-      log.scrollTop = log.scrollHeight;
+      stable.textContent = shown;
       return;
     }
-    const line = doc.createElement("p");
-    line.className = "msg";
-    line.dataset.role = message.role === "user" ? "user" : "assistant";
-    line.dataset.final = message.final ? "true" : "false";
-    const who = doc.createElement("span");
-    who.className = "who";
-    who.textContent = `${speakerLabel(message.role)}:`;
-    const body = doc.createElement("span");
-    body.className = "body";
-    body.textContent = message.text;
-    line.appendChild(who);
-    line.appendChild(doc.createTextNode(" "));
-    line.appendChild(body);
-    log.appendChild(line);
+    const fresh = doc.createElement("span");
+    fresh.className = "fresh";
+    fresh.textContent = added;
+    body.appendChild(fresh);
+    const freshes = [...body.querySelectorAll(":scope > .fresh")] as HTMLElement[];
+    const fold = freshes.slice(0, Math.max(0, freshes.length - FRESH_KEEP));
+    for (const node of fold) {
+      node.remove();
+    }
+    const kept = [...body.querySelectorAll(":scope > .fresh")] as HTMLElement[];
+    const keptText = kept.map((node) => node.textContent || "").join("");
+    stable.textContent = shown.endsWith(keptText) ? shown.slice(0, shown.length - keptText.length) : shown;
+  };
+
+  const lineBody = (index: number): HTMLElement | null => {
+    const line = log.children[index] as HTMLElement | undefined;
+    return (line?.querySelector(".body") as HTMLElement | null) ?? null;
+  };
+
+  const drainReveal = (index: number) => {
+    const entry = reveals[index];
+    const body = lineBody(index);
+    if (!entry || !body || entry.timer) {
+      return;
+    }
+    const tick = () => {
+      entry.timer = undefined;
+      const { next, added } = stepReveal(entry.state);
+      entry.state = next;
+      const animate = Boolean(added) && added.length <= 6;
+      syncBody(body, next.shown, added, animate);
+      log.scrollTop = log.scrollHeight;
+      if (!isRevealCaughtUp(entry.state)) {
+        entry.timer = scheduleTimeout(tick, tickDelayMs(entry.state.catchUp));
+      }
+    };
+    entry.timer = scheduleTimeout(tick, 0);
+  };
+
+  const paintLine = (message: OverlayMessage, index: number, catchUp = false) => {
+    let existing = log.children[index] as HTMLParagraphElement | undefined;
+    if (!existing) {
+      const line = doc.createElement("p");
+      line.className = "msg";
+      const who = doc.createElement("span");
+      who.className = "who";
+      who.textContent = `${speakerLabel(message.role)}:`;
+      const body = doc.createElement("span");
+      body.className = "body";
+      const stable = doc.createElement("span");
+      stable.className = "stable";
+      body.appendChild(stable);
+      line.appendChild(who);
+      line.appendChild(doc.createTextNode(" "));
+      line.appendChild(body);
+      log.appendChild(line);
+      existing = line;
+      if (index > 0 && reveals[index - 1]) {
+        reveals[index - 1].state.catchUp = true;
+        drainReveal(index - 1);
+      }
+    }
+    existing.dataset.final = message.final ? "true" : "false";
+    existing.dataset.role = message.role === "user" ? "user" : "assistant";
+    let entry = reveals[index];
+    if (!entry) {
+      entry = { state: emptyReveal() };
+      reveals[index] = entry;
+    }
+    const { state, reset } = retargetReveal(entry.state, message.text, catchUp || message.final);
+    entry.state = state;
+    const body = existing.querySelector(".body") as HTMLElement;
+    if (reset) {
+      syncBody(body, state.shown, "", false);
+    }
+    drainReveal(index);
     log.scrollTop = log.scrollHeight;
   };
 
@@ -411,7 +575,8 @@ export function mountKioskStatus(doc: Document, options: MountKioskStatusOptions
       if (index < 0) {
         return;
       }
-      paintLine(messages[index], index);
+      const catchUp = type === "response_done" && messages[index]?.role === "assistant";
+      paintLine(messages[index], index, catchUp);
     },
     finalize(role?: string) {
       const index = messages.length - 1;
@@ -419,9 +584,13 @@ export function mountKioskStatus(doc: Document, options: MountKioskStatusOptions
         return;
       }
       finalizeTranscript(messages, role);
-      paintLine(messages[index], index);
+      paintLine(messages[index], index, true);
     },
     remove() {
+      for (const entry of reveals) {
+        stopReveal(entry);
+      }
+      reveals.length = 0;
       root.remove();
     },
   };
