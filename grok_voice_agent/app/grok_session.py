@@ -43,6 +43,15 @@ ASSISTANT_DELTA_TYPES = {
 USER_DELTA_TYPES = {"conversation.item.input_audio_transcription.delta"}
 # xAI name for OpenAI's incremental .delta: cumulative snapshots that may revise.
 USER_SNAPSHOT_TYPES = {"conversation.item.input_audio_transcription.updated"}
+# Echoes of conversation.item.create. created/added also fire for live audio;
+# overlay streaming uses ASR / audio_transcript events instead.
+ITEM_LIFECYCLE_TYPES = {
+    "conversation.item.created",
+    "conversation.item.added",
+    "conversation.item.done",
+}
+# Content types used when reinjecting short per-device history (memory.py).
+HISTORY_CONTENT_TYPES = {"input_text", "text"}
 
 _APOS = str.maketrans({"\u2019": "'", "\u2018": "'", "`": "'"})
 _FILLERS = frozenset(
@@ -571,16 +580,47 @@ def _stream_transcript(bridge: GrokBridge, event_type: object, event: dict) -> d
     return None
 
 
+def _is_reinjected_history_item(item: dict) -> bool:
+    """True for short-memory turns we sent as conversation.item.create.
+
+    Those echoes must stay in the Grok session and off the on-screen overlay.
+    Live mic/assistant items carry audio content types (or a transcript).
+    """
+    content = item.get("content")
+    if isinstance(content, str):
+        return bool(content.strip())
+    if not isinstance(content, list) or not content:
+        return False
+    saw_history_text = False
+    for part in content:
+        if not isinstance(part, dict):
+            return True
+        kind = str(part.get("type") or "").casefold()
+        if "audio" in kind or part.get("transcript"):
+            return False
+        if kind in HISTORY_CONTENT_TYPES or kind == "" or part.get("text"):
+            saw_history_text = True
+            continue
+        return False
+    return saw_history_text
+
+
 def _message_item_transcript(event: dict) -> dict[str, Any] | None:
-    """Fallback when xAI puts the utterance on conversation.item.* instead of ASR events."""
-    if event.get("type") not in {
-        "conversation.item.created",
-        "conversation.item.added",
-        "conversation.item.done",
-    }:
+    """Fallback when xAI puts a *live* utterance on conversation.item.done.
+
+    Skip created/added (history echoes and incomplete live items). Skip
+    reinjected history even on item.done so a new wake's overlay is this
+    session only. ASR updated/completed and audio_transcript deltas remain
+    the overlay path.
+    """
+    if event.get("type") not in ITEM_LIFECYCLE_TYPES:
         return None
     item = event.get("item")
     if not isinstance(item, dict) or item.get("type") != "message":
+        return None
+    if _is_reinjected_history_item(item):
+        return None
+    if event.get("type") != "conversation.item.done":
         return None
     role = item.get("role")
     if role not in ("user", "assistant"):
@@ -592,7 +632,7 @@ def _message_item_transcript(event: dict) -> dict[str, Any] | None:
         "type": "transcript",
         "role": role,
         "text": text,
-        "final": event.get("type") == "conversation.item.done",
+        "final": True,
     }
 
 

@@ -499,6 +499,127 @@ def test_history_follows_device_not_area_fallback():
     )
 
 
+def test_history_echoes_stay_off_the_overlay_on_resume():
+    from app.memory import ConversationMemory
+
+    memory = ConversationMemory(ttl_seconds=480)
+    device = {"name": "Attic Dashboard", "id": "attic-tablet"}
+    meeting = "I have a meeting today at 7pm"
+
+    async def first():
+        client = QueueSocket()
+        grok = QueueSocket()
+        await client.incoming.put(
+            json.dumps(
+                {
+                    "type": "auth",
+                    "token": "good-token",
+                    "area": {"name": "Attic", "id": "attic"},
+                    "device": device,
+                }
+            )
+        )
+        task = asyncio.create_task(_run_session(client, grok, idle=5, memory=memory))
+        await asyncio.sleep(0.03)
+        await grok.incoming.put(
+            json.dumps(
+                {
+                    "type": "conversation.item.input_audio_transcription.completed",
+                    "transcript": meeting,
+                }
+            )
+        )
+        await grok.incoming.put(
+            json.dumps(
+                {
+                    "type": "response.output_audio_transcript.done",
+                    "transcript": "Okay, I'll remember that.",
+                }
+            )
+        )
+        await grok.incoming.put(json.dumps({"type": "response.done"}))
+        await asyncio.sleep(0.03)
+        await client.incoming.put(json.dumps({"type": "stop", "reason": "idle"}))
+        await asyncio.wait_for(task, timeout=2)
+
+    async def second():
+        client = QueueSocket()
+        grok = QueueSocket()
+        await client.incoming.put(
+            json.dumps(
+                {
+                    "type": "auth",
+                    "token": "good-token",
+                    "area": {"name": "Attic", "id": "attic"},
+                    "device": device,
+                }
+            )
+        )
+        task = asyncio.create_task(_run_session(client, grok, idle=5, memory=memory))
+        await asyncio.sleep(0.05)
+        for kind in ("conversation.item.created", "conversation.item.added", "conversation.item.done"):
+            await grok.incoming.put(
+                json.dumps(
+                    {
+                        "type": kind,
+                        "item": {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": meeting}],
+                        },
+                    }
+                )
+            )
+            await grok.incoming.put(
+                json.dumps(
+                    {
+                        "type": kind,
+                        "item": {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": "Okay, I'll remember that."}],
+                        },
+                    }
+                )
+            )
+        await grok.incoming.put(
+            json.dumps(
+                {
+                    "type": "conversation.item.input_audio_transcription.updated",
+                    "transcript": "do I have a meeting today?",
+                }
+            )
+        )
+        await asyncio.sleep(0.05)
+        await client.incoming.put(json.dumps({"type": "stop", "reason": "idle"}))
+        await asyncio.wait_for(task, timeout=2)
+        return client.sent, grok.sent
+
+    asyncio.run(first())
+    client_sent, grok_sent = asyncio.run(second())
+    assert any(
+        meeting in item
+        for item in grok_sent
+        if isinstance(item, str) and "conversation.item.create" in item
+    )
+    overlay = []
+    for item in client_sent:
+        if not isinstance(item, str):
+            continue
+        try:
+            payload = json.loads(item)
+        except json.JSONDecodeError:
+            continue
+        if payload.get("type") == "transcript":
+            overlay.append(payload)
+    assert not any(meeting in str(event.get("text") or "") for event in overlay)
+    assert not any("I'll remember that" in str(event.get("text") or "") for event in overlay)
+    assert any(
+        event.get("role") == "user" and event.get("text") == "do I have a meeting today?"
+        for event in overlay
+    )
+
+
 def test_attic_and_dining_devices_do_not_share_history():
     from app.memory import ConversationMemory
 

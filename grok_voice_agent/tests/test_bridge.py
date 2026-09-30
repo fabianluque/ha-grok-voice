@@ -147,23 +147,49 @@ def test_completed_user_transcript_is_marked_final():
             "transcript": "thank you",
         }
     ) == [{"type": "transcript", "role": "user", "text": "thank you", "final": False}]
+
+
+def _history_item(role: str, text: str) -> dict:
+    content_type = "input_text" if role == "user" else "text"
+    return {"type": "message", "role": role, "content": [{"type": content_type, "text": text}]}
+
+
+def test_reinjected_history_item_echoes_are_not_client_transcripts():
+    bridge = GrokBridge(ToolGateway(FakeMcp(), frozenset({"HassTurnOn"})))
+    meeting = "I have a meeting today at 7pm"
+    for kind in ("conversation.item.created", "conversation.item.added", "conversation.item.done"):
+        assert bridge.client_messages({"type": kind, "item": _history_item("user", meeting)}) == []
+        assert bridge.client_messages({"type": kind, "item": _history_item("assistant", "Got it")}) == []
+    assert bridge.client_messages(
+        {"type": "conversation.item.input_audio_transcription.updated", "transcript": "and tomorrow?"}
+    ) == [{"type": "transcript", "role": "user", "text": "and tomorrow?", "final": False}]
+
+
+def test_live_audio_item_done_is_still_a_fallback_transcript():
+    bridge = GrokBridge(ToolGateway(FakeMcp(), frozenset({"HassTurnOn"})))
+    assert (
+        bridge.client_messages(
+            {
+                "type": "conversation.item.created",
+                "item": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_audio", "transcript": "turn on the lights"}],
+                },
+            }
+        )
+        == []
+    )
     assert bridge.client_messages(
         {
             "type": "conversation.item.done",
             "item": {
                 "type": "message",
                 "role": "user",
-                "content": [{"type": "input_text", "text": "I have a meeting today at 7pm"}],
+                "content": [{"type": "input_audio", "transcript": "turn on the lights"}],
             },
         }
-    ) == [
-        {
-            "type": "transcript",
-            "role": "user",
-            "text": "I have a meeting today at 7pm",
-            "final": True,
-        }
-    ]
+    ) == [{"type": "transcript", "role": "user", "text": "turn on the lights", "final": True}]
 
 
 def test_user_updated_snapshot_streams_and_can_revise():
