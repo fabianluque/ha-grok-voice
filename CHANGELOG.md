@@ -4,6 +4,10 @@ Versions match `grok_voice_agent/config.yaml`. GitHub Releases list the
 merged pull requests since the previous tag. Issues closed with `Fixes #N`
 in those pull requests are included below when GitHub reports them.
 
+## [0.2.9] - 2026-09-30
+
+- Keep a short mic pre-roll after attic wake so the first syllable is not dropped. getUserMedia starts during Assist-cancel settle; PCM is held until the add-on sends `ready`, then flushed. Server VAD uses `prefix_padding_ms: 400` and a slightly softer threshold. Listen-start still does not wait on area registry.
+
 ## [0.2.8] - 2026-09-30
 
 - Serve the kiosk IIFE from the add-on at a stable URL (`http://<HA-LAN>:8080/grok-voice.js`, same port as duplex). The attic Kiosk Satellite inject is a one-time bootstrap; updating the add-on refreshes the client without pasting the full script into Remote Admin. Dining-room dashboards that never load the bootstrap stay untouched.

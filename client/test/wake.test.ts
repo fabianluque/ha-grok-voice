@@ -211,6 +211,7 @@ describe("kiosk wake handoff", () => {
     events.dispatchEvent(new Event(WAKE_EVENT));
     await flush();
     expect(session.captureActive).toBe(true);
+    session.handleServerText({ type: "ready" });
 
     const first = pcm(2);
     const cancelled = pcm(4);
@@ -281,6 +282,7 @@ describe("kiosk wake handoff", () => {
       );
       return session;
     });
+    const primeMic = vi.fn();
     const kiosk: KioskApi = {
       platform: "kiosksatellite",
       pipelineRun,
@@ -289,7 +291,7 @@ describe("kiosk wake handoff", () => {
       setWakeWordActive: vi.fn(async () => true),
     };
 
-    installGrokVoice({ kiosk, events, hass: () => hass, openSession });
+    installGrokVoice({ kiosk, events, hass: () => hass, openSession, primeMic });
     expect(log).toHaveBeenCalledWith("[Grok Voice] Installed Kiosk Satellite wake override");
     await flush();
 
@@ -297,6 +299,7 @@ describe("kiosk wake handoff", () => {
     await flush();
     expect(log).toHaveBeenCalledWith("[Grok Voice] Cancelled native Assist via esphome.ks_attic_dashboard_vs_cancel");
     expect(openSession).not.toHaveBeenCalled();
+    expect(primeMic).toHaveBeenCalledOnce();
 
     await delay(CANCEL_SETTLE_MS + 20);
     await flush();

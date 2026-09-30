@@ -4,7 +4,7 @@ import {
   peekCachedKioskArea,
   prefetchKioskArea,
 } from "./area";
-import { createBrowserSession } from "./browser";
+import { createBrowserSession, primeMicCapture } from "./browser";
 import {
   accessToken,
   authModeForUrl,
@@ -49,6 +49,9 @@ function boot(): void {
     host: window as Window & WakeHost,
     document,
     hass: () => pageHass() as NativeAssistHass | null,
+    primeMic: () => {
+      void primeMicCapture();
+    },
     openSession: async () => {
       const hass = pageHass();
       const explicit = (window as KioskWindow).GROK_VOICE_URL;

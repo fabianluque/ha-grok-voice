@@ -110,6 +110,8 @@ Each kiosk session is scoped to **that tablet's Home Assistant area** so "turn o
 
 The kiosk **prefetches** the HA/KS area when the inject loads. After 0.2.6, wake awaited device/entity/area registry lists before `getUserMedia` and the duplex socket, which made Listening start 1–2 seconds late. Wake now uses the cached or explicit area (Attic fallback) immediately, mounts the overlay, and opens the mic and WebSocket together.
 
+After 0.2.9, that snappy start no longer clips the first syllable: wake begins `getUserMedia` during the Assist-cancel settle (before the duplex socket), holds up to 1.5s of PCM, and flushes it when the add-on sends `ready`. Grok server VAD includes 400ms of prefix padding. Area lookup stays in the background.
+
 Resolution order:
 
 1. Optional inject override: `window.GROK_VOICE_AREA` (name) and `window.GROK_VOICE_AREA_ID` (slug). Add this near the top of the attic inject only if HA/KS lookup is wrong.

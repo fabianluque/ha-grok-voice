@@ -66,6 +66,11 @@ export interface WakeDeps {
   /** Home Assistant page object, used to cancel this kiosk's native Assist turn. */
   hass?: () => NativeAssistHass | null | undefined;
   openSession(): Promise<VoiceSession>;
+  /**
+   * Start getUserMedia immediately (during Assist cancel settle). Optional so
+   * tests do not need a microphone. Production boot passes primeMicCapture.
+   */
+  primeMic?: () => void;
 }
 
 const protoDispatch = EventTarget.prototype.dispatchEvent;
@@ -448,6 +453,7 @@ export function installGrokVoice(deps: WakeDeps): { installed: boolean } {
     } else {
       console.log("[Grok Voice] Native Assist cancel skipped; no esphome vs_cancel matched this kiosk");
     }
+    deps.primeMic?.();
     const releaseWake = holdNativeWakeOff(deps.kiosk!);
     await deps.kiosk!.setInteractionActive(true, "voice");
     if (cancelled) {

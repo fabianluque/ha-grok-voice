@@ -239,7 +239,13 @@ def build_session(settings, function_tools: list[dict], area: dict[str, str] | N
             # server_vad ends the user turn. Do not set idle_timeout_ms: xAI
             # treats that as a check-in, not a hang-up. Session end uses our
             # idle_timeout_seconds after VAD-quiet (see ConversationWatch).
-            "turn_detection": {"type": "server_vad"},
+            # Softer threshold + prefix padding keep the first syllable after
+            # a kiosk wake (mic/WS start in parallel, audio held until ready).
+            "turn_detection": {
+                "type": "server_vad",
+                "threshold": 0.35,
+                "prefix_padding_ms": 400,
+            },
             "audio": {
                 "input": {"format": {"type": "audio/pcm", "rate": 24000}},
                 "output": {"format": {"type": "audio/pcm", "rate": 24000}},

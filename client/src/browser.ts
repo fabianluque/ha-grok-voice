@@ -1,5 +1,6 @@
 import { downsample, floatToPcm16, schedulePcm } from "./audio";
 import { authHandshake } from "./ingress";
+import { MicHold } from "./mic-hold";
 import { SessionEndWatch } from "./session-end";
 import { VoiceSession, type ServerMessage, type WebSocketLike } from "./session";
 
@@ -27,9 +28,9 @@ export function openSocket(
   socket.addEventListener("message", (event) => {
     if (typeof event.data === "string") {
       session.handleServerText(JSON.parse(event.data) as ServerMessage);
-      return;
+    } else {
+      session.handleServerBinary(event.data as ArrayBuffer);
     }
-    session.handleServerBinary(event.data as ArrayBuffer);
   });
   socket.addEventListener("close", () => {
     session.finish("closed");
@@ -51,7 +52,7 @@ export function openSocket(
 export async function captureMic(
   context: AudioContext,
   onPcm: (pcm: ArrayBuffer) => void,
-): Promise<{ stop(): void }> {
+): Promise<{ stop(): void; setOnPcm(next: (pcm: ArrayBuffer) => void): void }> {
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: {
       echoCancellation: true,
@@ -61,17 +62,21 @@ export async function captureMic(
     },
   });
   const source = context.createMediaStreamSource(stream);
-  const processor = context.createScriptProcessor(4096, 1, 1);
+  const processor = context.createScriptProcessor(2048, 1, 1);
   const mute = context.createGain();
   mute.gain.value = 0;
+  let handler = onPcm;
   processor.onaudioprocess = (event) => {
     const input = event.inputBuffer.getChannelData(0);
-    onPcm(floatToPcm16(downsample(input, context.sampleRate, SAMPLE_RATE)));
+    handler(floatToPcm16(downsample(input, context.sampleRate, SAMPLE_RATE)));
   };
   source.connect(processor);
   processor.connect(mute);
   mute.connect(context.destination);
   return {
+    setOnPcm(next) {
+      handler = next;
+    },
     stop() {
       processor.disconnect();
       source.disconnect();
@@ -81,6 +86,55 @@ export async function captureMic(
       }
     },
   };
+}
+
+export interface PrimedMic {
+  context: AudioContext;
+  hold: MicHold;
+  stop(): void;
+  setOnPcm(next: (pcm: ArrayBuffer) => void): void;
+}
+
+let priming: Promise<PrimedMic> | null = null;
+
+async function openPrimedMic(): Promise<PrimedMic> {
+  const hold = new MicHold();
+  const context = new AudioContext({ sampleRate: SAMPLE_RATE });
+  if (context.state === "suspended") {
+    await context.resume();
+  }
+  const mic = await captureMic(context, (pcm) => hold.push(pcm));
+  return {
+    context,
+    hold,
+    stop: () => mic.stop(),
+    setOnPcm: (next) => mic.setOnPcm(next),
+  };
+}
+
+/**
+ * Start getUserMedia as soon as wake fires (in parallel with Assist cancel
+ * settle) so the first syllables are in the hold before the duplex socket.
+ */
+export function primeMicCapture(): Promise<PrimedMic> {
+  if (!priming) {
+    priming = openPrimedMic().catch((error) => {
+      priming = null;
+      throw error;
+    });
+  }
+  return priming;
+}
+
+function takePrimedMic(): Promise<PrimedMic> | null {
+  const current = priming;
+  priming = null;
+  return current;
+}
+
+/** Test hook. */
+export function resetPrimedMic(): void {
+  priming = null;
 }
 
 export interface BrowserSessionOptions {
@@ -95,17 +149,28 @@ export interface BrowserSessionOptions {
 export async function createBrowserSession(
   options: BrowserSessionOptions,
 ): Promise<{ session: VoiceSession }> {
-  const context = new AudioContext({ sampleRate: SAMPLE_RATE });
+  let primed: PrimedMic | null = null;
+  const pendingPrime = takePrimedMic();
+  if (pendingPrime) {
+    try {
+      primed = await pendingPrime;
+    } catch {
+      primed = null;
+    }
+  }
+
+  const context = primed?.context ?? new AudioContext({ sampleRate: SAMPLE_RATE });
   if (context.state === "suspended") {
     await context.resume();
   }
   const nextTime = { t: 0 };
-  let mic: { stop(): void } | null = null;
+  let micStop = primed ? () => primed!.stop() : null;
   let closed = false;
   const session = new VoiceSession(
     (pcm) => schedulePcm(context, pcm, nextTime),
     () => openSocket(options.url, options.token, session, options.ingress === true, options.area),
   );
+  session.armCapture();
   const originalFinish = session.finish.bind(session);
   const endWatch = new SessionEndWatch({
     onEnd: (reason) => session.finish(reason),
@@ -116,7 +181,7 @@ export async function createBrowserSession(
     }
     closed = true;
     endWatch.dispose();
-    mic?.stop();
+    micStop?.();
     void context.close();
     originalFinish(reason);
   };
@@ -137,10 +202,17 @@ export async function createBrowserSession(
     wrapped(message);
   };
   try {
-    // Open the duplex socket while getUserMedia is in flight so VAD/ready
-    // is not serialized behind the mic prompt.
+    if (primed) {
+      primed.setOnPcm((pcm) => session.sendMic(pcm));
+      session.importHold(primed.hold);
+    }
+    // Open the duplex socket without waiting for getUserMedia when the mic
+    // was not already primed. Frames queue in VoiceSession until `ready`.
     await session.start();
-    mic = await captureMic(context, (pcm) => session.sendMic(pcm));
+    if (!primed) {
+      const mic = await captureMic(context, (pcm) => session.sendMic(pcm));
+      micStop = () => mic.stop();
+    }
   } catch (error) {
     session.finish("error");
     throw error;
