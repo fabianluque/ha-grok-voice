@@ -228,6 +228,7 @@ async def handle_socket(websocket, settings, http, grok_connect=None, memory=Non
                 return
 
     async def pump_grok() -> None:
+        nonlocal forget_memory
         async for incoming in connection.grok:
             if isinstance(incoming, bytes):
                 bridge.playing = True
@@ -303,7 +304,11 @@ async def handle_socket(websocket, settings, http, grok_connect=None, memory=Non
                     and client_event.get("final")
                     and is_closing_utterance(str(client_event.get("text") or ""))
                 ):
-                    request_end("done")
+                    # Wait for the ack turn (same as end_session) so Grok can
+                    # finish speaking before the duplex closes.
+                    forget_memory = True
+                    bridge.end_after_response = True
+                    bridge.end_session_forget = True
 
     async def watch_idle() -> None:
         while not idle.is_set():

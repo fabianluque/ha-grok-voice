@@ -1,3 +1,5 @@
+import { cancelTimeout, scheduleTimeout } from "./timers";
+
 export function downsample(input: Float32Array, fromRate: number, toRate: number): Float32Array {
   if (fromRate === toRate) {
     return input;
@@ -100,13 +102,14 @@ export interface BufferSourceLike {
   connect(destination: unknown): void;
   start(when: number): void;
   stop(): void;
+  onended?: (() => void) | null;
 }
 
 export function schedulePcm(
   context: AudioClock,
   pcm: ArrayBuffer,
   nextTime: { t: number },
-): { stop(): void } {
+): { stop(): void; ended: Promise<void>; duration: number } {
   const samples = pcm16ToFloat(pcm);
   const buffer = context.createBuffer(1, samples.length, 24000);
   buffer.copyToChannel(samples, 0);
@@ -116,13 +119,31 @@ export function schedulePcm(
   const startAt = Math.max(context.currentTime, nextTime.t);
   source.start(startAt);
   nextTime.t = startAt + buffer.duration;
+  const remainingMs = Math.max(0, Math.ceil((nextTime.t - context.currentTime) * 1000));
+  let settled = false;
+  let settle!: () => void;
+  const ended = new Promise<void>((resolve) => {
+    settle = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      resolve();
+    };
+  });
+  source.onended = settle;
+  const fallback = scheduleTimeout(settle, remainingMs + 80);
   return {
+    duration: buffer.duration,
+    ended,
     stop() {
       try {
         source.stop();
       } catch {
         // Already finished or never started.
       }
+      cancelTimeout(fallback);
+      settle();
     },
   };
 }

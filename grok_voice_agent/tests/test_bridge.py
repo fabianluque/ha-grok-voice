@@ -166,6 +166,27 @@ def test_completed_user_transcript_is_marked_final():
     ]
 
 
+def test_user_updated_snapshot_streams_and_can_revise():
+    bridge = GrokBridge(ToolGateway(FakeMcp(), frozenset({"HassTurnOn"})))
+    assert bridge.client_messages(
+        {"type": "conversation.item.input_audio_transcription.updated", "transcript": "Hello?"}
+    ) == [{"type": "transcript", "role": "user", "text": "Hello?", "final": False}]
+    assert bridge.client_messages(
+        {
+            "type": "conversation.item.input_audio_transcription.updated",
+            "transcript": "Hello, my name is",
+        }
+    ) == [{"type": "transcript", "role": "user", "text": "Hello, my name is", "final": False}]
+
+
+def test_empty_transcript_delta_is_not_forwarded():
+    bridge = GrokBridge(ToolGateway(FakeMcp(), frozenset({"HassTurnOn"})))
+    assert bridge.client_messages({"type": "response.audio_transcript.delta", "delta": ""}) == []
+    assert bridge.client_messages({"type": "response.audio_transcript.delta", "delta": "Hi"}) == [
+        {"type": "transcript", "role": "assistant", "text": "Hi", "final": False}
+    ]
+
+
 def test_uplink_continues_while_audio_is_playing():
     bridge = GrokBridge(ToolGateway(FakeMcp(), frozenset({"HassTurnOn"})))
     bridge.playing = True
@@ -209,6 +230,7 @@ def test_session_is_full_duplex_server_vad():
     assert "idle_timeout_ms" not in json.dumps(payload)
     assert "silence_duration_ms" not in json.dumps(payload)
     assert session["audio"]["input"]["format"]["rate"] == 24000
+    assert session["audio"]["input"]["transcription"]["model"] == "grok-transcribe"
     assert "interruptible" not in json.dumps(payload)
     assert {"type": "web_search"} in session["tools"]
     assert any(tool.get("name") == "end_session" for tool in session["tools"])

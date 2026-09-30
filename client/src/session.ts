@@ -16,12 +16,18 @@ export interface ServerMessage {
   idleTimeoutSeconds?: number;
 }
 
+/** Hang-up reasons that should let queued ack TTS finish first. */
+export function hangupWaitsForPlayback(reason: string): boolean {
+  return reason === "done" || reason === "idle" || reason === "stop" || reason === "closed";
+}
+
 export class VoiceSession {
   captureActive = false;
   private readonly playback = new PlaybackQueue();
   private socket: WebSocketLike | null = null;
-  private endHandler: ((reason: string) => void) | null = null;
+  private readonly endHandlers: Array<(reason: string) => void> = [];
   private ended = false;
+  private hangingUp = false;
   private endReason: string | null = null;
 
   constructor(
@@ -30,7 +36,7 @@ export class VoiceSession {
   ) {}
 
   onEnd(handler: (reason: string) => void): void {
-    this.endHandler = handler;
+    this.endHandlers.push(handler);
     if (this.ended) {
       handler(this.endReason ?? "end");
     }
@@ -52,6 +58,9 @@ export class VoiceSession {
   }
 
   handleServerText(message: ServerMessage): void {
+    if (this.hangingUp && message.type === "speech_started") {
+      return;
+    }
     if (message.type === "response_started") {
       this.playback.responseStarted();
     } else if (message.type === "speech_started") {
@@ -69,12 +78,38 @@ export class VoiceSession {
     if (this.ended) {
       return;
     }
-    this.ended = true;
+    if (this.hangingUp) {
+      if (reason === "closed") {
+        return;
+      }
+      if (reason === "error" || reason === "unauthorized") {
+        this.playback.speechStarted();
+        this.completeHangup(reason);
+      }
+      return;
+    }
+    this.hangingUp = true;
     this.endReason = reason;
     this.captureActive = false;
-    if (reason === "error" || reason === "unauthorized" || reason === "closed") {
+    this.playback.stopAccepting();
+    if (!hangupWaitsForPlayback(reason)) {
       this.playback.speechStarted();
+      this.completeHangup(reason);
+      return;
     }
+    if (!this.playback.hasQueuedAudio()) {
+      this.completeHangup(reason);
+      return;
+    }
+    void this.playback.waitUntilDrained().then(() => this.completeHangup(reason));
+  }
+
+  private completeHangup(reason: string): void {
+    if (this.ended) {
+      return;
+    }
+    this.ended = true;
+    this.endReason = reason;
     if (this.socket && (reason === "done" || reason === "idle" || reason === "stop")) {
       try {
         this.socket.send(JSON.stringify({ type: "stop", reason }));
@@ -83,6 +118,8 @@ export class VoiceSession {
       }
     }
     this.socket?.close();
-    this.endHandler?.(reason);
+    for (const handler of this.endHandlers) {
+      handler(reason);
+    }
   }
 }

@@ -3,7 +3,7 @@ import { SessionEndWatch } from "../src/session-end";
 import { VoiceSession } from "../src/session";
 
 describe("session end watch", () => {
-  it("ends when a completed utterance ends with a closer", () => {
+  it("waits for the ack turn after a closer, then hangs up", () => {
     const onEnd = vi.fn();
     const watch = new SessionEndWatch({ idleMs: 60_000, onEnd });
     watch.handle({ type: "ready" });
@@ -14,7 +14,29 @@ describe("session end watch", () => {
         text: "oh, that's great, thank you",
         final: true,
       }),
-    ).toBe("done");
+    ).toBeNull();
+    expect(onEnd).not.toHaveBeenCalled();
+    watch.handle({ type: "response_started" });
+    expect(onEnd).not.toHaveBeenCalled();
+    expect(watch.handle({ type: "response_done" })).toBe("done");
+    expect(onEnd).toHaveBeenCalledWith("done");
+  });
+
+  it("does not hang up on a closer until response_done if Grok is already speaking", () => {
+    const onEnd = vi.fn();
+    const watch = new SessionEndWatch({ idleMs: 60_000, onEnd });
+    watch.handle({ type: "ready" });
+    watch.handle({ type: "response_started" });
+    expect(
+      watch.handle({
+        type: "transcript",
+        role: "user",
+        text: "thank you",
+        final: true,
+      }),
+    ).toBeNull();
+    expect(onEnd).not.toHaveBeenCalled();
+    expect(watch.handle({ type: "response_done" })).toBe("done");
     expect(onEnd).toHaveBeenCalledWith("done");
   });
 
@@ -33,14 +55,31 @@ describe("session end watch", () => {
     expect(onEnd).not.toHaveBeenCalled();
   });
 
-  it("ends on a completed thank-you transcript", () => {
+  it("ends on a completed thank-you after the ack turn", () => {
     const onEnd = vi.fn();
     const watch = new SessionEndWatch({ idleMs: 60_000, onEnd });
     watch.handle({ type: "ready", idleTimeoutSeconds: 20 });
     expect(
       watch.handle({ type: "transcript", role: "user", text: "Thank you", final: true }),
-    ).toBe("done");
+    ).toBeNull();
+    expect(onEnd).not.toHaveBeenCalled();
+    watch.handle({ type: "response_started" });
+    expect(watch.handle({ type: "response_done" })).toBe("done");
     expect(onEnd).toHaveBeenCalledWith("done");
+  });
+
+  it("hangs up after ack grace if a closer gets no spoken reply", () => {
+    vi.useFakeTimers();
+    const onEnd = vi.fn();
+    const watch = new SessionEndWatch({ idleMs: 60_000, onEnd });
+    watch.handle({ type: "ready" });
+    watch.handle({ type: "transcript", role: "user", text: "thank you", final: true });
+    vi.advanceTimersByTime(2_499);
+    expect(onEnd).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(2);
+    expect(onEnd).toHaveBeenCalledWith("done");
+    watch.dispose();
+    vi.useRealTimers();
   });
 
   it("ignores streaming thank-you that is not final", () => {
@@ -93,5 +132,65 @@ describe("voice session hang-up", () => {
     session.finish("done");
     expect(sent).toEqual([JSON.stringify({ type: "stop", reason: "done" })]);
     expect(session.captureActive).toBe(false);
+  });
+
+  it("waits for queued assistant audio before closing the socket", async () => {
+    let release!: () => void;
+    const ended = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const close = vi.fn();
+    const sent: string[] = [];
+    const session = new VoiceSession(
+      () => ({ stop() {}, ended }),
+      () => ({
+        send(data) {
+          if (typeof data === "string") {
+            sent.push(data);
+          }
+        },
+        close,
+      }),
+    );
+    await session.start();
+    session.handleServerText({ type: "response_started" });
+    expect(session.handleServerBinary(new ArrayBuffer(2))).toBe(true);
+    const endedReason = new Promise<string>((resolve) => session.onEnd(resolve));
+    session.finish("done");
+    expect(close).not.toHaveBeenCalled();
+    expect(sent).toEqual([]);
+    expect(session.captureActive).toBe(false);
+    release();
+    await expect(endedReason).resolves.toBe("done");
+    expect(close).toHaveBeenCalledOnce();
+    expect(sent).toEqual([JSON.stringify({ type: "stop", reason: "done" })]);
+  });
+
+  it("does not flush mid-session tool follow-up audio while hanging up waits", async () => {
+    const stopped: ArrayBuffer[] = [];
+    let release!: () => void;
+    const ended = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const first = new ArrayBuffer(2);
+    const followup = new ArrayBuffer(4);
+    const session = new VoiceSession(
+      (chunk) => ({
+        stop: () => stopped.push(chunk),
+        ended: chunk === followup ? ended : Promise.resolve(),
+      }),
+      () => ({ send() {}, close() {} }),
+    );
+    await session.start();
+    session.handleServerText({ type: "response_started" });
+    expect(session.handleServerBinary(first)).toBe(true);
+    session.handleServerText({ type: "response_started" });
+    expect(session.handleServerBinary(followup)).toBe(true);
+    expect(stopped).toEqual([]);
+    session.finish("done");
+    expect(stopped).toEqual([]);
+    release();
+    await new Promise<string>((resolve) => session.onEnd(resolve));
+    expect(stopped).toEqual([]);
   });
 });

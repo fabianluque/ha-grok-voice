@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  finalizeTranscript,
+  mergeTranscript,
   overlayStyle,
   speakerLabel,
   statusLabel,
@@ -38,13 +40,50 @@ describe("kiosk status pill", () => {
     expect(messages).toEqual([{ role: "assistant", text: "The lights are on.", final: true }]);
   });
 
-  it("covers the dashboard with large type", () => {
+  it("covers the dashboard with readable conversation type", () => {
     const css = overlayStyle();
     expect(css).toContain("#grok-voice-overlay{");
     expect(css).toContain("inset:0");
     expect(css).toContain("backdrop-filter:blur(22px)");
     expect(css).toContain("rgba(6,8,14,.82)");
-    expect(css).toContain("clamp(26px,4.2vw,40px)");
-    expect(css).toContain("clamp(28px,4.6vw,44px)");
+    expect(css).toContain("clamp(18px,2.9vw,28px)");
+    expect(css).toContain("clamp(20px,3.2vw,32px)");
+    expect(css).not.toContain("clamp(26px,4.2vw,40px)");
+  });
+
+  it("merges incremental pieces and cumulative snapshots", () => {
+    expect(mergeTranscript("The lights", "The lights are on")).toBe("The lights are on");
+    expect(mergeTranscript("The lights", " are on")).toBe("The lights are on");
+    expect(mergeTranscript("Hello", "Hell")).toBe("Hello");
+  });
+
+  it("appends small streaming pieces without waiting for a full replace", () => {
+    const messages = upsertTranscript([], "assistant", "The", false);
+    upsertTranscript(messages, "assistant", " lights", false);
+    upsertTranscript(messages, "assistant", " are", false);
+    upsertTranscript(messages, "assistant", " on.", true);
+    expect(messages).toEqual([{ role: "assistant", text: "The lights are on.", final: true }]);
+  });
+
+  it("replaces live user snapshots, including xAI revisions", () => {
+    const messages = upsertTranscript([], "user", "turn on", false);
+    upsertTranscript(messages, "user", "turn on the", false);
+    upsertTranscript(messages, "user", "turn on the lights", false);
+    expect(messages).toEqual([{ role: "user", text: "turn on the lights", final: false }]);
+    upsertTranscript(messages, "user", "Hello?", false);
+    expect(messages).toEqual([{ role: "user", text: "Hello?", final: false }]);
+    upsertTranscript(messages, "user", "Hello, my name is", false);
+    expect(messages).toEqual([{ role: "user", text: "Hello, my name is", final: false }]);
+    expect(mergeTranscript("Hello?", "Hello, my name is", "replace")).toBe("Hello, my name is");
+  });
+
+  it("starts a new user line after the previous snapshot is finalized", () => {
+    const messages = upsertTranscript([], "user", "turn on the lights", false);
+    finalizeTranscript(messages, "user");
+    upsertTranscript(messages, "user", "and the fan", false);
+    expect(messages).toEqual([
+      { role: "user", text: "turn on the lights", final: true },
+      { role: "user", text: "and the fan", final: false },
+    ]);
   });
 });
