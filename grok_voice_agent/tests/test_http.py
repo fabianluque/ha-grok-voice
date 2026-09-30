@@ -10,7 +10,7 @@ from websockets.datastructures import Headers
 from websockets.http11 import Request
 
 from app.server import drop_empty_content_length, voice_serve
-from app.static import FALLBACK_HTML, http_file_response, process_http_request
+from app.static import FALLBACK_HTML, KIOSK_CLIENT_PATH, etag_for, http_file_response, process_http_request
 
 
 def _request(path: str, upgrade: str | None = None) -> Request:
@@ -42,6 +42,9 @@ def test_root_serves_packaged_html(tmp_path: Path):
     assert script.status_code == 200
     assert "javascript" in script.headers["Content-Type"]
     assert b"GrokVoiceUI" in script.body
+    assert script.headers["Cache-Control"] == "no-cache"
+    assert script.headers["Access-Control-Allow-Origin"] == "*"
+    assert script.headers.get("ETag")
 
 
 def test_missing_ui_falls_back_to_html_not_plaintext():
@@ -51,6 +54,28 @@ def test_missing_ui_falls_back_to_html_not_plaintext():
     assert b"Grok Voice" in response.body
     assert FALLBACK_HTML.encode("utf-8") == response.body
     assert response.body != b"Grok Voice agent\n"
+
+
+def test_javascript_revalidates_with_etag(tmp_path: Path):
+    (tmp_path / "grok-voice.js").write_text("window.GrokVoice = true;", encoding="utf-8")
+    first = http_file_response("/grok-voice.js", tmp_path)
+    etag = first.headers["ETag"]
+    assert first.status_code == 200
+    assert etag_for(b"window.GrokVoice = true;") == etag
+    headers = Headers()
+    headers["If-None-Match"] = etag
+    cached = http_file_response("/grok-voice.js", tmp_path, headers)
+    assert cached.status_code == 304
+    assert cached.body == b""
+    assert cached.headers["ETag"] == etag
+    assert cached.headers["Cache-Control"] == "no-cache"
+
+
+def test_kiosk_client_query_string_still_serves_the_file(tmp_path: Path):
+    (tmp_path / "grok-voice.js").write_text("window.GrokVoice = true;", encoding="utf-8")
+    response = http_file_response("/grok-voice.js?v=addon", tmp_path)
+    assert response.status_code == 200
+    assert b"GrokVoice" in response.body
 
 
 def test_missing_asset_is_404_when_index_exists(tmp_path: Path):
@@ -122,6 +147,7 @@ def test_ingress_get_with_content_length_zero_returns_the_mic_page(tmp_path: Pat
         encoding="utf-8",
     )
     (tmp_path / "ui.js").write_text("window.GrokVoiceUI = true;", encoding="utf-8")
+    (tmp_path / "grok-voice.js").write_text("window.GrokVoice = true;", encoding="utf-8")
 
     async def run():
         async def handler(websocket):
@@ -158,6 +184,16 @@ def test_ingress_get_with_content_length_zero_returns_the_mic_page(tmp_path: Pat
                     script_status = script.status
                     script_type = script.headers.get("Content-Type")
                     script_body = await script.read()
+                async with session.get(
+                    f"http://127.0.0.1:{port}{KIOSK_CLIENT_PATH}",
+                    allow_redirects=False,
+                    headers={"Origin": "http://127.0.0.1:2325"},
+                ) as kiosk:
+                    kiosk_status = kiosk.status
+                    kiosk_type = kiosk.headers.get("Content-Type")
+                    kiosk_cors = kiosk.headers.get("Access-Control-Allow-Origin")
+                    kiosk_cache = kiosk.headers.get("Cache-Control")
+                    kiosk_body = await kiosk.read()
             async with connect(f"ws://127.0.0.1:{port}/") as websocket:
                 await websocket.send("ping")
                 echoed = await websocket.recv()
@@ -169,10 +205,15 @@ def test_ingress_get_with_content_length_zero_returns_the_mic_page(tmp_path: Pat
                 script_status,
                 script_type,
                 script_body,
+                kiosk_status,
+                kiosk_type,
+                kiosk_cors,
+                kiosk_cache,
+                kiosk_body,
                 echoed,
             )
 
-    status, content_type, body, frame_options, script_status, script_type, script_body, echoed = (
+    status, content_type, body, frame_options, script_status, script_type, script_body, kiosk_status, kiosk_type, kiosk_cors, kiosk_cache, kiosk_body, echoed = (
         asyncio.run(run())
     )
     assert status == 200
@@ -183,6 +224,11 @@ def test_ingress_get_with_content_length_zero_returns_the_mic_page(tmp_path: Pat
     assert script_status == 200
     assert script_type is not None and "javascript" in script_type
     assert b"GrokVoiceUI" in script_body
+    assert kiosk_status == 200
+    assert kiosk_type is not None and "javascript" in kiosk_type
+    assert kiosk_cors == "*"
+    assert kiosk_cache == "no-cache"
+    assert b"GrokVoice" in kiosk_body
     assert echoed == "pong"
 
 
@@ -192,4 +238,30 @@ def test_packaged_www_is_the_mic_ui():
     assert "Grok Voice" in html
     assert "Start talking" in html
     assert "ui.js" in html
+    assert "grok-voice.js" not in html
     assert (root / "ui.js").is_file()
+
+
+def test_packaged_www_serves_the_kiosk_client():
+    root = Path(__file__).resolve().parents[1] / "www"
+    kiosk = root / "grok-voice.js"
+    boot = root / "kiosk-boot.js"
+    assert KIOSK_CLIENT_PATH == "/grok-voice.js"
+    assert kiosk.is_file()
+    assert boot.is_file()
+    client = kiosk.read_text(encoding="utf-8")
+    loader = boot.read_text(encoding="utf-8")
+    assert "[Grok Voice]" in client
+    assert "kiosksatellite" in client
+    assert "__grokVoiceInstalled" in client
+    assert "/grok-voice.js" in loader
+    assert "192.168.86.38" in loader
+    served = http_file_response("/grok-voice.js", root)
+    assert served.status_code == 200
+    assert "javascript" in served.headers["Content-Type"]
+    assert served.headers["Access-Control-Allow-Origin"] == "*"
+    assert served.headers["Cache-Control"] == "no-cache"
+    assert b"index.html" not in served.body
+    boot_served = http_file_response("/kiosk-boot.js", root)
+    assert boot_served.status_code == 200
+    assert b"grok-voice.js" in boot_served.body

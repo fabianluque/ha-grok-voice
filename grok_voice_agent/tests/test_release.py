@@ -144,6 +144,7 @@ def test_ship_workflows_and_readme():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     assert "pytest" in ci
     assert "npm test" in ci
+    assert "npm run build" in ci
     assert "push: false" in ci
     assert "workflow_dispatch" in release_yml
     assert "GH_TOKEN: ${{ github.token }}" in release_yml

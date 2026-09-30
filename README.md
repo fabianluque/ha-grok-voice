@@ -4,6 +4,8 @@ Home Assistant add-on for full-duplex Grok Voice. The add-on folder is `grok_voi
 
 The version Home Assistant reads is `version` in `grok_voice_agent/config.yaml`. Git tags use the same number with a `v` prefix (`1.2.3` → `v1.2.3`).
 
+The attic Kiosk Satellite dashboard loads the client from the add-on at `http://<HA-LAN>:8080/grok-voice.js`. Enable that once with a tiny inject; add-on updates refresh the script. Setup is in [`grok_voice_agent/DOCS.md`](grok_voice_agent/DOCS.md#kiosk-satellite).
+
 ## Cut a release
 
 After this workflow is on `main`, ship from GitHub. The workflow uses the built-in `GITHUB_TOKEN` only. Do not create an API key, and do not push the tag yourself.

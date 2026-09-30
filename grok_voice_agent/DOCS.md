@@ -18,9 +18,9 @@ The GitHub repository must be **public**. The add-on store does not log into Git
 
 A blank tool allowlist is lights (`HassTurnOn`, `HassTurnOff`, `HassLightSet`), live context (`GetLiveContext`, `GetDateTime`, `HassGetState`), media / Music Assistant (`HassMediaSearchAndPlay`, pause/volume/next, `play_media`, and the `media_player` / `music_assistant` domains), todo / shopping lists (`HassListAddItem` and the `todo` domain), and Mealie (`mealie`). Home Assistant 2026.9 prefixes those with the integration domain (`intent__HassTurnOn`, `music_assistant__play_media`, `todo__HassListAddItem`, `mealie__get_mealplan`). The blank allowlist matches the bare name, the prefixed name, and those domains. The voice-session log reports the names that were attached. Set `*` to offer every MCP tool.
 
-After a client UI change, run `npm run build` in `client/` so `grok_voice_agent/www` is current, then update/rebuild the add-on so `/app/www` is in the image.
+After a client UI or kiosk-client change, run `npm run build` in `client/` so `grok_voice_agent/www` is current (`index.html` / `ui.js` plus `grok-voice.js` / `kiosk-boot.js`), then update/rebuild the add-on so `/app/www` is in the image.
 
-The add-on serves the mic UI on dashboard ingress (port 8099, **Open Web UI**) and on the debug port (`8080/tcp`). Open Web UI uses the signed-in Home Assistant ingress session, so it does not ask for a token. The debug port still sends an optional long-lived access token on the first WebSocket message.
+The add-on serves the mic UI on dashboard ingress (port 8099, **Open Web UI**) and on the debug port (`8080/tcp`). Open Web UI uses the signed-in Home Assistant ingress session, so it does not ask for a token. The debug port still sends an optional long-lived access token on the first WebSocket message. The same debug port also serves the kiosk IIFE at `http://<HA-LAN>:8080/grok-voice.js` (see [Kiosk Satellite](#kiosk-satellite)).
 
 ## Local `/addons` (optional, for development)
 
@@ -62,13 +62,47 @@ The debug page talks to `ws://<that-host>:8080/` with the same `{ "type": "auth"
 
 ## Kiosk Satellite
 
-Leave Voice Satellite's wake word on. Kiosk Satellite only detects a wake word while that detection is enabled; do not set it to Disabled. On the attic tablet, Kiosk Satellite's own voice runtime is native (`voice.runtime=native`). That path starts Assist inside the app and pauses the dashboard, which is separate from the Voice Satellite card. The injected script still blocks the card (`onWakeAction`, the blur overlay, and an STT `pipeline.start`). It also calls this kiosk's ESPHome `vs_cancel` action, matched by the kiosk device name, so the native Assist turn stops and the WebView stays awake for Grok. After that cancel it waits for the dashboard to leave the Assist pause before opening the duplex session. It does not call any other kiosk's action. Do not change the dining room dashboard or its inject.
+Leave Voice Satellite's wake word on. Kiosk Satellite only detects a wake word while that detection is enabled; do not set it to Disabled. On the attic tablet, Kiosk Satellite's own voice runtime is native (`voice.runtime=native`). That path starts Assist inside the app and pauses the dashboard, which is separate from the Voice Satellite card. The loaded kiosk script still blocks the card (`onWakeAction`, the blur overlay, and an STT `pipeline.start`). It also calls this kiosk's ESPHome `vs_cancel` action, matched by the kiosk device name, so the native Assist turn stops and the WebView stays awake for Grok. After that cancel it waits for the dashboard to leave the Assist pause before opening the duplex session. It does not call any other kiosk's action. Do not change the dining room dashboard or its inject.
 
-1. In `client/`, run `npm test` then `npm run build:kiosk`. That writes `client/dist/grok-voice.js`.
-2. In Kiosk Satellite **Remote Admin**, open the **attic** dashboard only. Go to **Browser → Inject JavaScript on the HA dashboard**.
-3. Replace that field with the entire contents of `client/dist/grok-voice.js` (the whole minified file). Leave the dining room kiosk's inject field unchanged.
-4. Reload the attic kiosk.
-5. The tablet user must be able to open this add-on's ingress. An administrator can.
+### Stable client URL
+
+The running add-on always serves the current kiosk IIFE (classic script, not an ES module) next to the mic UI:
+
+| URL | When to use it |
+| --- | --- |
+| `http://<HA-LAN>:8080/grok-voice.js` | **Kiosk / Lovelace.** Same host and port as duplex `ws://<HA-LAN>:8080/`. No Home Assistant token on this GET (a `<script src>` cannot send one). Duplex still sends the long-lived / session token on the first WebSocket message. |
+| `http://<HA-LAN>:8080/kiosk-boot.js` | Tiny loader with the same host discovery as duplex. Optional; the one-line inject below loads `grok-voice.js` directly. |
+| `/grok-voice.js` on ingress `:8099` / Open Web UI | Same file, but only inside an ingress session. Lovelace has **no** `ingress_session` cookie, so `https://<HA>/api/hassio_ingress/<token>/grok-voice.js` returns Supervisor **401**. Do not use that path from a dashboard. |
+
+This install's LAN Home Assistant host is `192.168.86.38`, so the attic URL is:
+
+`http://192.168.86.38:8080/grok-voice.js`
+
+CORS is allowed (`Access-Control-Allow-Origin: *`) so a dashboard origin (`http://127.0.0.1:2325` Kiosk Satellite proxy, or `http://192.168.86.38:8123`) can load the file. Classic `<script src>` works without CORS; the header is for `fetch` / module resources. `Cache-Control: no-cache` makes the tablet revalidate after an add-on update.
+
+### Enable once on the attic tablet
+
+Do this in Kiosk Satellite **Remote Admin** (`http://192.168.86.170:2324`) for the **attic** dashboard only (`/tablet-dashboard/attic`). Leave the dining room kiosk's inject field unchanged.
+
+1. Start **Grok Voice Agent** so port `8080` is listening on the Home Assistant host.
+2. Open **Browser → Inject JavaScript on the HA dashboard**.
+3. Replace that field with this bootstrap (not the 20k+ client). Optional overrides (`GROK_VOICE_AREA`, `GROK_VOICE_URL`, …) can sit above it.
+
+```javascript
+(() => {
+  const s = document.createElement("script");
+  s.src = "http://192.168.86.38:8080/grok-voice.js";
+  document.documentElement.appendChild(s);
+})();
+```
+
+4. Reload the attic kiosk. The dashboard stays a normal Lovelace page; the script tag is cross-origin to `:8080` and does not need a Supervisor ingress cookie.
+
+After that, **update the add-on** to refresh the client. The next dashboard load fetches the new `grok-voice.js`. Do not paste the full file into Remote Admin again unless the Home Assistant LAN IP or debug port changes.
+
+To load the host-discovering bootstrap instead of hardcoding the IP, point `s.src` at `http://192.168.86.38:8080/kiosk-boot.js`, or set `window.GROK_VOICE_SCRIPT` to another URL before the script tag. `window.GROK_VOICE_DEBUG_PORT` still selects the duplex port.
+
+The tablet user must be able to reach `http://192.168.86.38:8080/` on the LAN. An administrator can. Open Web UI / ingress is not required for the kiosk path.
 
 The microphone stays open while Grok is speaking. Talking over a reply flushes playback in the browser. A later tool call or second TTS generation does **not** cut the sentence already playing; new audio waits until that reply finishes. After wake, a conversation overlay sits on the dashboard with Listening / Speaking and the user and Grok transcripts. It disappears when the session ends.
 

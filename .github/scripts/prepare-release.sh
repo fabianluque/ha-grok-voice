@@ -106,6 +106,7 @@ python3 -m pip install -r grok_voice_agent/requirements.txt pytest aiohttp
 python3 -m pytest
 npm --prefix client ci
 npm --prefix client test
+npm --prefix client run build
 
 git config user.name "github-actions[bot]"
 git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

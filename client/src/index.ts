@@ -24,10 +24,16 @@ interface KioskWindow extends Window {
   GROK_VOICE_DEBUG_PORT?: number | string;
   GROK_VOICE_AREA?: string;
   GROK_VOICE_AREA_ID?: string;
+  __grokVoiceInstalled?: boolean;
 }
 
 function boot(): void {
-  const kiosk = (window as KioskWindow).kioskSatellite;
+  const page = window as KioskWindow;
+  if (page.__grokVoiceInstalled) {
+    return;
+  }
+  page.__grokVoiceInstalled = true;
+  const kiosk = page.kioskSatellite;
   const areaInput = () => ({
     kiosk,
     hass: pageHass() as NativeAssistHass | null,
