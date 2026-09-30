@@ -3,8 +3,10 @@ import type { NativeAssistHass } from "../src/native-assist";
 import { VoiceSession } from "../src/session";
 import {
   CANCEL_SETTLE_MS,
+  MIC_RELEASE_MS,
   formatReject,
   installGrokVoice,
+  rearmNativeWake,
   restoreWakeClaim,
   WAKE_EVENT,
   type KioskApi,
@@ -28,6 +30,12 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+async function finishAndSettle(session: VoiceSession, reason = "idle"): Promise<void> {
+  session.finish(reason);
+  await delay(MIC_RELEASE_MS + 30);
+  await flush();
 }
 
 describe("kiosk wake handoff", () => {
@@ -84,8 +92,7 @@ describe("kiosk wake handoff", () => {
     expect(pipelineRun).not.toHaveBeenCalled();
     expect(openSession).toHaveBeenCalledOnce();
     expect(session.captureActive).toBe(true);
-    session.finish("idle");
-    await flush();
+    await finishAndSettle(session);
     expect(kiosk.setInteractionActive).toHaveBeenNthCalledWith(1, true, "voice");
     expect(kiosk.setWakeWordActive).toHaveBeenCalledWith(true);
     expect(kiosk.setInteractionActive).toHaveBeenLastCalledWith(false, "voice");
@@ -141,8 +148,7 @@ describe("kiosk wake handoff", () => {
     expect(showBlurOverlay).not.toHaveBeenCalled();
     expect(pipelineStart).not.toHaveBeenCalled();
     expect(openSession).toHaveBeenCalledOnce();
-    session.finish("idle");
-    await flush();
+    await finishAndSettle(session);
   });
 
   it("still delivers other Kiosk Satellite events", () => {
@@ -224,8 +230,7 @@ describe("kiosk wake handoff", () => {
     expect(session.handleServerBinary(next)).toBe(true);
     expect(played).toEqual([first, next]);
 
-    session.finish("idle");
-    await flush();
+    await finishAndSettle(session);
 
     expect(pipelineRun).not.toHaveBeenCalled();
     expect(kiosk.setWakeWordActive).toHaveBeenCalledWith(true);
@@ -304,8 +309,7 @@ describe("kiosk wake handoff", () => {
     expect(kiosk.setInteractionActive).toHaveBeenCalledWith(true, "voice");
     expect(kiosk.setWakeWordActive).toHaveBeenCalledWith(false);
 
-    session.finish("idle");
-    await flush();
+    await finishAndSettle(session);
     expect(kiosk.setInteractionActive).toHaveBeenLastCalledWith(false, "voice");
     expect(kiosk.setWakeWordActive).toHaveBeenLastCalledWith(true);
     expect(openSession).toHaveBeenCalledOnce();
@@ -361,8 +365,7 @@ describe("kiosk wake handoff", () => {
       "[Grok Voice] openSession attempt 1 failed",
       '{"code":"unknown_command","message":"Connection lost"}',
     );
-    kept.finish("idle");
-    await flush();
+    await finishAndSettle(kept);
     expect(kiosk.setInteractionActive).toHaveBeenLastCalledWith(false, "voice");
     expect(unhandled).toEqual([]);
     process.off("unhandledRejection", onUnhandled);
@@ -390,7 +393,7 @@ describe("kiosk wake handoff", () => {
     };
     installGrokVoice({ kiosk, events, openSession });
     events.dispatchEvent(new Event(WAKE_EVENT));
-    await delay(900);
+    await delay(1200);
     await flush();
 
     expect(openSession).toHaveBeenCalledTimes(4);
@@ -439,8 +442,7 @@ describe("kiosk wake handoff", () => {
     await flush();
     expect(session.captureActive).toBe(true);
     await delay(250);
-    session.finish("idle");
-    await flush();
+    await finishAndSettle(session);
     expect(unhandled).toEqual([]);
     process.off("unhandledRejection", onUnhandled);
   });
@@ -480,8 +482,7 @@ describe("kiosk wake handoff", () => {
     expect(openSession.mock.calls.length).toBeGreaterThan(1);
     expect(kept.captureActive).toBe(true);
     expect(kiosk.setInteractionActive).not.toHaveBeenCalledWith(false, "voice");
-    kept.finish("idle");
-    await flush();
+    await finishAndSettle(kept);
     expect(kiosk.setInteractionActive).toHaveBeenLastCalledWith(false, "voice");
   });
 
@@ -519,5 +520,53 @@ describe("kiosk wake handoff", () => {
     expect(kiosk.setWakeWordActive).toHaveBeenLastCalledWith(true);
     warn.mockRestore();
     errorLog.mockRestore();
+  });
+
+  it("re-arms native wake after hiding Assist chrome", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const hideBlurOverlay = vi.fn();
+    const hideBar = vi.fn();
+    const stop = vi.fn();
+    const kiosk: KioskApi = {
+      platform: "kiosksatellite",
+      setInteractionActive: vi.fn(async () => true),
+      setWakeWordActive: vi.fn(async () => true),
+      getWakeWordState: vi.fn(async () => ({ active: true, listening: true, status: "listening" })),
+    };
+    await expect(
+      rearmNativeWake({
+        kiosk,
+        session: { pipeline: { stop }, ui: { hideBlurOverlay, hideBar } },
+        settleMs: 0,
+      }),
+    ).resolves.toBe(true);
+    expect(stop).toHaveBeenCalledOnce();
+    expect(hideBlurOverlay).toHaveBeenCalledWith("pipeline");
+    expect(hideBar).toHaveBeenCalledOnce();
+    expect(kiosk.setInteractionActive).toHaveBeenCalledWith(false, "voice");
+    expect(kiosk.setWakeWordActive).toHaveBeenCalledWith(true);
+    expect(kiosk.setWakeWordActive).toHaveBeenCalledTimes(1);
+    expect(log).toHaveBeenCalledWith("[Grok Voice] Re-armed native wake listening");
+    log.mockRestore();
+  });
+
+  it("retries setWakeWordActive when the first resume is still suspended", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    let calls = 0;
+    const kiosk: KioskApi = {
+      platform: "kiosksatellite",
+      setInteractionActive: vi.fn(async () => true),
+      setWakeWordActive: vi.fn(async () => {
+        calls += 1;
+        return calls > 1;
+      }),
+      getWakeWordState: vi.fn(async () =>
+        calls > 1 ? { active: true, status: "listening" } : { active: false, status: "suspended" },
+      ),
+    };
+    await expect(rearmNativeWake({ kiosk, settleMs: 0, wait: async () => undefined })).resolves.toBe(true);
+    expect(kiosk.setWakeWordActive).toHaveBeenCalledTimes(2);
+    expect(log).toHaveBeenCalledWith("[Grok Voice] Re-armed native wake listening");
+    log.mockRestore();
   });
 });

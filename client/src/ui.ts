@@ -110,6 +110,8 @@ function endReasonText(reason: string): string {
       return "Home Assistant rejected this token.";
     case "idle":
       return "Session ended after silence. Press Start to talk again.";
+    case "done":
+      return "Conversation ended. Press Start to talk again.";
     case "stop":
       return "Session stopped.";
     case "error":
@@ -130,7 +132,7 @@ function onServerText(message: ServerMessage): void {
     setStatus("Grok is speaking", "talk");
     return;
   }
-  if (message.type === "speech_started") {
+  if (message.type === "speech_started" || message.type === "response_done") {
     setStatus("Listening — talk anytime", "live");
     return;
   }

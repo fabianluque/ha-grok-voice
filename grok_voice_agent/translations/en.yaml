@@ -31,4 +31,4 @@ configuration:
     description: Comma-separated tool names. Blank uses the Assist control set and also matches Home Assistant 2026.9 names such as intent__HassTurnOn. * allows every tool the MCP server offers.
   idle_timeout_seconds:
     name: Idle timeout
-    description: Seconds of silence before the voice session ends and the wake word is re-armed.
+    description: After Grok finishes speaking, seconds without user speech before the session ends and the wake word is re-armed. Mic audio alone does not keep the session open.

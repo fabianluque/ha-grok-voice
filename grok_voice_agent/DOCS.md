@@ -70,4 +70,8 @@ Leave Voice Satellite's wake word on. Kiosk Satellite only detects a wake word w
 4. Reload the attic kiosk.
 5. The tablet user must be able to open this add-on's ingress. An administrator can.
 
-The microphone stays open while Grok is speaking. Talking over a reply flushes playback in the browser. The wake word is armed again only when the session ends.
+The microphone stays open while Grok is speaking. Talking over a reply flushes playback in the browser. After wake, a small Listening / Speaking pill sits at the bottom of the dashboard and disappears when the session ends.
+
+Say **thank you**, **thanks**, **that's all**, **that's it**, **goodbye**, or **stop listening** (natural variants are fine) to hang up. The session also ends after `idle_timeout_seconds` of silence once Grok has finished and you are not mid-utterance. That timer uses xAI server VAD (`speech_started` / `speech_stopped` / `response.done`). xAI's `turn_detection.idle_timeout_ms` is not used — that option only triggers a proactive check-in, it does not close the session.
+
+When the session ends, the inject stops the browser microphone, hides Assist chrome, and calls Kiosk Satellite `setWakeWordActive(true)` so on-device wake listening resumes. The next wake word starts a fresh duplex session.
