@@ -148,7 +148,9 @@ describe("kiosk area", () => {
   });
 
   it("caches kiosk device identity during area prefetch without blocking wake", async () => {
-    expect(immediateKioskDevice()).toBeNull();
+    const first = immediateKioskDevice();
+    expect(first.id).toMatch(/^kiosk-/);
+    expect(first.name).toBe("kiosk");
     expect(
       deviceFromKioskInfo({ name: "Attic Dashboard", deviceId: "attic-tablet" }),
     ).toEqual({ name: "Attic Dashboard", id: "attic-tablet" });
@@ -160,9 +162,34 @@ describe("kiosk area", () => {
         },
       },
     });
-    expect(immediateKioskDevice()).toBeNull();
+    const duringPrefetch = immediateKioskDevice();
+    expect(duringPrefetch.id).toBe(first.id);
     await delayed;
     expect(peekCachedKioskDevice()).toEqual({ name: "Attic Dashboard", id: "attic-tablet" });
-    expect(immediateKioskDevice()).toEqual({ name: "Attic Dashboard", id: "attic-tablet" });
+    const after = immediateKioskDevice();
+    expect(after.id).toBe(first.id);
+    expect(after.name).toBe("Attic Dashboard");
+  });
+
+  it("reuses the same stored device id across cache resets of the kiosk name", () => {
+    const data = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => data.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        data.set(key, value);
+      },
+      removeItem: (key: string) => {
+        data.delete(key);
+      },
+      clear: () => data.clear(),
+      key: (index: number) => [...data.keys()][index] ?? null,
+      get length() {
+        return data.size;
+      },
+    } as Storage;
+    const first = immediateKioskDevice(storage);
+    resetKioskAreaCache(null);
+    const second = immediateKioskDevice(storage);
+    expect(second.id).toBe(first.id);
   });
 });

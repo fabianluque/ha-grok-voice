@@ -32,13 +32,13 @@ export function floatToPcm16(samples: Float32Array): ArrayBuffer {
 /** 16-bit PCM at 24 kHz. */
 export const PCM_BYTES_PER_SECOND = 24000 * 2;
 
-/** Audio kept while the duplex socket is still opening. */
-export const PREROLL_MS = 400;
+/** Audio kept while the duplex handshake (socket + auth + ready) finishes. */
+export const PREROLL_MS = 900;
 
 /**
  * Rolling mic buffer so the first syllable after a snappy listen-start is
- * not dropped while the WebSocket handshake finishes. Does not wait on
- * area lookup.
+ * not dropped while the WebSocket handshake and session.update finish.
+ * Does not wait on area lookup or delay getUserMedia.
  */
 export class PcmPreroll {
   private chunks: ArrayBuffer[] = [];

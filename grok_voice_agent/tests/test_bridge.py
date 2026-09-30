@@ -78,6 +78,23 @@ def test_completed_user_transcript_is_marked_final():
             "transcript": "thank you",
         }
     ) == [{"type": "transcript", "role": "user", "text": "thank you", "final": False}]
+    assert bridge.client_messages(
+        {
+            "type": "conversation.item.done",
+            "item": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "I have a meeting today at 7pm"}],
+            },
+        }
+    ) == [
+        {
+            "type": "transcript",
+            "role": "user",
+            "text": "I have a meeting today at 7pm",
+            "final": True,
+        }
+    ]
 
 
 def test_uplink_continues_while_audio_is_playing():
@@ -118,8 +135,8 @@ def test_session_is_full_duplex_server_vad():
     payload = build_session(_settings(), [{"type": "function", "name": "HassTurnOn"}])
     session = payload["session"]
     assert session["turn_detection"]["type"] == "server_vad"
-    assert session["turn_detection"]["prefix_padding_ms"] == 400
-    assert session["turn_detection"]["threshold"] == 0.4
+    assert session["turn_detection"]["prefix_padding_ms"] == 800
+    assert session["turn_detection"]["threshold"] == 0.35
     assert "idle_timeout_ms" not in json.dumps(payload)
     assert "silence_duration_ms" not in json.dumps(payload)
     assert session["audio"]["input"]["format"]["rate"] == 24000

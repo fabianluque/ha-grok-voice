@@ -24,7 +24,7 @@ from app.grok_session import (
 )
 from app.ha_context import CONFIG_FETCH_TIMEOUT_SECONDS, fallback_home_context, fetch_home_context
 from app.mcp_client import McpHttpClient, function_tools, voice_tool_log
-from app.memory import ConversationMemory, SessionTranscript, conversation_key
+from app.memory import ConversationMemory, SessionTranscript, conversation_key, history_conversation_events
 from app.static import process_http_request
 from app.tools import ToolGateway
 
@@ -167,13 +167,15 @@ async def handle_socket(websocket, settings, http, grok_connect=None, memory=Non
     level, tool_message = voice_tool_log(listed, grok_tools)
     getattr(log, level)(tool_message)
     log.info(
-        "voice context tz=%s location=%s",
+        "voice context tz=%s city=%s",
         context.time_zone,
         context.home_location or context.zone_name or context.location_name or "",
     )
     await connection.grok.send(
         json.dumps(build_session(settings, grok_tools, area, context=context, history=history))
     )
+    for event in history_conversation_events(history):
+        await connection.grok.send(json.dumps(event))
     await websocket.send(
         json.dumps(
             {
@@ -201,6 +203,10 @@ async def handle_socket(websocket, settings, http, grok_connect=None, memory=Non
 
     def mark_turn() -> None:
         activity.set()
+
+    def persist_turns() -> None:
+        if transcript.turns:
+            store.remember(memory_key, transcript.turns)
 
     async def pump_client() -> None:
         async for incoming in websocket:
@@ -237,6 +243,8 @@ async def handle_socket(websocket, settings, http, grok_connect=None, memory=Non
             elif event_type == "input_audio_buffer.speech_stopped":
                 watch.on_speech_stopped()
                 mark_turn()
+                transcript.flush_pending("user")
+                persist_turns()
             elif event_type == "response.created":
                 watch.on_response_started()
                 mark_turn()
@@ -261,6 +269,8 @@ async def handle_socket(websocket, settings, http, grok_connect=None, memory=Non
                 if followup:
                     await connection.grok.send(json.dumps(followup))
                     continue
+                transcript.flush_pending("assistant")
+                persist_turns()
                 await websocket.send(json.dumps({"type": "response_done"}))
                 continue
             for client_event in bridge.client_messages(event):
@@ -274,6 +284,8 @@ async def handle_socket(websocket, settings, http, grok_connect=None, memory=Non
                         client_event.get("text"),
                         bool(client_event.get("final")),
                     )
+                    if client_event.get("final"):
+                        persist_turns()
                 if (
                     client_event.get("type") == "transcript"
                     and client_event.get("role") == "user"
@@ -317,8 +329,9 @@ async def handle_socket(websocket, settings, http, grok_connect=None, memory=Non
         reason = "stop"
     if reason == "done":
         store.forget(memory_key)
-    elif transcript.turns:
-        store.remember(memory_key, transcript.turns)
+    else:
+        transcript.flush_pending()
+        persist_turns()
     await _end(websocket, reason)
     with contextlib.suppress(Exception):
         await connection.grok.close()

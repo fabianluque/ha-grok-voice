@@ -331,9 +331,10 @@ def test_session_update_injects_live_date_and_home_location():
     update = next(json.loads(item) for item in sent if isinstance(item, str) and "session.update" in item)
     text = update["session"]["instructions"]
     assert "Summit, NJ" in text
+    assert "Summit, New Jersey" in text
     assert "America/New_York" in text
     assert "current local date and time" in text
-    assert update["session"]["turn_detection"]["prefix_padding_ms"] == 400
+    assert update["session"]["turn_detection"]["prefix_padding_ms"] == 800
 
 
 def test_idle_keeps_short_history_for_the_same_device():
@@ -400,6 +401,191 @@ def test_idle_keeps_short_history_for_the_same_device():
     text = update["session"]["instructions"]
     assert "what's happening this weekend" in text
     assert "concert in Summit" in text
+    items = [json.loads(item) for item in sent if isinstance(item, str) and "conversation.item.create" in item]
+    user_items = [item for item in items if item.get("item", {}).get("role") == "user"]
+    assert any("what's happening this weekend" in str(item) for item in user_items)
+
+
+def test_history_follows_device_not_area_fallback():
+    from app.memory import ConversationMemory
+
+    memory = ConversationMemory(ttl_seconds=480)
+    device = {"name": "Dining Dashboard", "id": "dining-tablet"}
+
+    async def first():
+        client = QueueSocket()
+        grok = QueueSocket()
+        await client.incoming.put(
+            json.dumps(
+                {
+                    "type": "auth",
+                    "token": "good-token",
+                    "area": {"name": "Attic", "id": "attic"},
+                    "device": device,
+                }
+            )
+        )
+        task = asyncio.create_task(_run_session(client, grok, idle=5, memory=memory))
+        await asyncio.sleep(0.03)
+        await grok.incoming.put(
+            json.dumps(
+                {
+                    "type": "conversation.item.input_audio_transcription.completed",
+                    "transcript": "I have a meeting today at 7pm",
+                }
+            )
+        )
+        await grok.incoming.put(
+            json.dumps(
+                {
+                    "type": "response.output_audio_transcript.done",
+                    "transcript": "Okay, I'll remember that.",
+                }
+            )
+        )
+        await grok.incoming.put(json.dumps({"type": "response.done"}))
+        await asyncio.sleep(0.03)
+        await client.incoming.put(json.dumps({"type": "stop", "reason": "idle"}))
+        await asyncio.wait_for(task, timeout=2)
+
+    async def second():
+        client = QueueSocket()
+        grok = QueueSocket()
+        await client.incoming.put(
+            json.dumps(
+                {
+                    "type": "auth",
+                    "token": "good-token",
+                    "area": {"name": "Dining Room", "id": "dining_room"},
+                    "device": device,
+                }
+            )
+        )
+        task = asyncio.create_task(_run_session(client, grok, idle=0.1, memory=memory))
+        await asyncio.wait_for(task, timeout=2)
+        return grok.sent
+
+    asyncio.run(first())
+    sent = asyncio.run(second())
+    update = next(json.loads(item) for item in sent if isinstance(item, str) and "session.update" in item)
+    assert "I have a meeting today at 7pm" in update["session"]["instructions"]
+    assert "calendar" in update["session"]["instructions"].lower()
+    assert any(
+        "I have a meeting today at 7pm" in item
+        for item in sent
+        if isinstance(item, str) and "conversation.item.create" in item
+    )
+
+
+def test_attic_and_dining_devices_do_not_share_history():
+    from app.memory import ConversationMemory
+
+    memory = ConversationMemory(ttl_seconds=480)
+
+    async def attic():
+        client = QueueSocket()
+        grok = QueueSocket()
+        await client.incoming.put(
+            json.dumps(
+                {
+                    "type": "auth",
+                    "token": "good-token",
+                    "area": {"name": "Attic", "id": "attic"},
+                    "device": {"name": "Attic Dashboard", "id": "attic-tablet"},
+                }
+            )
+        )
+        task = asyncio.create_task(_run_session(client, grok, idle=5, memory=memory))
+        await asyncio.sleep(0.03)
+        await grok.incoming.put(
+            json.dumps(
+                {
+                    "type": "conversation.item.input_audio_transcription.completed",
+                    "transcript": "attic only secret",
+                }
+            )
+        )
+        await grok.incoming.put(json.dumps({"type": "response.done"}))
+        await asyncio.sleep(0.03)
+        await client.incoming.put(json.dumps({"type": "stop", "reason": "idle"}))
+        await asyncio.wait_for(task, timeout=2)
+
+    async def dining():
+        client = QueueSocket()
+        grok = QueueSocket()
+        await client.incoming.put(
+            json.dumps(
+                {
+                    "type": "auth",
+                    "token": "good-token",
+                    "area": {"name": "Dining Room", "id": "dining_room"},
+                    "device": {"name": "Dining Dashboard", "id": "dining-tablet"},
+                }
+            )
+        )
+        task = asyncio.create_task(_run_session(client, grok, idle=0.1, memory=memory))
+        await asyncio.wait_for(task, timeout=2)
+        return grok.sent
+
+    asyncio.run(attic())
+    sent = asyncio.run(dining())
+    update = next(json.loads(item) for item in sent if isinstance(item, str) and "session.update" in item)
+    assert "attic only secret" not in update["session"]["instructions"]
+
+
+def test_updated_user_transcript_is_remembered_after_speech_stopped():
+    from app.memory import ConversationMemory
+
+    memory = ConversationMemory(ttl_seconds=480)
+
+    async def first():
+        client = QueueSocket()
+        grok = QueueSocket()
+        await client.incoming.put(
+            json.dumps(
+                {
+                    "type": "auth",
+                    "token": "good-token",
+                    "device": {"name": "Attic Dashboard", "id": "attic-tablet"},
+                }
+            )
+        )
+        task = asyncio.create_task(_run_session(client, grok, idle=5, memory=memory))
+        await asyncio.sleep(0.03)
+        await grok.incoming.put(
+            json.dumps(
+                {
+                    "type": "conversation.item.input_audio_transcription.updated",
+                    "transcript": "I have a meeting today at 7pm",
+                }
+            )
+        )
+        await grok.incoming.put(json.dumps({"type": "input_audio_buffer.speech_stopped"}))
+        await grok.incoming.put(json.dumps({"type": "response.done"}))
+        await asyncio.sleep(0.03)
+        await client.incoming.put(json.dumps({"type": "stop", "reason": "idle"}))
+        await asyncio.wait_for(task, timeout=2)
+
+    async def second():
+        client = QueueSocket()
+        grok = QueueSocket()
+        await client.incoming.put(
+            json.dumps(
+                {
+                    "type": "auth",
+                    "token": "good-token",
+                    "device": {"name": "Attic Dashboard", "id": "attic-tablet"},
+                }
+            )
+        )
+        task = asyncio.create_task(_run_session(client, grok, idle=0.1, memory=memory))
+        await asyncio.wait_for(task, timeout=2)
+        return grok.sent
+
+    asyncio.run(first())
+    sent = asyncio.run(second())
+    update = next(json.loads(item) for item in sent if isinstance(item, str) and "session.update" in item)
+    assert "I have a meeting today at 7pm" in update["session"]["instructions"]
 
 
 def test_goodbye_clears_history_for_that_device():

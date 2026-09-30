@@ -195,12 +195,20 @@ function fallbackArea(name?: string): KioskArea {
 let areaCache: KioskArea | null = null;
 let areaPrefetch: Promise<KioskArea> | null = null;
 let deviceCache: KioskDevice | null = null;
+let generatedDeviceId: string | null = null;
 
 /** Test hook. Production boot does not call this. */
-export function resetKioskAreaCache(): void {
+export function resetKioskAreaCache(storage?: Storage | null): void {
   areaCache = null;
   areaPrefetch = null;
   deviceCache = null;
+  generatedDeviceId = null;
+  const store = storage === undefined ? defaultStorage() : storage;
+  try {
+    store?.removeItem(DEVICE_ID_STORAGE_KEY);
+  } catch {
+    // Ignore missing storage.
+  }
 }
 
 export function peekCachedKioskArea(): KioskArea | null {
@@ -252,6 +260,54 @@ export function describeArea(area: KioskArea): string {
 }
 
 const DEVICE_ID_KEYS = ["id", "deviceId", "device_id", "ha_device_id", "serial"];
+export const DEVICE_ID_STORAGE_KEY = "grok-voice-device-id";
+
+function defaultStorage(): Storage | null {
+  try {
+    const storage = (globalThis as { localStorage?: Storage }).localStorage;
+    return storage ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function randomDeviceId(): string {
+  const bytes = new Uint8Array(8);
+  if (typeof crypto !== "undefined" && crypto.getRandomValues) {
+    crypto.getRandomValues(bytes);
+  } else {
+    for (let index = 0; index < bytes.length; index += 1) {
+      bytes[index] = Math.floor(Math.random() * 256);
+    }
+  }
+  return `kiosk-${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+}
+
+/** Stable per-browser id so attic vs dining history never share a key. */
+export function readOrCreateDeviceId(storage?: Storage | null): string {
+  const store = storage === undefined ? defaultStorage() : storage;
+  const existing = store?.getItem(DEVICE_ID_STORAGE_KEY)?.trim();
+  if (existing) {
+    generatedDeviceId = existing;
+    return existing;
+  }
+  if (generatedDeviceId) {
+    try {
+      store?.setItem(DEVICE_ID_STORAGE_KEY, generatedDeviceId);
+    } catch {
+      // Ignore missing storage.
+    }
+    return generatedDeviceId;
+  }
+  const id = randomDeviceId();
+  generatedDeviceId = id;
+  try {
+    store?.setItem(DEVICE_ID_STORAGE_KEY, id);
+  } catch {
+    // Private mode / missing storage: still return a session-local id.
+  }
+  return id;
+}
 
 export function deviceFromKioskInfo(info: unknown): KioskDevice | null {
   if (!info || typeof info !== "object") {
@@ -277,7 +333,13 @@ export function rememberKioskDevice(device: KioskDevice | null): KioskDevice | n
   return deviceCache;
 }
 
-/** Cached satellite identity for the auth message. Never awaits HA. */
-export function immediateKioskDevice(): KioskDevice | null {
-  return deviceCache;
+/**
+ * Identity sent on duplex auth. Never awaits HA. The id is a per-tablet
+ * localStorage value so the first wake (before getDeviceInfo) and later
+ * wakes share conversation memory. Kiosk name is best-effort for logs.
+ */
+export function immediateKioskDevice(storage?: Storage | null): KioskDevice {
+  const id = readOrCreateDeviceId(storage);
+  const cached = deviceCache;
+  return { name: cached?.name || "kiosk", id };
 }

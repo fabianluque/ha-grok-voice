@@ -130,18 +130,113 @@ def format_local_now(time_zone: str, now: datetime | None = None) -> str:
     return f"{clock} (ISO date {iso}, time zone {zone_name})"
 
 
+# Two-letter USPS abbreviations so "Summit, NJ" is a named city, not a vague label.
+_US_STATES = {
+    "AL": "Alabama",
+    "AK": "Alaska",
+    "AZ": "Arizona",
+    "AR": "Arkansas",
+    "CA": "California",
+    "CO": "Colorado",
+    "CT": "Connecticut",
+    "DE": "Delaware",
+    "DC": "District of Columbia",
+    "FL": "Florida",
+    "GA": "Georgia",
+    "HI": "Hawaii",
+    "ID": "Idaho",
+    "IL": "Illinois",
+    "IN": "Indiana",
+    "IA": "Iowa",
+    "KS": "Kansas",
+    "KY": "Kentucky",
+    "LA": "Louisiana",
+    "ME": "Maine",
+    "MD": "Maryland",
+    "MA": "Massachusetts",
+    "MI": "Michigan",
+    "MN": "Minnesota",
+    "MS": "Mississippi",
+    "MO": "Missouri",
+    "MT": "Montana",
+    "NE": "Nebraska",
+    "NV": "Nevada",
+    "NH": "New Hampshire",
+    "NJ": "New Jersey",
+    "NM": "New Mexico",
+    "NY": "New York",
+    "NC": "North Carolina",
+    "ND": "North Dakota",
+    "OH": "Ohio",
+    "OK": "Oklahoma",
+    "OR": "Oregon",
+    "PA": "Pennsylvania",
+    "RI": "Rhode Island",
+    "SC": "South Carolina",
+    "SD": "South Dakota",
+    "TN": "Tennessee",
+    "TX": "Texas",
+    "UT": "Utah",
+    "VT": "Vermont",
+    "VA": "Virginia",
+    "WA": "Washington",
+    "WV": "West Virginia",
+    "WI": "Wisconsin",
+    "WY": "Wyoming",
+}
+_GENERIC_PLACE_NAMES = frozenset({"home", "house", "residence", "zone.home"})
+
+
+def expand_city_name(value: str) -> tuple[str, str]:
+    """Turn ``Summit, NJ`` into a city the model can say out loud.
+
+    Returns ``(display, city_name)`` where display is ``Summit, NJ / Summit, New Jersey``
+    and city_name is ``Summit, New Jersey``. Unrecognized labels are returned as-is.
+    """
+    raw = " ".join((value or "").split())
+    if not raw:
+        return "", ""
+    compact = raw.replace(".", "")
+    city = ""
+    region = ""
+    if "," in compact:
+        left, right = compact.rsplit(",", 1)
+        city, region = left.strip(), right.strip().upper()
+    else:
+        parts = compact.split()
+        if len(parts) >= 2:
+            city, region = " ".join(parts[:-1]), parts[-1].upper()
+    if city and region in _US_STATES:
+        full = f"{city}, {_US_STATES[region]}"
+        short = f"{city}, {region}"
+        if short.casefold() == raw.casefold():
+            return f"{short} / {full}", full
+        return f"{raw} / {full}", full
+    return raw, raw
+
+
+def named_city(context: HomeContext) -> tuple[str, str]:
+    """Prefer add-on ``home_location``; skip generic HA names like ``Home``."""
+    for candidate in (context.home_location, context.zone_name, context.location_name):
+        text = (candidate or "").strip()
+        if not text or text.casefold() in _GENERIC_PLACE_NAMES:
+            continue
+        return expand_city_name(text)
+    return "", ""
+
+
 def format_home_location(context: HomeContext) -> str:
-    """Prefer the add-on label, then HA zone / config name, then coordinates."""
+    """Prefer the add-on city label, then HA zone / config name, then coordinates."""
     parts: list[str] = []
-    if context.home_location:
-        parts.append(context.home_location)
+    display, city_name = named_city(context)
+    if display:
+        parts.append(display)
+    elif city_name:
+        parts.append(city_name)
     place = context.zone_name or context.location_name
-    if place and place.casefold() not in {p.casefold() for p in parts}:
-        if place.casefold() == "home" and context.home_location:
-            pass
-        else:
-            label = "Home Assistant location" if place.casefold() == "home" else "Home Assistant"
-            parts.append(f"{label} {place}" if place.casefold() == "home" else place)
+    if place and place.casefold() not in {p.casefold() for p in parts} | _GENERIC_PLACE_NAMES:
+        if place.casefold() not in display.casefold() and place.casefold() not in city_name.casefold():
+            parts.append(place)
     if context.country and context.country.casefold() not in " ".join(parts).casefold():
         parts.append(context.country)
     if context.latitude is not None and context.longitude is not None:
@@ -164,10 +259,21 @@ def with_home_context(base: str, context: HomeContext | None, now: datetime | No
         "Use this clock for today, tonight, this week, this weekend, this season, "
         "and this year. Do not guess a date from training data."
     )
+    display, city_name = named_city(ctx)
     if where:
+        extra += f" This home is in {where}."
+        if city_name:
+            extra += (
+                f" The city name is {city_name}. Use that city name for local events, "
+                "weather, sports, and 'near me' questions. Do not call this place only "
+                "'home' or an unnamed location."
+            )
+        else:
+            extra += " Use that place for local events, weather, and 'near me' questions."
+    elif display or city_name:
         extra += (
-            f" This home is in {where}. Use that place for local events, weather, "
-            "and 'near me' questions."
+            f" This home's city is {city_name or display}. Use that city name for local "
+            "events, weather, and 'near me' questions."
         )
     root = (base or "").rstrip()
     return f"{root}\n\n{extra}" if root else extra

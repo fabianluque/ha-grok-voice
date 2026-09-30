@@ -250,10 +250,12 @@ def xai_realtime_error_log(event: dict) -> str | None:
 # Soft server VAD with audio pre-roll so the first syllable after a snappy
 # listen-start is not clipped. Do not set idle_timeout_ms (xAI check-in) or
 # silence_duration_ms (leave the platform default for turn end).
+VAD_THRESHOLD = 0.35
+VAD_PREFIX_PADDING_MS = 800
 SERVER_VAD = {
     "type": "server_vad",
-    "threshold": 0.4,
-    "prefix_padding_ms": 400,
+    "threshold": VAD_THRESHOLD,
+    "prefix_padding_ms": VAD_PREFIX_PADDING_MS,
 }
 
 
@@ -372,4 +374,48 @@ class GrokBridge:
                         "final": event_type in FINAL_TRANSCRIPT_TYPES,
                     }
                 ]
+        item_transcript = _message_item_transcript(event)
+        if item_transcript:
+            return [item_transcript]
         return []
+
+
+def _message_item_transcript(event: dict) -> dict[str, Any] | None:
+    """Fallback when xAI puts the utterance on conversation.item.* instead of ASR events."""
+    if event.get("type") not in {
+        "conversation.item.created",
+        "conversation.item.added",
+        "conversation.item.done",
+    }:
+        return None
+    item = event.get("item")
+    if not isinstance(item, dict) or item.get("type") != "message":
+        return None
+    role = item.get("role")
+    if role not in ("user", "assistant"):
+        return None
+    text = _item_text(item)
+    if not text:
+        return None
+    return {
+        "type": "transcript",
+        "role": role,
+        "text": text,
+        "final": event.get("type") == "conversation.item.done",
+    }
+
+
+def _item_text(item: dict) -> str:
+    content = item.get("content")
+    parts: list[str] = []
+    if isinstance(content, str):
+        parts.append(content)
+    elif isinstance(content, list):
+        for part in content:
+            if isinstance(part, dict):
+                parts.append(str(part.get("transcript") or part.get("text") or ""))
+            elif isinstance(part, str):
+                parts.append(part)
+    elif item.get("transcript"):
+        parts.append(str(item.get("transcript")))
+    return " ".join(part for part in parts if part).strip()

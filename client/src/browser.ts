@@ -5,6 +5,13 @@ import { VoiceSession, type ServerMessage, type WebSocketLike } from "./session"
 
 export const SAMPLE_RATE = 24000;
 
+export interface DuplexSocket {
+  binaryType: string;
+  addEventListener(type: "open" | "message" | "close", handler: (event: { data?: unknown }) => void): void;
+  send(data: string | ArrayBuffer): void;
+  close(): void;
+}
+
 export function openSocket(
   url: string,
   token: string,
@@ -12,15 +19,17 @@ export function openSocket(
   ingress = false,
   area?: { id?: string; name: string },
   device?: { id?: string; name: string },
+  socketFactory: (url: string) => DuplexSocket = (socketUrl) => new WebSocket(socketUrl),
 ): WebSocketLike {
-  const socket = new WebSocket(url);
+  const socket = socketFactory(url);
   const preroll = new PcmPreroll();
   const pendingControl: string[] = [];
-  let open = false;
-  socket.binaryType = "arraybuffer";
-  socket.addEventListener("open", () => {
-    socket.send(JSON.stringify(authHandshake({ ingress, token, url, area, device })));
-    open = true;
+  let audioOpen = false;
+  const flushAudio = () => {
+    if (audioOpen) {
+      return;
+    }
+    audioOpen = true;
     for (const chunk of preroll.drain()) {
       socket.send(chunk);
     }
@@ -28,10 +37,18 @@ export function openSocket(
       socket.send(message);
     }
     pendingControl.length = 0;
+  };
+  socket.binaryType = "arraybuffer";
+  socket.addEventListener("open", () => {
+    socket.send(JSON.stringify(authHandshake({ ingress, token, url, area, device })));
   });
   socket.addEventListener("message", (event) => {
     if (typeof event.data === "string") {
-      session.handleServerText(JSON.parse(event.data) as ServerMessage);
+      const message = JSON.parse(event.data) as ServerMessage;
+      if (message.type === "ready") {
+        flushAudio();
+      }
+      session.handleServerText(message);
       return;
     }
     session.handleServerBinary(event.data as ArrayBuffer);
@@ -41,7 +58,7 @@ export function openSocket(
   });
   return {
     send(data) {
-      if (!open) {
+      if (!audioOpen) {
         if (typeof data === "string") {
           pendingControl.push(data);
           return;

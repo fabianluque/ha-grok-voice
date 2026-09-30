@@ -1,8 +1,12 @@
 """Short per-device conversation memory, Assist-style.
 
 A new wake on the same satellite reuses recent turns for follow-ups
-("that one", "and the kitchen"). Entries expire after a short TTL
-(default eight minutes) and are dropped on a goodbye hang-up.
+("that one", "and the kitchen", "do I have a meeting today?"). Entries
+expire after a short TTL (default eight minutes) and are dropped on a
+goodbye hang-up. Idle hang-up keeps the turns.
+
+Keyed by the kiosk's stable device id (not area). Attic vs dining stay
+independent even when the first wake still has the Attic area fallback.
 """
 
 from __future__ import annotations
@@ -46,24 +50,26 @@ class MemoryEntry:
 
 
 def conversation_key(device: dict[str, str] | None, area: dict[str, str] | None) -> str:
-    """Attic tablet vs other satellites: device id/name, then area."""
-    parts: list[str] = []
+    """Same tablet across wakes: stable device id, then name, then area.
+
+    Area is only a fallback when the client sent no device. Mixing device+area
+    in one key dropped history when the first wake used the Attic fallback and
+    a later wake had the real dining-room area.
+    """
     if device:
         ident = (device.get("id") or device.get("name") or "").strip()
         if ident:
-            parts.append(f"device:{_slug(ident)}")
+            return f"device:{_slug(ident)}"
     if area:
         ident = (area.get("id") or area.get("name") or "").strip()
         if ident:
-            parts.append(f"area:{_slug(ident)}")
-    return "|".join(parts) or "default"
+            return f"area:{_slug(ident)}"
+    return "default"
 
 
-def with_history_instructions(base: str, turns: list[Turn] | None) -> str:
-    if not turns:
-        return base
-    lines = ["Recent conversation on this device (continue it; do not recap unless asked):"]
-    for turn in turns[-MAX_TURNS:]:
+def _history_lines(turns: list[Turn] | None) -> list[str]:
+    lines: list[str] = []
+    for turn in (turns or [])[-MAX_TURNS:]:
         speaker = "User" if turn.role == "user" else "Assistant"
         text = " ".join(str(turn.text or "").split())
         if not text:
@@ -71,11 +77,46 @@ def with_history_instructions(base: str, turns: list[Turn] | None) -> str:
         if len(text) > 400:
             text = f"{text[:397]}..."
         lines.append(f"{speaker}: {text}")
-    if len(lines) == 1:
+    return lines
+
+
+def with_history_instructions(base: str, turns: list[Turn] | None) -> str:
+    lines = _history_lines(turns)
+    if not lines:
         return base
-    extra = "\n".join(lines)
+    extra = (
+        "Recent conversation on this device (continue it; do not recap unless asked). "
+        "Facts the user already told you here are true even if calendar or other tools "
+        "do not list them. Do not say those events are missing.\n"
+        + "\n".join(lines)
+    )
     root = (base or "").rstrip()
     return f"{root}\n\n{extra}" if root else extra
+
+
+def history_conversation_events(turns: list[Turn] | None) -> list[dict]:
+    """Realtime items so the new session actually contains the prior turns.
+
+    Instruction text alone is easy for the model to ignore once a calendar
+    tool returns empty. Do not follow these with ``response.create``.
+    """
+    events: list[dict] = []
+    for turn in (turns or [])[-MAX_TURNS:]:
+        text = " ".join(str(turn.text or "").split())
+        if not text or turn.role not in ("user", "assistant"):
+            continue
+        content_type = "input_text" if turn.role == "user" else "text"
+        events.append(
+            {
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "message",
+                    "role": turn.role,
+                    "content": [{"type": content_type, "text": text}],
+                },
+            }
+        )
+    return events
 
 
 class SessionTranscript:
@@ -83,20 +124,38 @@ class SessionTranscript:
 
     def __init__(self) -> None:
         self.turns: list[Turn] = []
+        self._pending: Turn | None = None
 
     def add(self, role: object, text: object, final: bool = True) -> None:
-        if not final:
-            return
         if role not in ("user", "assistant"):
             return
         cleaned = " ".join(str(text or "").split())
         if not cleaned:
             return
+        if not final:
+            self._pending = Turn(role=str(role), text=cleaned)
+            return
+        self._pending = None
         if self.turns and self.turns[-1].role == role and self.turns[-1].text == cleaned:
             return
         self.turns.append(Turn(role=str(role), text=cleaned))
         if len(self.turns) > MAX_TURNS:
             self.turns = self.turns[-MAX_TURNS:]
+
+    def flush_pending(self, role: str | None = None) -> None:
+        """Commit the last partial transcript when VAD ends the turn.
+
+        xAI sometimes only sends cumulative ``*.updated`` snapshots and never
+        a ``*.completed`` event. Without this, user-stated facts never land
+        in memory.
+        """
+        pending = self._pending
+        if pending is None:
+            return
+        if role and pending.role != role:
+            return
+        self._pending = None
+        self.add(pending.role, pending.text, final=True)
 
 
 class ConversationMemory:
