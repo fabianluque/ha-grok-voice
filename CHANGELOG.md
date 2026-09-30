@@ -4,6 +4,10 @@ Versions match `grok_voice_agent/config.yaml`. GitHub Releases list the
 merged pull requests since the previous tag. Issues closed with `Fixes #N`
 in those pull requests are included below when GitHub reports them.
 
+## [0.2.20] - 2026-09-30
+
+- Stop Q&A monologues. After sports/events/history/news, Grok gives a **short first answer**, may ask **one** brief offer of more (“Want his term?”), then **stops and waits**. It must not keep talking and answer that offer itself. Hang-up is unchanged from 0.2.18: home-control success, thank you / goodbye, overlay tap, and idle still close the duplex; Q&A stays open quietly.
+
 ## [0.2.19] - 2026-09-30
 
 - Public-repo defaults: blank **Default area** and **Home location**, generic voice instructions (no Attic / HomePod Mini, and no “ask a follow-up” after Q&A — answer then listen). Kiosk LAN fallback uses `homeassistant.local` instead of a private IP. README is a first-run guide; DOCS.md no longer describes a personal LAN.

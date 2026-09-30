@@ -1,8 +1,12 @@
 """Goodbye phrases and VAD-quiet idle, not raw mic activity."""
 
+from pathlib import Path
+
 from app.grok_session import (
     ConversationWatch,
+    END_SESSION_TOOL,
     END_SESSION_TOOL_NAME,
+    compose_instructions,
     is_closing_utterance,
     is_end_session_tool,
     is_home_control_tool,
@@ -12,8 +16,10 @@ from app.grok_session import (
     parse_client_device,
     slug_area_id,
     with_area_instructions,
+    with_qa_turn_instructions,
     with_session_end_instructions,
 )
+from app.memory import Turn
 
 
 def test_closing_utterances_match_natural_variants():
@@ -145,10 +151,50 @@ def test_end_session_tool_is_local_and_prompted():
     assert "home device or in-home media" in text
     assert "Never call end_session after sports" in text
     assert "same turn as a follow-up" in text
-    assert "short follow-up" in text
+    assert "short first answer" in text
+    assert "ONE brief offer" in text
+    assert "answer that follow-up yourself" in text
     assert "clarifying" in text
     assert "thank you" in text
     assert "anything else" in text
+    description = str(END_SESSION_TOOL["description"])
+    assert "keep listening" in description
+    assert "answer that offer yourself" in description
+    assert "ask a brief follow-up instead" not in description
+
+
+def test_qa_turn_policy_is_short_answer_one_offer_then_stop():
+    text = with_qa_turn_instructions("Speak briefly.")
+    assert "Speak briefly." in text
+    assert "short first answer" in text
+    assert "ONE brief offer" in text
+    assert "Want his term?" in text
+    assert "Then STOP" in text
+    assert "answer that follow-up yourself" in text
+    assert "Want more? He served 1789" in text
+    assert "Want his term dates?" in text
+    assert "Do not hang up after Q&A" in text
+
+
+def test_composed_instructions_put_qa_policy_after_history():
+    text = compose_instructions(
+        "Speak briefly.",
+        history=[Turn("user", "what's this weekend"), Turn("assistant", "a concert Saturday")],
+    )
+    assert "what's this weekend" in text
+    assert text.index("what's this weekend") < text.index("Q&A policy")
+    assert text.rstrip().endswith("Do not hang up after Q&A.")
+    assert "Never call end_session after sports" in text
+    assert "same turn as a follow-up" in text
+
+
+def test_default_addon_instructions_match_qa_stop_policy():
+    text = (Path(__file__).resolve().parents[1] / "config.yaml").read_text(encoding="utf-8")
+    assert "short first answer" in text
+    assert "ONE brief offer" in text
+    assert "Then STOP" in text
+    assert "answer that offer yourself" in text
+    assert "ask a brief follow-up" not in text
 
 
 def test_home_control_tools_are_device_and_media_actions():

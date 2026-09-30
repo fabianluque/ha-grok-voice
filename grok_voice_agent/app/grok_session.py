@@ -288,10 +288,12 @@ END_SESSION_TOOL = {
         "device or in-home media action (lights, garage, lock, climate, cover, "
         "play/pause/volume) that already succeeded and needs no follow-up. Do "
         "not call after sports, news, events, history, or general Q&A — keep "
-        "listening and ask a brief follow-up instead. After a goodbye or thank "
-        "you, do not ask a follow-up. Never call this in the same turn as a "
-        "follow-up question. Do not call during a multi-step task, while asking "
-        "a clarifying question, or when the user is listing several requests."
+        "listening. After a short first answer you may ask one brief offer of "
+        "more, then STOP; do not continue and answer that offer yourself. After "
+        "a goodbye or thank you, do not ask a follow-up. Never call this in the "
+        "same turn as a follow-up question. Do not call during a multi-step "
+        "task, while asking a clarifying question, or when the user is listing "
+        "several requests."
     ),
     "parameters": {
         "type": "object",
@@ -411,11 +413,33 @@ def with_session_end_instructions(base: str) -> str:
         "very short ack first. After thank you or goodbye, do not ask "
         "'anything else' — just ack and hang up. Never call end_session after "
         "sports, news, events, history, calendars, lists, trivia, or other "
-        "conversation — not even with reason=dismiss. For those, answer and ask "
-        "one short follow-up so you keep listening. Never call end_session in "
-        "the same turn as a follow-up question. Never hang up until the user "
-        "answers that question, says goodbye, or goes silent. Do not hang up "
+        "conversation — not even with reason=dismiss. For those Q&A turns: "
+        "short first answer, optional ONE brief offer of more, then STOP and "
+        "wait. Never continue and answer that follow-up yourself. Never call "
+        "end_session in the same turn as a follow-up question. Never hang up "
+        "until the user answers, says goodbye, or goes silent. Do not hang up "
         "mid multi-step task or while waiting for a clarifying answer."
+    )
+    root = (base or "").rstrip()
+    return f"{root}\n\n{extra}" if root else extra
+
+
+def with_qa_turn_instructions(base: str) -> str:
+    """Last-injected Q&A turn shape: short answer, optional one offer, stop.
+
+    Hang-up policy stays in ``with_session_end_instructions``. This block is
+    appended after history so the model does not monologue past the offer.
+    """
+    extra = (
+        "Q&A policy (sports, events, history, news, trivia, facts): Give a "
+        "short first answer to the question (one sentence, two max). You may "
+        "then ask ONE brief offer of a follow-up (for example 'Want his term?' "
+        "or 'Anything else?'). Then STOP and wait for the user. Never continue "
+        "and answer that follow-up yourself in the same turn. Never monologue: "
+        "long answer + 'want more?' + then keeping talking. "
+        "Bad: 'George Washington. Want more? He served 1789 to 1797.' "
+        "Good: 'George Washington was the first U.S. president. Want his term "
+        "dates?' then silence. Do not hang up after Q&A."
     )
     root = (base or "").rstrip()
     return f"{root}\n\n{extra}" if root else extra
@@ -501,7 +525,9 @@ def compose_instructions(
     text = with_home_context(base, context, now=now)
     text = with_area_instructions(text, area)
     text = with_session_end_instructions(text)
-    return with_history_instructions(text, history)
+    text = with_history_instructions(text, history)
+    # Q&A stop-after-offer last so history does not bury it.
+    return with_qa_turn_instructions(text)
 
 
 def build_session(
