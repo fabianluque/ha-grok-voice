@@ -41,6 +41,8 @@ ASSISTANT_DELTA_TYPES = {
     "response.text.delta",
 }
 USER_DELTA_TYPES = {"conversation.item.input_audio_transcription.delta"}
+# xAI name for OpenAI's incremental .delta: cumulative snapshots that may revise.
+USER_SNAPSHOT_TYPES = {"conversation.item.input_audio_transcription.updated"}
 
 _APOS = str.maketrans({"\u2019": "'", "\u2018": "'", "`": "'"})
 _FILLERS = frozenset(
@@ -398,7 +400,13 @@ def build_session(
             # idle_timeout_seconds after VAD-quiet (see ConversationWatch).
             "turn_detection": dict(SERVER_VAD),
             "audio": {
-                "input": {"format": {"type": "audio/pcm", "rate": 24000}},
+                "input": {
+                    "format": {"type": "audio/pcm", "rate": 24000},
+                    # Live user captions. xAI emits cumulative
+                    # conversation.item.input_audio_transcription.updated
+                    # snapshots only when this is grok-transcribe (not OpenAI .delta).
+                    "transcription": {"model": "grok-transcribe"},
+                },
                 "output": {"format": {"type": "audio/pcm", "rate": 24000}},
             },
             "tools": tools,
@@ -540,6 +548,12 @@ def _stream_transcript(bridge: GrokBridge, event_type: object, event: dict) -> d
             "text": bridge._assistant_partial,
             "final": False,
         }
+    if kind in USER_SNAPSHOT_TYPES:
+        piece = str(event.get("transcript") or event.get("delta") or event.get("text") or "")
+        if not piece.strip():
+            return None
+        bridge._user_partial = piece
+        return {"type": "transcript", "role": "user", "text": piece, "final": False}
     if kind in USER_DELTA_TYPES:
         piece = str(event.get("delta") or event.get("transcript") or event.get("text") or "")
         if not piece:

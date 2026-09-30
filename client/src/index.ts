@@ -100,6 +100,9 @@ function boot(): void {
             status.addMessage(role, text, final !== false);
           },
           onServerText: (message) => {
+            if (message.type === "speech_started") {
+              status.finalize("user");
+            }
             const next = voiceStatusFromMessage(message.type);
             if (next) {
               status.set(next);

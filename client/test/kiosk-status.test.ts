@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  finalizeTranscript,
   mergeTranscript,
   overlayStyle,
   speakerLabel,
@@ -62,5 +63,27 @@ describe("kiosk status pill", () => {
     upsertTranscript(messages, "assistant", " are", false);
     upsertTranscript(messages, "assistant", " on.", true);
     expect(messages).toEqual([{ role: "assistant", text: "The lights are on.", final: true }]);
+  });
+
+  it("replaces live user snapshots, including xAI revisions", () => {
+    const messages = upsertTranscript([], "user", "turn on", false);
+    upsertTranscript(messages, "user", "turn on the", false);
+    upsertTranscript(messages, "user", "turn on the lights", false);
+    expect(messages).toEqual([{ role: "user", text: "turn on the lights", final: false }]);
+    upsertTranscript(messages, "user", "Hello?", false);
+    expect(messages).toEqual([{ role: "user", text: "Hello?", final: false }]);
+    upsertTranscript(messages, "user", "Hello, my name is", false);
+    expect(messages).toEqual([{ role: "user", text: "Hello, my name is", final: false }]);
+    expect(mergeTranscript("Hello?", "Hello, my name is", "replace")).toBe("Hello, my name is");
+  });
+
+  it("starts a new user line after the previous snapshot is finalized", () => {
+    const messages = upsertTranscript([], "user", "turn on the lights", false);
+    finalizeTranscript(messages, "user");
+    upsertTranscript(messages, "user", "and the fan", false);
+    expect(messages).toEqual([
+      { role: "user", text: "turn on the lights", final: true },
+      { role: "user", text: "and the fan", final: false },
+    ]);
   });
 });

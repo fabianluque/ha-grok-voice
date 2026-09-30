@@ -90,8 +90,11 @@ export function speakerLabel(role: string): string {
   return role === "user" ? "You" : "Grok";
 }
 
-/** Merge a delta that may be incremental or a cumulative snapshot. */
-export function mergeTranscript(current: string, incoming: string): string {
+/** Replace a live user snapshot, or merge an incremental assistant piece. */
+export function mergeTranscript(current: string, incoming: string, mode: "merge" | "replace" = "merge"): string {
+  if (mode === "replace") {
+    return incoming || current;
+  }
   if (!incoming) {
     return current;
   }
@@ -116,7 +119,7 @@ export function upsertTranscript(
 ): OverlayMessage[] {
   const last = messages[messages.length - 1];
   if (last && last.role === role && !last.final) {
-    last.text = mergeTranscript(last.text, text);
+    last.text = mergeTranscript(last.text, text, role === "user" ? "replace" : "merge");
     last.final = final;
     if (final) {
       last.text = last.text.trim();
@@ -131,9 +134,19 @@ export function upsertTranscript(
   return messages;
 }
 
+export function finalizeTranscript(messages: OverlayMessage[], role?: string): OverlayMessage[] {
+  const last = messages[messages.length - 1];
+  if (last && !last.final && (!role || last.role === role)) {
+    last.final = true;
+    last.text = last.text.trim();
+  }
+  return messages;
+}
+
 export interface KioskOverlay {
   set(status: VoiceStatus): void;
   addMessage(role: string, text: string, final?: boolean): void;
+  finalize(role?: string): void;
   remove(): void;
 }
 
@@ -214,6 +227,14 @@ export function mountKioskStatus(doc: Document): KioskOverlay {
       if (index < 0) {
         return;
       }
+      paintLine(messages[index], index);
+    },
+    finalize(role?: string) {
+      const index = messages.length - 1;
+      if (index < 0) {
+        return;
+      }
+      finalizeTranscript(messages, role);
       paintLine(messages[index], index);
     },
     remove() {
