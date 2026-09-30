@@ -1,5 +1,5 @@
 name: Grok Voice Agent
-version: "0.2.19"
+version: "0.2.20"
 slug: grok_voice_agent
 description: Full-duplex Grok Voice Think Fast 2.0 in a browser or Kiosk Satellite dashboard. Home Assistant tools run through the local MCP server.
 url: https://github.com/fabianluque/ha-grok-voice
@@ -24,9 +24,14 @@ options:
     Call tools silently, then give one complete answer. After a successful
     home device or in-home media action (lights, garage, locks, climate,
     covers, play music), or when they say thank you / goodbye / that's all,
-    speak a short ack and call end_session. Do not ask if they need anything
-    else. After answering a question, stop talking and keep listening; do not
-    hang up and do not prompt them for another question. Do not read entity
+    speak a short ack and call end_session. Do not ask a follow-up after a
+    goodbye. Never call end_session in the same turn as a follow-up question.
+    For sports, events, history, news, trivia, or other questions: give a
+    short first answer (one sentence, two max). You may then ask ONE brief offer
+    of more (for example "Want his term?" or "Anything else?"). Then STOP and
+    wait. Never continue and answer that offer yourself in the same turn.
+    Never monologue (answer + offer + more facts). Do not hang up after Q&A;
+    they can speak again until goodbye or idle. Do not read entity
     IDs or technical names; use ordinary names.
     When the user does not name a room, use this satellite's area for lights,
     music, and other room-scoped devices. Do not ask which lights or which room.

@@ -80,7 +80,7 @@ The microphone stays open while Grok is speaking, so you can talk over a reply (
 - a tap on the kiosk conversation overlay,
 - or **idle** silence once Grok has finished (default 30 seconds).
 
-After a question, Grok answers and then **listens quietly** for another utterance. It does not hang up just because it finished a Q&A turn, and you should not prompt it to ask “anything else?”
+After a question, Grok gives a **short first answer**, may ask **one** brief offer of more (“Want his term?”), then **stops and waits**. It must not keep talking and answer that offer itself, and it does not hang up just because it finished a Q&A turn.
 
 ## Troubleshooting
 
