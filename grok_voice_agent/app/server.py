@@ -310,10 +310,10 @@ async def handle_socket(websocket, settings, http, grok_connect=None, memory=Non
                     and is_closing_utterance(str(client_event.get("text") or ""))
                 ):
                     # Wait for the ack turn (same as end_session) so Grok can
-                    # finish speaking before the duplex closes.
-                    forget_memory = True
-                    bridge.end_after_response = True
-                    bridge.end_session_forget = True
+                    # finish speaking before the duplex closes. Forget only if
+                    # consume_end_session actually hangs up (a follow-up question
+                    # keeps the session open).
+                    bridge.note_closing_phrase()
 
     async def watch_idle() -> None:
         while not idle.is_set():
@@ -324,7 +324,10 @@ async def handle_socket(websocket, settings, http, grok_connect=None, memory=Non
                 return
             activity.clear()
             try:
-                await asyncio.wait_for(activity.wait(), timeout=settings.idle_timeout_seconds)
+                await asyncio.wait_for(
+                    activity.wait(),
+                    timeout=bridge.idle_timeout_seconds(settings.idle_timeout_seconds),
+                )
             except asyncio.TimeoutError:
                 if watch.is_quiet() and not idle.is_set():
                     request_end("idle")

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { SessionEndWatch } from "../src/session-end";
+import { FOLLOWUP_IDLE_GRACE_MS, SessionEndWatch } from "../src/session-end";
 import { VoiceSession } from "../src/session";
 
 describe("session end watch", () => {
@@ -100,6 +100,42 @@ describe("session end watch", () => {
       watch.handle({ type: "transcript", role: "user", text: "thank you" }),
     ).toBeNull();
     expect(onEnd).not.toHaveBeenCalled();
+  });
+
+  it("does not hang up after a closer if Grok asks a follow-up", () => {
+    const onEnd = vi.fn();
+    const watch = new SessionEndWatch({ idleMs: 60_000, onEnd });
+    watch.handle({ type: "ready" });
+    watch.handle({ type: "transcript", role: "user", text: "thank you", final: true });
+    watch.handle({ type: "response_started" });
+    watch.handle({
+      type: "transcript",
+      role: "assistant",
+      text: "You're welcome. Anything else?",
+    });
+    expect(watch.handle({ type: "response_done" })).toBeNull();
+    expect(onEnd).not.toHaveBeenCalled();
+    watch.dispose();
+  });
+
+  it("gives extra idle after an assistant follow-up, then still ends", () => {
+    vi.useFakeTimers();
+    const onEnd = vi.fn();
+    const watch = new SessionEndWatch({ idleMs: 1_000, onEnd });
+    watch.handle({ type: "ready" });
+    watch.handle({ type: "response_started" });
+    watch.handle({
+      type: "transcript",
+      role: "assistant",
+      text: "The Mets won 4-2. Want last night's highlights?",
+    });
+    watch.handle({ type: "response_done" });
+    vi.advanceTimersByTime(1_000 + FOLLOWUP_IDLE_GRACE_MS - 2);
+    expect(onEnd).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(4);
+    expect(onEnd).toHaveBeenCalledWith("idle");
+    watch.dispose();
+    vi.useRealTimers();
   });
 
   it("idles only after the assistant is done and the user is not speaking", () => {

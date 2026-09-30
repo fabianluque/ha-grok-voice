@@ -101,6 +101,35 @@ export function stripFillers(text: string): string {
  * ("thank you for turning on the lights") is not a hang-up. Short phrases
  * like "I'm done" are exact-only so "tell me when I'm done" stays a request.
  */
+const FOLLOWUP_PHRASES = [
+  "do you want",
+  "would you like",
+  "want me to",
+  "anything else",
+  "need anything",
+  "shall i",
+  "should i",
+];
+
+/**
+ * Assistant turns that are still waiting for an answer. Hang-up must not
+ * fire while Grok asked a follow-up (question mark or ``Want …?``).
+ */
+export function isOpenFollowup(text: string | undefined): boolean {
+  if (!text || !text.trim()) {
+    return false;
+  }
+  const raw = text.trim();
+  if (raw.includes("?")) {
+    return true;
+  }
+  if (/(?:^|[.!]+\s+)want\b/i.test(raw)) {
+    return true;
+  }
+  const normalized = normalizeUtterance(raw);
+  return FOLLOWUP_PHRASES.some((phrase) => normalized.includes(phrase));
+}
+
 export function isClosingUtterance(text: string | undefined): boolean {
   if (!text || !text.trim()) {
     return false;

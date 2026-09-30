@@ -1,8 +1,11 @@
-import { isClosingUtterance } from "./end-phrase";
+import { isClosingUtterance, isOpenFollowup } from "./end-phrase";
 import type { ServerMessage } from "./session";
 import { cancelTimeout, scheduleTimeout } from "./timers";
 
-export const DEFAULT_IDLE_MS = 20_000;
+export const DEFAULT_IDLE_MS = 30_000;
+
+/** Extra quiet time after a follow-up question so TTS drain + thinking fit. */
+export const FOLLOWUP_IDLE_GRACE_MS = 15_000;
 
 /** If a closer has no ack turn yet, wait this long for Grok to start speaking. */
 export const ACK_GRACE_MS = 2_500;
@@ -31,6 +34,7 @@ export class SessionEndWatch {
   private readonly clearTimer: (id: ReturnType<typeof setTimeout>) => void;
   private armed = false;
   private pendingDone = false;
+  private assistantText = "";
 
   constructor(options: SessionEndWatchOptions) {
     this.idleMs = options.idleMs ?? DEFAULT_IDLE_MS;
@@ -60,6 +64,7 @@ export class SessionEndWatch {
     }
     if (message.type === "speech_started") {
       this.userSpeaking = true;
+      this.assistantText = "";
       this.arm();
       return null;
     }
@@ -70,16 +75,26 @@ export class SessionEndWatch {
     }
     if (message.type === "response_started") {
       this.assistantBusy = true;
+      this.assistantText = "";
       this.arm();
+      return null;
+    }
+    if (message.type === "transcript" && message.role === "assistant" && message.text) {
+      this.assistantText = message.text;
+      if (isOpenFollowup(message.text) && this.pendingDone) {
+        this.pendingDone = false;
+        this.arm();
+      }
       return null;
     }
     if (message.type === "response_done") {
       this.assistantBusy = false;
-      if (this.pendingDone) {
+      if (this.pendingDone && !isOpenFollowup(this.assistantText)) {
         this.dispose();
         this.onEnd("done");
         return "done";
       }
+      this.pendingDone = false;
       this.arm();
       return null;
     }
@@ -106,7 +121,8 @@ export class SessionEndWatch {
     if (!this.armed || this.userSpeaking || this.assistantBusy) {
       return;
     }
-    const ms = this.pendingDone ? ACK_GRACE_MS : this.idleMs;
+    const followup = !this.pendingDone && isOpenFollowup(this.assistantText);
+    const ms = this.pendingDone ? ACK_GRACE_MS : this.idleMs + (followup ? FOLLOWUP_IDLE_GRACE_MS : 0);
     this.timer = this.setTimer(() => {
       this.timer = null;
       this.onEnd(this.pendingDone ? "done" : "idle");

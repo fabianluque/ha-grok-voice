@@ -67,13 +67,124 @@ def test_end_session_is_local_and_does_not_call_mcp():
         )
 
     message = asyncio.run(run())
+    assert json.loads(message["item"]["output"]) == {
+        "ok": True,
+        "ending": False,
+        "reason": "dismiss",
+        "keep_open": True,
+        "error": "closing_phrase_required",
+    }
+    assert bridge.end_after_response is False
+    assert bridge.followup_after_tools() == {"type": "response.create"}
+    assert bridge.consume_end_session() is False
+
+
+def test_end_session_dismiss_after_closing_phrase_hangs_up():
+    bridge = GrokBridge(ToolGateway(FakeMcp(), frozenset({"HassTurnOn"})))
+    bridge.note_closing_phrase()
+
+    async def run():
+        return await bridge.handle_function_call(
+            {
+                "type": "response.function_call_arguments.done",
+                "name": "end_session",
+                "call_id": "call-end",
+                "arguments": json.dumps({"reason": "dismiss"}),
+            }
+        )
+
+    message = asyncio.run(run())
     assert json.loads(message["item"]["output"]) == {"ok": True, "ending": True, "reason": "dismiss"}
     assert bridge.end_after_response is True
     assert bridge.end_session_forget is True
     assert bridge.consume_end_session() is False
     assert bridge.followup_after_tools() == {"type": "response.create"}
     assert bridge.consume_end_session() is True
+
+
+def test_end_session_dismiss_after_followup_question_stays_open():
+    bridge = GrokBridge(ToolGateway(FakeMcp(), frozenset({"HassTurnOn"})))
+
+    async def run():
+        return await bridge.handle_function_call(
+            {
+                "type": "response.function_call_arguments.done",
+                "name": "end_session",
+                "call_id": "call-end",
+                "arguments": json.dumps({"reason": "dismiss"}),
+            }
+        )
+
+    asyncio.run(run())
+    bridge.followup_after_tools()
+    bridge.client_messages(
+        {
+            "type": "response.output_audio_transcript.done",
+            "transcript": "The Mets won 4-2. Want last night's highlights?",
+        }
+    )
+    assert bridge.assistant_asked_followup() is True
     assert bridge.consume_end_session() is False
+
+
+def test_end_session_command_after_home_control_followup_stays_open():
+    bridge = GrokBridge(ToolGateway(FakeMcp(), frozenset({"HassTurnOn"})))
+
+    async def run():
+        await bridge.handle_function_call(
+            {
+                "type": "response.function_call_arguments.done",
+                "name": "HassTurnOn",
+                "call_id": "call-1",
+                "arguments": json.dumps({"name": "attic light"}),
+            }
+        )
+        return await bridge.handle_function_call(
+            {
+                "type": "response.function_call_arguments.done",
+                "name": "end_session",
+                "call_id": "call-end",
+                "arguments": json.dumps({"reason": "command"}),
+            }
+        )
+
+    asyncio.run(run())
+    assert bridge.end_after_response is True
+    bridge.followup_after_tools()
+    bridge.client_messages(
+        {
+            "type": "response.output_audio_transcript.done",
+            "transcript": "Lights on. Want the kitchen too?",
+        }
+    )
+    assert bridge.consume_end_session() is False
+
+
+def test_closing_phrase_then_followup_question_stays_open():
+    bridge = GrokBridge(ToolGateway(FakeMcp(), frozenset({"HassTurnOn"})))
+    bridge.note_closing_phrase()
+    assert bridge.end_after_response is True
+    bridge.client_messages(
+        {
+            "type": "response.output_audio_transcript.done",
+            "transcript": "You're welcome. Anything else?",
+        }
+    )
+    assert bridge.consume_end_session() is False
+
+
+def test_idle_timeout_is_longer_after_a_followup():
+    from app.grok_session import FOLLOWUP_IDLE_GRACE_SECONDS
+
+    bridge = GrokBridge(ToolGateway(FakeMcp(), frozenset({"HassTurnOn"})))
+    assert bridge.idle_timeout_seconds(30) == 30
+    bridge.client_messages(
+        {
+            "type": "response.output_audio_transcript.done",
+            "transcript": "A concert Saturday. Want me to check Sunday too?",
+        }
+    )
+    assert bridge.idle_timeout_seconds(30) == 30 + FOLLOWUP_IDLE_GRACE_SECONDS
 
 
 def test_end_session_command_requires_home_control():
@@ -488,4 +599,5 @@ def test_session_instructions_include_client_area():
     assert "Music Assistant" in text
     assert "end_session" in text
     assert "Never call end_session after sports" in text
+    assert "same turn as a follow-up" in text
     assert "short follow-up" in text

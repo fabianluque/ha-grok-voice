@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isClosingUtterance } from "../src/end-phrase";
+import { isClosingUtterance, isOpenFollowup } from "../src/end-phrase";
 
 describe("closing utterances", () => {
   it("matches goodbye phrases and natural variants", () => {
@@ -45,6 +45,30 @@ describe("closing utterances", () => {
       undefined,
     ]) {
       expect(isClosingUtterance(text)).toBe(false);
+    }
+  });
+
+  it("treats assistant questions and want-clauses as open follow-ups", () => {
+    for (const text of [
+      "The Mets won 4-2. Want last night's highlights?",
+      "Want last night's highlights",
+      "A concert Saturday. Want me to check Sunday too?",
+      "Lights on. Anything else?",
+      "Would you like the kitchen too?",
+      "Should I dim them as well?",
+    ]) {
+      expect(isOpenFollowup(text), text).toBe(true);
+    }
+    for (const text of [
+      "Lights on.",
+      "You're welcome.",
+      "Anytime.",
+      "The Mets won 4-2 last night.",
+      "I want to be careful with that lock.",
+      "",
+      undefined,
+    ]) {
+      expect(isOpenFollowup(text)).toBe(false);
     }
   });
 });

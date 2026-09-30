@@ -6,6 +6,7 @@ from app.grok_session import (
     is_closing_utterance,
     is_end_session_tool,
     is_home_control_tool,
+    is_open_followup,
     merge_session_area,
     parse_client_area,
     parse_client_device,
@@ -111,6 +112,28 @@ def test_watch_is_quiet_only_after_assistant_done_and_user_not_speaking():
     assert watch.is_quiet() is False
 
 
+def test_open_followups_are_questions_and_want_clauses():
+    for text in (
+        "The Mets won 4-2. Want last night's highlights?",
+        "Want last night's highlights",
+        "A concert Saturday. Want me to check Sunday too?",
+        "Lights on. Anything else?",
+        "Would you like the kitchen too?",
+        "Should I dim them as well?",
+    ):
+        assert is_open_followup(text), text
+    for text in (
+        "Lights on.",
+        "You're welcome.",
+        "Anytime.",
+        "The Mets won 4-2 last night.",
+        "I want to be careful with that lock.",
+        "",
+        None,
+    ):
+        assert is_open_followup(text) is False, text
+
+
 def test_end_session_tool_is_local_and_prompted():
     assert is_end_session_tool("end_session") is True
     assert is_end_session_tool("hang_up") is True
@@ -119,6 +142,7 @@ def test_end_session_tool_is_local_and_prompted():
     assert END_SESSION_TOOL_NAME in text
     assert "home device or in-home media" in text
     assert "Never call end_session after sports" in text
+    assert "same turn as a follow-up" in text
     assert "short follow-up" in text
     assert "clarifying" in text
 

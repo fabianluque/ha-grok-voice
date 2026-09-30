@@ -148,7 +148,7 @@ def load_settings(
         ha_mcp_url=mcp_url,
         mcp_token=mcp_token,
         allowlist=parse_allowlist(options.get("mcp_tool_allowlist")),
-        idle_timeout_seconds=int(options.get("idle_timeout_seconds") or 20),
+        idle_timeout_seconds=int(options.get("idle_timeout_seconds") or 30),
         ha_api_url=HOME_ASSISTANT_API_URL,
         default_area=str(options.get("default_area") or "Attic").strip() or "Attic",
         default_area_id=str(options.get("default_area_id") or "").strip(),
