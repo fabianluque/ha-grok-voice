@@ -125,7 +125,7 @@ A dining-room tablet with the same inject would resolve **Dining Room** from its
 At each duplex session open the add-on writes a fresh block into the Grok `session.update` instructions (every client: kiosk, Open Web UI, port 8080):
 
 - **Current local date/time** from Home Assistant's timezone (`/api/config` `time_zone`, typically `America/New_York`). Computed at session start, not stored in the add-on image.
-- **Home location** for local events: add-on **Home location** (`home_location`, for example `Summit, NJ`) is expanded to a named city (`Summit, NJ / Summit, New Jersey`) plus HA `location_name`, country, GPS, and `zone.home` when those APIs answer in time. Generic HA names like `Home` are not used as the city. Fetch runs in parallel with MCP `tools/list` so it does not sit on the wake path.
+- **Home location** for local events: add-on **Home location** (`home_location`, for example `Summit, NJ`) is written into every `session.update` as the place the user lives (expanded to `Summit, NJ / Summit, New Jersey`) plus HA `location_name`, country, GPS, and `zone.home` when those APIs answer in time. Generic HA names like `Home` are not used as the city, and GetLiveContext must not override it. **Leave the option blank** if you have not set a city: Grok will not know where you live and may ask. Fetch runs in parallel with MCP `tools/list` so it does not sit on the wake path. Customized **Instructions** stay the spoken persona; they do not replace this location block.
 
 Short **conversation memory** is Assist-style, in the add-on process only (not forever, not across add-on restarts):
 
