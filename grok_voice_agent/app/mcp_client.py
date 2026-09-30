@@ -96,16 +96,31 @@ def bare_tool_name(name: str) -> str:
     return name.rsplit("__", 1)[-1]
 
 
+def tool_domain(name: str) -> str:
+    """Integration domain from a 2026.9 ``domain__Tool`` name, else empty."""
+    cleaned = str(name or "")
+    if "__" not in cleaned:
+        return ""
+    return cleaned.rsplit("__", 1)[0]
+
+
 def tool_allowed(name: str, allowlist: frozenset[str] | set[str]) -> bool:
     """True when the MCP name matches an allowlist entry, ignoring a domain prefix.
 
     ``HassTurnOn`` and ``intent__HassTurnOn`` are the same Assist tool. A blank
     allowlist stores the bare name. A list typed with the 2026.9 name still
-    matches an older server that has not prefixed it yet.
+    matches an older server that has not prefixed it yet. An allowlist entry
+    that is only a domain (``music_assistant``, ``mealie``, ``todo``) attaches
+    every MCP tool from that integration.
     """
     if "*" in allowlist or name in allowlist:
         return True
+    domain = tool_domain(name)
+    if domain and domain in allowlist:
+        return True
     bare = bare_tool_name(name)
+    if bare in allowlist:
+        return True
     return any(bare_tool_name(entry) == bare for entry in allowlist)
 
 

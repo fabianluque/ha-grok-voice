@@ -26,11 +26,35 @@ def test_room_scoped_tool_gets_the_session_area_when_omitted():
         await gateway.execute("intent__HassTurnOn", {"name": "lights"})
         await gateway.execute("intent__HassTurnOn", {"name": "kitchen lights", "area": "Kitchen"})
         await gateway.execute("homeassistant__GetLiveContext", {})
+        await gateway.execute(
+            "intent__HassMediaSearchAndPlay", {"search_query": "Night Tracks"}
+        )
+        await gateway.execute(
+            "music_assistant__play_media", {"media_id": "Radiohead", "media_type": "artist"}
+        )
+        await gateway.execute("todo__HassListAddItem", {"name": "Shopping", "item": "milk"})
+        await gateway.execute("mealie__get_mealplan", {})
 
     asyncio.run(run())
     assert mcp.calls[0] == ("intent__HassTurnOn", {"name": "lights", "area": "Attic", "area_id": "attic"})
     assert mcp.calls[1] == ("intent__HassTurnOn", {"name": "kitchen lights", "area": "Kitchen"})
     assert mcp.calls[2] == ("homeassistant__GetLiveContext", {})
+    assert mcp.calls[3] == (
+        "intent__HassMediaSearchAndPlay",
+        {"search_query": "Night Tracks", "area": "Attic", "area_id": "attic"},
+    )
+    assert mcp.calls[4] == (
+        "music_assistant__play_media",
+        {
+            "media_id": "Radiohead",
+            "media_type": "artist",
+            "area": "Attic",
+            "area_id": "attic",
+            "target": {"area_id": "attic"},
+        },
+    )
+    assert mcp.calls[5] == ("todo__HassListAddItem", {"name": "Shopping", "item": "milk"})
+    assert mcp.calls[6] == ("mealie__get_mealplan", {})
     assert apply_default_area("HassTurnOff", {}, area)["area"] == "Attic"
 
 
@@ -38,7 +62,13 @@ def test_blank_allowlist_is_the_assist_control_set():
     names = parse_allowlist("")
     assert "HassTurnOn" in names
     assert "GetLiveContext" in names
-    assert "HassMediaPlayer" not in names
+    assert "HassGetState" in names
+    assert "HassMediaSearchAndPlay" in names
+    assert "HassListAddItem" in names
+    assert "music_assistant" in names
+    assert "mealie" in names
+    assert "todo" in names
+    assert "HassBroadcast" not in names
 
 
 def test_allowlisted_tool_is_forwarded():
@@ -100,6 +130,10 @@ def test_2026_9_tool_names_pass_the_blank_allowlist_and_are_logged():
         {"name": "light__HassLightSet", "description": "Set a light"},
         {"name": "homeassistant__GetLiveContext", "description": "Live state"},
         {"name": "homeassistant__GetDateTime", "description": "Clock"},
+        {"name": "intent__HassMediaSearchAndPlay", "description": "Play media"},
+        {"name": "todo__HassListAddItem", "description": "Add a to-do"},
+        {"name": "mealie__get_mealplan", "description": "Meal plan"},
+        {"name": "music_assistant__play_media", "description": "Play with Music Assistant"},
         {"name": "script__party_mode", "description": "Not assist"},
     ]
     attached = function_tools(listed, parse_allowlist(""))
@@ -110,13 +144,19 @@ def test_2026_9_tool_names_pass_the_blank_allowlist_and_are_logged():
         "light__HassLightSet",
         "homeassistant__GetLiveContext",
         "homeassistant__GetDateTime",
+        "intent__HassMediaSearchAndPlay",
+        "todo__HassListAddItem",
+        "mealie__get_mealplan",
+        "music_assistant__play_media",
     ]
     level, message = voice_tool_log(listed, attached)
     assert level == "info"
     assert message == (
-        "voice tools mcp_listed=6 attached=5 names="
+        "voice tools mcp_listed=10 attached=9 names="
         "intent__HassTurnOn,intent__HassTurnOff,light__HassLightSet,"
-        "homeassistant__GetLiveContext,homeassistant__GetDateTime"
+        "homeassistant__GetLiveContext,homeassistant__GetDateTime,"
+        "intent__HassMediaSearchAndPlay,todo__HassListAddItem,"
+        "mealie__get_mealplan,music_assistant__play_media"
     )
 
 

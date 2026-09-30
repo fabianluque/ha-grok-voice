@@ -4,6 +4,11 @@ Versions match `grok_voice_agent/config.yaml`. GitHub Releases list the
 merged pull requests since the previous tag. Issues closed with `Fixes #N`
 in those pull requests are included below when GitHub reports them.
 
+## [0.2.7] - 2026-09-30
+
+- Restore snappy listen-start on the attic kiosk inject. 0.2.6 awaited Home Assistant device/entity/area registry lists (and `getDeviceInfo`) on every wake before `getUserMedia` and the duplex socket. The inject now prefetches the area at boot and sends the cached/explicit/Attic fallback on auth immediately. Registry lookups run in parallel in the background. The duplex WebSocket opens while the mic is claimed.
+- Attach Assist media, todo, and Mealie tools on a blank allowlist (`HassMediaSearchAndPlay`, pause/volume/next, `HassListAddItem`, `HassGetState`, plus `music_assistant` / `media_player` / `todo` / `mealie` domains). Bare "play music" / "play X" from the attic tablet targets Music Assistant in the session area (Attic HomePod Mini) and does not ask which speaker.
+
 ## [0.2.6] - 2026-09-30
 
 - Hang up when a completed utterance *ends* with a closer (`oh, that's great, thank you`), not only when the whole phrase is exactly `thank you` / `goodbye`. A closer in the middle of a request still does not end the session.
