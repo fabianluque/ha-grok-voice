@@ -5,6 +5,7 @@ from __future__ import annotations
 import email.utils
 import hashlib
 import http
+import json
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -21,6 +22,33 @@ WWW_ROOT = Path(__file__).resolve().parent.parent / "www"
 # Lovelace; Open Web UI / port 8099 can serve the same path if you are already
 # in an ingress session.
 KIOSK_CLIENT_PATH = "/grok-voice.js"
+KIOSK_BOOT_PATH = "/kiosk-boot.js"
+KIOSK_CONFIG_PATH = "/kiosk-config"
+KIOSK_INJECT_PATHS = (KIOSK_CLIENT_PATH, KIOSK_BOOT_PATH)
+
+
+def kiosk_config_payload(duplex_lan_host: str = "") -> dict[str, str]:
+    return {"duplex_lan_host": str(duplex_lan_host or "").strip()}
+
+
+def kiosk_bootstrap_prefix(duplex_lan_host: str = "") -> bytes:
+    """Set the LAN host on the kiosk page without overwriting an inject override."""
+    host = str(duplex_lan_host or "").strip()
+    if not host:
+        return b""
+    assignment = json.dumps(host, ensure_ascii=True)
+    return f"window.GROK_VOICE_DUPLEX_LAN_HOST=window.GROK_VOICE_DUPLEX_LAN_HOST||{assignment};\n".encode("utf-8")
+
+
+def is_kiosk_config_path(url_path: str) -> bool:
+    path = unquote(urlparse(url_path).path).rstrip("/")
+    return path == KIOSK_CONFIG_PATH
+
+
+def is_kiosk_inject_path(url_path: str) -> bool:
+    path = unquote(urlparse(url_path).path)
+    return path in KIOSK_INJECT_PATHS
+
 
 TYPES = {
     ".css": "text/css; charset=utf-8",
@@ -102,7 +130,7 @@ def extra_static_headers(content_type: str) -> list[tuple[str, str]]:
     if content_type.startswith("text/html"):
         headers.append(("Cache-Control", "no-store"))
         return headers
-    if "javascript" in content_type:
+    if "javascript" in content_type or content_type.startswith("application/json"):
         headers.extend(
             (
                 ("Cache-Control", "no-cache"),
@@ -137,11 +165,14 @@ def http_file_response(
     url_path: str,
     www_root: Path | None = None,
     request_headers: Headers | None = None,
+    duplex_lan_host: str = "",
 ) -> Response:
     root = www_root or WWW_ROOT
     target = resolve_static_path(url_path, root)
     if target is not None:
         body = target.read_bytes()
+        if is_kiosk_inject_path(url_path):
+            body = kiosk_bootstrap_prefix(duplex_lan_host) + body
         content_type = content_type_for(target)
         etag = etag_for(body)
         extra = [("ETag", etag)]
@@ -158,7 +189,19 @@ def http_file_response(
     return build_response(404, b"Not found\n", "text/plain; charset=utf-8")
 
 
-def process_http_request(request: Request, www_root: Path | None = None) -> Response | None:
+def kiosk_config_response(duplex_lan_host: str = "") -> Response:
+    body = json.dumps(kiosk_config_payload(duplex_lan_host), separators=(",", ":")).encode("utf-8")
+    extra = [("ETag", etag_for(body))]
+    return build_response(200, body, "application/json", extra)
+
+
+def process_http_request(
+    request: Request,
+    www_root: Path | None = None,
+    duplex_lan_host: str = "",
+) -> Response | None:
     if is_websocket_upgrade(request):
         return None
-    return http_file_response(request.path, www_root, request.headers)
+    if is_kiosk_config_path(request.path):
+        return kiosk_config_response(duplex_lan_host)
+    return http_file_response(request.path, www_root, request.headers, duplex_lan_host)

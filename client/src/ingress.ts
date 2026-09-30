@@ -126,10 +126,16 @@ export const KIOSK_SATELLITE_PROXY_PORT = "2325";
  * Last-resort Home Assistant hostname when the kiosk page is loopback
  * (Kiosk Satellite :2325) and hassUrl / internal_url are also loopback.
  * Kiosk duplex never uses Core :8123 `/api/hassio_ingress/` — Lovelace has
- * no ingress_session cookie. Override with ``GROK_VOICE_URL`` /
- * ``GROK_VOICE_SCRIPT`` if mDNS ``homeassistant.local`` does not resolve.
+ * no ingress_session cookie. Prefer add-on ``duplex_lan_host`` (or
+ * ``GROK_VOICE_DUPLEX_LAN_HOST`` / the script origin) so Fire tablets
+ * that cannot resolve mDNS do not dead-end on ``homeassistant.local``.
  */
 export const LAN_HA_FALLBACK_HOST = "homeassistant.local";
+
+/** Add-on / inject override for the duplex debug-port hostname. */
+export const DUPLEX_LAN_HOST_KEY = "GROK_VOICE_DUPLEX_LAN_HOST";
+
+export const KIOSK_CONFIG_PATH = "/kiosk-config";
 
 /** Add-on debug port mapped on the HA host. Token auth; not ingress. */
 export const VOICE_DEBUG_PORT = 8080;
@@ -152,7 +158,9 @@ export type VoiceSocketHostSource =
   | "config.internal_url"
   | "config.external_url"
   | "lan-fallback"
-  | "explicit";
+  | "explicit"
+  | "addon"
+  | "script";
 
 export interface VoiceSocketAuthority {
   protocol: string;
@@ -182,6 +190,103 @@ export function hostnameOf(host: string): string {
 export function isLoopbackHostname(hostname: string): boolean {
   const host = hostname.trim().toLowerCase().replace(/^\[|\]$/g, "");
   return host === "127.0.0.1" || host === "localhost" || host === "::1";
+}
+
+/** Bare ``homeassistant.local`` — Fire tablets often fail this mDNS name. */
+export function isMdnsFallbackHostname(host: string): boolean {
+  return hostnameOf(host) === LAN_HA_FALLBACK_HOST;
+}
+
+/**
+ * Hostname/IP from the add-on option or an inject override.
+ * Accepts ``192.168.86.38``, ``http://192.168.86.38:8123``, or a host:port.
+ */
+export function cleanDuplexLanHost(value: unknown): string {
+  if (value == null) {
+    return "";
+  }
+  const raw = String(value).trim();
+  if (!raw) {
+    return "";
+  }
+  const authority = authorityFromUrl(raw);
+  const host = authority ? hostnameOf(authority.host) : hostnameOf(raw);
+  if (!host || isLoopbackHostname(host)) {
+    return "";
+  }
+  return host;
+}
+
+export function kioskScriptHost(doc: { querySelectorAll?(selectors: string): ArrayLike<{ src?: string }> } | null | undefined): string {
+  return hostnameOf(kioskScriptOrigin(doc));
+}
+
+/** Origin that served grok-voice.js / kiosk-boot.js, when it is a real LAN host. */
+export function kioskScriptOrigin(doc: { querySelectorAll?(selectors: string): ArrayLike<{ src?: string }> } | null | undefined): string {
+  const scripts = doc?.querySelectorAll?.("script[src]");
+  if (!scripts) {
+    return "";
+  }
+  for (let i = 0; i < scripts.length; i += 1) {
+    const src = scripts[i]?.src || "";
+    if (!src || !(src.includes("grok-voice.js") || src.includes("kiosk-boot.js"))) {
+      continue;
+    }
+    try {
+      const url = new URL(src, "http://localhost");
+      const host = url.hostname.toLowerCase();
+      if (!host || isLoopbackHostname(host) || isMdnsFallbackHostname(host)) {
+        continue;
+      }
+      return `${url.protocol}//${url.host}`;
+    } catch {
+      continue;
+    }
+  }
+  return "";
+}
+
+let cachedAddonLanHost = "";
+
+export function rememberAddonLanHost(host: unknown): string {
+  cachedAddonLanHost = cleanDuplexLanHost(host);
+  return cachedAddonLanHost;
+}
+
+export function peekAddonLanHost(): string {
+  return cachedAddonLanHost;
+}
+
+export function resetAddonLanHost(): void {
+  cachedAddonLanHost = "";
+}
+
+export function configuredDuplexLanHost(explicit?: unknown): string {
+  return cleanDuplexLanHost(explicit) || cachedAddonLanHost;
+}
+
+export async function prefetchKioskConfig(input: {
+  origin?: string;
+  fetch?: (url: string) => Promise<{ ok: boolean; json(): Promise<unknown> }>;
+}): Promise<string> {
+  const origin = (input.origin || "").replace(/\/$/, "");
+  if (!origin) {
+    return cachedAddonLanHost;
+  }
+  const fetcher = input.fetch || (globalThis.fetch as typeof input.fetch);
+  if (!fetcher) {
+    return cachedAddonLanHost;
+  }
+  try {
+    const response = await fetcher(`${origin}${KIOSK_CONFIG_PATH}`);
+    if (!response.ok) {
+      return cachedAddonLanHost;
+    }
+    const body = (await response.json()) as { duplex_lan_host?: unknown };
+    return rememberAddonLanHost(body?.duplex_lan_host);
+  } catch {
+    return cachedAddonLanHost;
+  }
 }
 
 export function isKioskSatelliteProxyHost(host: string): boolean {
@@ -249,24 +354,65 @@ function hassAuthorities(hass: HassLike): VoiceSocketAuthority[] {
   return out;
 }
 
+function usableHassAuthorities(hass?: HassLike | null): VoiceSocketAuthority[] {
+  if (!hass) {
+    return [];
+  }
+  return hassAuthorities(hass).filter((candidate) => !isLoopbackHostname(hostnameOf(candidate.host)));
+}
+
 /**
  * Find a non-loopback HA hostname for the add-on debug port. Never used to
  * open Core :8123 ingress — that path needs a cookie Lovelace does not have.
+ *
+ * Prefer an explicit add-on ``duplex_lan_host`` (or inject override). Then
+ * existing HA connection / config hosts. Skip bare ``homeassistant.local``
+ * when a real LAN IP or hostname is available (script origin or hass).
  */
 export function resolveVoiceSocketAuthority(
   pageProtocol: string,
   pageHost: string,
   hass?: HassLike | null,
+  lanHost?: unknown,
 ): VoiceSocketAuthority {
-  const page: VoiceSocketAuthority = { protocol: pageProtocol, host: pageHost, source: "page" };
-  if (!pageHostNeedsHaIngressHost(pageHost)) {
+  return resolveVoiceSocketAuthorityFrom({
+    pageProtocol,
+    pageHost,
+    hass,
+    lanHost,
+  });
+}
+
+export function resolveVoiceSocketAuthorityFrom(input: {
+  pageProtocol: string;
+  pageHost: string;
+  hass?: HassLike | null;
+  lanHost?: unknown;
+  scriptHost?: unknown;
+}): VoiceSocketAuthority {
+  const configured = cleanDuplexLanHost(input.lanHost);
+  if (configured) {
+    return { protocol: "http:", host: configured, source: "addon" };
+  }
+  const page: VoiceSocketAuthority = { protocol: input.pageProtocol, host: input.pageHost, source: "page" };
+  if (!pageHostNeedsHaIngressHost(input.pageHost) && !isMdnsFallbackHostname(input.pageHost)) {
     return page;
   }
-  const usable = hass
-    ? hassAuthorities(hass).find((candidate) => !isLoopbackHostname(hostnameOf(candidate.host)))
-    : undefined;
-  if (usable) {
-    return usable;
+  const discovered = usableHassAuthorities(input.hass);
+  const smarter = discovered.find((candidate) => !isMdnsFallbackHostname(candidate.host));
+  if (smarter) {
+    return smarter;
+  }
+  const script = cleanDuplexLanHost(input.scriptHost);
+  if (script && !isMdnsFallbackHostname(script)) {
+    return { protocol: "http:", host: script, source: "script" };
+  }
+  const mdnsHass = discovered.find((candidate) => isMdnsFallbackHostname(candidate.host));
+  if (mdnsHass) {
+    return mdnsHass;
+  }
+  if (!pageHostNeedsHaIngressHost(input.pageHost)) {
+    return page;
   }
   return { protocol: "http:", host: LAN_HA_FALLBACK_HOST, source: "lan-fallback" };
 }
@@ -325,6 +471,8 @@ export function resolveKioskClientScript(input: {
   pageHost: string;
   debugPort?: number;
   explicit?: string;
+  lanHost?: unknown;
+  scriptHost?: unknown;
 }): { url: string; authority: VoiceSocketAuthority } {
   const explicit = (input.explicit || "").trim();
   if (explicit) {
@@ -352,8 +500,16 @@ export function resolveKioskVoiceSocket(input: {
   pageProtocol: string;
   pageHost: string;
   debugPort?: number;
+  lanHost?: unknown;
+  scriptHost?: unknown;
 }): KioskVoiceSocket {
-  const authority = resolveVoiceSocketAuthority(input.pageProtocol, input.pageHost, input.hass);
+  const authority = resolveVoiceSocketAuthorityFrom({
+    pageProtocol: input.pageProtocol,
+    pageHost: input.pageHost,
+    hass: input.hass,
+    lanHost: input.lanHost,
+    scriptHost: input.scriptHost,
+  });
   const debugPort = parseDebugPort(input.debugPort);
   return {
     url: debugVoiceSocketUrl(authority.protocol, authority.host, debugPort),
@@ -380,12 +536,14 @@ export async function resolveVoiceSocketUrl(
   pageProtocol: string,
   host: string,
   debugPort?: number,
+  lanHost?: unknown,
 ): Promise<string> {
   const resolved = resolveKioskVoiceSocket({
     hass,
     pageProtocol,
     pageHost: host,
     debugPort,
+    lanHost,
   });
   console.log(
     describeDuplexChoice({

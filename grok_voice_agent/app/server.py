@@ -450,7 +450,7 @@ async def serve_voice(settings, http) -> None:
         await handle_socket(websocket, settings, http, memory=memory)
 
     async def process_request(_connection, request):
-        return process_http_request(request)
+        return process_http_request(request, duplex_lan_host=settings.duplex_lan_host)
 
     servers = [
         await voice_serve(handler, "0.0.0.0", settings.ingress_port, process_request),

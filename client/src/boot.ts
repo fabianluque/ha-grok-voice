@@ -1,4 +1,6 @@
 import {
+  configuredDuplexLanHost,
+  kioskScriptHost,
   pageHass,
   parseDebugPort,
   resolveKioskClientScript,
@@ -11,6 +13,7 @@ export const CLIENT_SCRIPT_MARK = "client";
 export interface BootWindow {
   GROK_VOICE_SCRIPT?: string;
   GROK_VOICE_DEBUG_PORT?: number | string;
+  GROK_VOICE_DUPLEX_LAN_HOST?: string;
   __grokVoiceBoot?: boolean;
   location: { protocol: string; host: string };
   document: BootDocument;
@@ -18,6 +21,7 @@ export interface BootWindow {
 
 interface BootDocument {
   querySelector(selectors: string): { hass?: HassLike } | null;
+  querySelectorAll?(selectors: string): ArrayLike<{ src?: string }>;
   createElement(tagName: string): BootScript;
   head?: { appendChild(node: BootScript): void } | null;
   documentElement: { appendChild(node: BootScript): void };
@@ -53,6 +57,8 @@ export function kioskClientScriptUrl(host: BootWindow): string {
     pageHost: host.location.host,
     debugPort: parseDebugPort(host.GROK_VOICE_DEBUG_PORT),
     explicit: host.GROK_VOICE_SCRIPT,
+    lanHost: configuredDuplexLanHost(host.GROK_VOICE_DUPLEX_LAN_HOST),
+    scriptHost: kioskScriptHost(host.document),
   }).url;
 }
 

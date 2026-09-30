@@ -12,7 +12,7 @@ Home Assistant clones this GitHub URL as a store repository. The repo root has `
 2. Add `https://github.com/fabianluque/ha-grok-voice` and save.
 3. On the store page, open **Grok Voice Agent** and install it. Home Assistant builds the image locally from the Dockerfile.
 4. Open the add-on **Configuration**, set **xAI API key**, and save. Do not put that key in the browser UI.
-5. Optionally set **Home location** (city / region / ZIP) and **Default area**. Both ship **blank**. Leave **Home location** empty until you fill it in.
+5. Optionally set **Home location** (city / region / ZIP), **Default area**, and **Duplex LAN host** (Home Assistant LAN IP such as `192.168.86.38` when Kiosk Satellite tablets cannot resolve `homeassistant.local`). Area and location ship **blank**. Leave **Home location** empty until you fill it in.
 6. Install the official **Model Context Protocol Server** integration and expose the entities Assist may control.
 7. Leave the MCP URL blank. It uses `http://supervisor/core/api/mcp` with the Supervisor add-on token (`SUPERVISOR_TOKEN`). Leave the long-lived token blank too. Paste a long-lived token only if the log shows MCP HTTP 401. A blank token is not sent. The startup log should say `mcp_auth=supervisor`.
 8. Start the add-on.
@@ -81,7 +81,7 @@ Replace `<HA-LAN>` with the hostname or IP the tablet uses to reach Home Assista
 
 CORS is allowed (`Access-Control-Allow-Origin: *`) so a dashboard origin (`http://127.0.0.1:2325` Kiosk Satellite proxy, or `http://<HA-LAN>:8123`) can load the file. Classic `<script src>` works without CORS; the header is for `fetch` / module resources. `Cache-Control: no-cache` makes the tablet revalidate after an add-on update.
 
-If every discovered Home Assistant URL is loopback (typical on the Kiosk Satellite proxy), the client falls back to `homeassistant.local`. Set `window.GROK_VOICE_URL` / `window.GROK_VOICE_SCRIPT` when that name does not resolve.
+If every discovered Home Assistant URL is loopback (typical on the Kiosk Satellite proxy), the client used to fall back to `homeassistant.local`. Fire tablets often fail that mDNS name (`ERR_NAME_NOT_RESOLVED`). Set add-on **Duplex LAN host** (`duplex_lan_host`) to the Home Assistant LAN IP (`192.168.86.38`). The add-on exposes that value at `http://<HA-LAN>:8080/kiosk-config` and injects `window.GROK_VOICE_DUPLEX_LAN_HOST` into `grok-voice.js` / `kiosk-boot.js`. You can still set `window.GROK_VOICE_DUPLEX_LAN_HOST`, `window.GROK_VOICE_URL`, or `window.GROK_VOICE_SCRIPT` in the inject. If the option is blank, discovery still prefers a HA connection host or the host that served `grok-voice.js` before using `homeassistant.local`.
 
 ### Enable once on a kiosk
 

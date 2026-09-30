@@ -3,20 +3,28 @@ import {
   accessToken,
   authHandshake,
   authModeForUrl,
+  cleanDuplexLanHost,
+  configuredDuplexLanHost,
   debugVoiceScriptUrl,
   debugVoiceSocketUrl,
   describeDuplexChoice,
   KIOSK_CLIENT_PATH,
+  KIOSK_CONFIG_PATH,
   isKioskSatelliteProxyHost,
   isLoopbackHostname,
   isOpenWebUiPath,
+  kioskScriptHost,
+  kioskScriptOrigin,
   LAN_HA_FALLBACK_HOST,
   LAN_VOICE_DEBUG_URL,
   LAN_VOICE_SCRIPT_URL,
   pageHostNeedsHaIngressHost,
   pageVoiceSocketUrl,
   parseDebugPort,
+  prefetchKioskConfig,
   readHassTokens,
+  rememberAddonLanHost,
+  resetAddonLanHost,
   resolveAccessToken,
   resolveKioskClientScript,
   resolveKioskVoiceSocket,
@@ -97,8 +105,13 @@ describe("voice socket URLs", () => {
       source: "auth.hassUrl",
     });
     expect(resolveVoiceSocketAuthority("https:", "homeassistant.local:8123", hass)).toEqual({
+      protocol: "http:",
+      host: "192.168.1.10:8123",
+      source: "auth.hassUrl",
+    });
+    expect(resolveVoiceSocketAuthority("https:", "192.168.1.10:8123", hass)).toEqual({
       protocol: "https:",
-      host: "homeassistant.local:8123",
+      host: "192.168.1.10:8123",
       source: "page",
     });
   });
@@ -231,6 +244,75 @@ describe("voice socket URLs", () => {
     log.mockRestore();
   });
 
+  it("prefers add-on duplex_lan_host over hass discovery and homeassistant.local", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const hass = {
+      callWS: async () => ({}),
+      auth: { data: { hassUrl: "http://127.0.0.1:2325" } },
+      config: { internal_url: "http://homeassistant.local:8123" },
+    };
+    expect(resolveVoiceSocketAuthority("http:", "127.0.0.1:2325", hass, "192.168.86.38")).toEqual({
+      protocol: "http:",
+      host: "192.168.86.38",
+      source: "addon",
+    });
+    expect(
+      resolveKioskVoiceSocket({
+        hass,
+        pageProtocol: "http:",
+        pageHost: "127.0.0.1:2325",
+        lanHost: "http://192.168.86.38:8123",
+      }).url,
+    ).toBe("ws://192.168.86.38:8080/");
+    await expect(resolveVoiceSocketUrl(hass, "http:", "127.0.0.1:2325", undefined, " 192.168.86.38 ")).resolves.toBe(
+      "ws://192.168.86.38:8080/",
+    );
+    expect(log).toHaveBeenCalledWith("[Grok Voice] duplex host 192.168.86.38:8080 via addon auth token");
+    log.mockRestore();
+  });
+
+  it("keeps hass discovery when duplex_lan_host is empty", () => {
+    const hass = {
+      callWS: async () => ({}),
+      auth: { data: { hassUrl: "http://192.168.1.10:8123" } },
+    };
+    expect(resolveVoiceSocketAuthority("http:", "127.0.0.1:2325", hass, "")).toEqual({
+      protocol: "http:",
+      host: "192.168.1.10:8123",
+      source: "auth.hassUrl",
+    });
+    expect(resolveVoiceSocketAuthority("http:", "127.0.0.1:2325", hass)).toEqual({
+      protocol: "http:",
+      host: "192.168.1.10:8123",
+      source: "auth.hassUrl",
+    });
+  });
+
+  it("uses the grok-voice.js script origin instead of silent homeassistant.local", () => {
+    const hass = {
+      callWS: async () => ({}),
+      auth: { data: { hassUrl: "http://127.0.0.1:2325" } },
+      config: { internal_url: "http://homeassistant.local:8123" },
+    };
+    expect(
+      resolveKioskVoiceSocket({
+        hass,
+        pageProtocol: "http:",
+        pageHost: "127.0.0.1:2325",
+        lanHost: "",
+        scriptHost: "http://192.168.86.38:8080/grok-voice.js",
+      }),
+    ).toMatchObject({
+      url: "ws://192.168.86.38:8080/",
+      authority: { source: "script", host: "192.168.86.38" },
+    });
+    expect(resolveVoiceSocketAuthority("http:", "127.0.0.1:2325", hass, "")).toEqual({
+      protocol: "http:",
+      host: "homeassistant.local:8123",
+      source: "config.internal_url",
+    });
+  });
+
   it("honors GROK_VOICE_DEBUG_PORT on the kiosk debug socket", () => {
     const resolved = resolveKioskVoiceSocket({
       hass: { callWS: async () => ({}), auth: { data: { hassUrl: "http://192.168.1.10:8123" } } },
@@ -247,6 +329,35 @@ describe("voice socket URLs", () => {
         authMode: resolved.authMode,
       }),
     ).toBe("[Grok Voice] duplex host 192.168.1.10:9099 via auth.hassUrl auth token");
+  });
+
+  it("reads duplex_lan_host from /kiosk-config and from the grok-voice.js script tag", async () => {
+    resetAddonLanHost();
+    expect(cleanDuplexLanHost("")).toBe("");
+    expect(cleanDuplexLanHost(" 192.168.86.38 ")).toBe("192.168.86.38");
+    expect(cleanDuplexLanHost("http://192.168.86.38:8123/")).toBe("192.168.86.38");
+    expect(cleanDuplexLanHost("127.0.0.1")).toBe("");
+    const doc = {
+      querySelectorAll() {
+        return [{ src: "http://192.168.86.38:8080/grok-voice.js" }];
+      },
+    };
+    expect(kioskScriptOrigin(doc)).toBe("http://192.168.86.38:8080");
+    expect(kioskScriptHost(doc)).toBe("192.168.86.38");
+    expect(kioskScriptOrigin({ querySelectorAll: () => [{ src: "http://homeassistant.local:8080/grok-voice.js" }] })).toBe("");
+    const fetched = await prefetchKioskConfig({
+      origin: "http://192.168.86.38:8080",
+      fetch: async (url) => {
+        expect(url).toBe(`http://192.168.86.38:8080${KIOSK_CONFIG_PATH}`);
+        return { ok: true, json: async () => ({ duplex_lan_host: "192.168.86.38" }) };
+      },
+    });
+    expect(fetched).toBe("192.168.86.38");
+    expect(configuredDuplexLanHost("")).toBe("192.168.86.38");
+    expect(configuredDuplexLanHost("10.0.0.2")).toBe("10.0.0.2");
+    rememberAddonLanHost("");
+    resetAddonLanHost();
+    expect(configuredDuplexLanHost("")).toBe("");
   });
 });
 

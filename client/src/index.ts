@@ -9,10 +9,14 @@ import { createBrowserSession } from "./browser";
 import {
   accessToken,
   authModeForUrl,
+  configuredDuplexLanHost,
   describeDuplexChoice,
   hostnameOf,
+  kioskScriptHost,
+  kioskScriptOrigin,
   pageHass,
   parseDebugPort,
+  prefetchKioskConfig,
   resolveKioskVoiceSocket,
 } from "./ingress";
 import { mountKioskStatus, voiceStatusFromMessage } from "./kiosk-status";
@@ -23,6 +27,7 @@ interface KioskWindow extends Window {
   kioskSatellite?: KioskApi;
   GROK_VOICE_URL?: string;
   GROK_VOICE_DEBUG_PORT?: number | string;
+  GROK_VOICE_DUPLEX_LAN_HOST?: string;
   GROK_VOICE_AREA?: string;
   GROK_VOICE_AREA_ID?: string;
   __grokVoiceInstalled?: boolean;
@@ -35,6 +40,7 @@ function boot(): void {
   }
   page.__grokVoiceInstalled = true;
   const kiosk = page.kioskSatellite;
+  void prefetchKioskConfig({ origin: kioskScriptOrigin(document) });
   const areaInput = () => ({
     kiosk,
     hass: pageHass() as NativeAssistHass | null,
@@ -89,6 +95,8 @@ function boot(): void {
               pageProtocol: location.protocol,
               pageHost: location.host,
               debugPort,
+              lanHost: configuredDuplexLanHost(page.GROK_VOICE_DUPLEX_LAN_HOST),
+              scriptHost: kioskScriptHost(document),
             })
           : null;
       const url = resolved?.url || "";
