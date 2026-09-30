@@ -193,4 +193,31 @@ describe("kiosk area", () => {
     const second = immediateKioskDevice(storage);
     expect(second.id).toBe(first.id);
   });
+
+  it("retries Home Assistant area lookup after a first-boot fallback", async () => {
+    const first = await prefetchKioskArea({
+      kiosk: { getDeviceInfo: async () => ({ name: "Attic Dashboard" }) },
+      hass: { callWS: async () => [] },
+    });
+    expect(first.source).toBe("fallback");
+    expect(peekCachedKioskArea()?.source).toBe("fallback");
+
+    const resolved = await prefetchKioskArea({
+      kiosk: { getDeviceInfo: async () => ({ name: "Attic Dashboard" }) },
+      hass: {
+        callWS: async (message: unknown) => {
+          const type = (message as { type?: string }).type;
+          if (type === "config/device_registry/list") {
+            return [{ id: "attic", name: "Attic Dashboard", area_id: "attic" }];
+          }
+          if (type === "config/area_registry/list") {
+            return [{ area_id: "attic", name: "Attic" }];
+          }
+          return [];
+        },
+      },
+    });
+    expect(resolved).toEqual({ id: "attic", name: "Attic", source: "ha" });
+    expect(immediateKioskArea({ cached: peekCachedKioskArea() })).toEqual(resolved);
+  });
 });

@@ -271,7 +271,8 @@ export function claimWakeEvent(target: WakeEventTarget, handler: (event: Event) 
   };
 }
 
-const QUICK_CLOSE_MS = 800;
+/** Assist pause that kills the first socket is a collapse, not a finished turn. */
+export const QUICK_CLOSE_MS = 800;
 
 const PAGE_LEAVE_EVENTS = ["pagehide", "beforeunload"] as const;
 let pageLeaveHandler: (() => void) | null = null;
@@ -332,19 +333,29 @@ export function formatReject(error: unknown): string {
  * closes the duplex socket in about 100ms. Retry that collapse. A real end
  * (`idle`, `done`, `end`) returns immediately. Four quick closes is a real failure
  * (wrong host, proxy drop), not a successful session.
+ *
+ * Time collapse from after `open()` returns — getUserMedia / Assist cancel
+ * must not eat the 800ms window or the overlay flashes Listening then gone.
  */
+export function isQuickDuplexCollapse(reason: string, elapsedMs: number): boolean {
+  return reason === "closed" && elapsedMs < QUICK_CLOSE_MS;
+}
+
 async function runDuplex(open: () => Promise<VoiceSession>): Promise<void> {
   let last: unknown;
   for (let attempt = 0; attempt < 4; attempt += 1) {
-    const started = Date.now();
     try {
       const session = await open();
+      const started = Date.now();
       const reason = await new Promise<string>((resolve) => {
         session.onEnd((endReason) => resolve(endReason));
+        if (session.isEnded) {
+          return;
+        }
         void session.start();
       });
       const elapsed = Date.now() - started;
-      const collapsed = reason === "closed" && elapsed < QUICK_CLOSE_MS;
+      const collapsed = isQuickDuplexCollapse(reason, elapsed);
       if (!collapsed) {
         return;
       }

@@ -44,6 +44,10 @@ export class VoiceSession {
     private readonly socketFactory: () => WebSocketLike,
   ) {}
 
+  get isEnded(): boolean {
+    return this.ended;
+  }
+
   onEnd(handler: (reason: string) => void): void {
     this.endHandlers.push(handler);
     if (this.ended) {
@@ -52,6 +56,9 @@ export class VoiceSession {
   }
 
   async start(): Promise<void> {
+    if (this.ended || this.hangingUp) {
+      return;
+    }
     this.captureActive = true;
     if (!this.socket) {
       this.socket = this.socketFactory();
