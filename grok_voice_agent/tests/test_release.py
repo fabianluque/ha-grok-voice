@@ -159,6 +159,15 @@ def test_ship_workflows_and_readme():
     assert "**patch**" in readme
     assert "Fixes #N" in readme
     assert "ghcr.io/fabianluque/grok-voice-agent" in readme
+    assert "actions/workflows/ci.yml/badge.svg" in readme
+    assert "actions/workflows/release.yml/badge.svg" in readme
+    docs = (ROOT / "grok_voice_agent" / "DOCS.md").read_text(encoding="utf-8")
+    for text in (readme, docs):
+        lowered = text.lower()
+        assert "must be public" not in lowered
+        assert "does not appear" not in lowered
+        assert "private clone" not in lowered
+        assert "repo must be public" not in lowered
     subprocess.run(
         ["bash", "-n", str(ROOT / ".github" / "scripts" / "prepare-release.sh")],
         check=True,

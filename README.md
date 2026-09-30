@@ -1,44 +1,60 @@
 # Grok Voice Agent
 
-A Home Assistant add-on for **full-duplex** voice with [xAI Grok Voice](https://docs.x.ai/). Speak naturally from a browser or a Kiosk Satellite tablet: Grok hears you while it talks, runs Assist tools (lights, music, lists, and more) through your local Home Assistant, and hangs up when you are done.
+[![CI](https://github.com/fabianluque/ha-grok-voice/actions/workflows/ci.yml/badge.svg)](https://github.com/fabianluque/ha-grok-voice/actions/workflows/ci.yml)
+[![Release](https://github.com/fabianluque/ha-grok-voice/actions/workflows/release.yml/badge.svg)](https://github.com/fabianluque/ha-grok-voice/actions/workflows/release.yml)
+[![Latest release](https://img.shields.io/github/v/release/fabianluque/ha-grok-voice)](https://github.com/fabianluque/ha-grok-voice/releases/latest)
 
-The xAI API key stays in the add-on. It is never sent to the tablet or pasted into the browser UI.
+A Home Assistant add-on for **full-duplex** voice with [xAI Grok Voice](https://docs.x.ai/). Speak naturally from a browser or a Kiosk Satellite tablet. Grok hears you while it talks, runs Assist tools on your local Home Assistant, and hangs up when you are done.
 
-## What you need
+Your xAI API key stays in the add-on. It is never sent to the tablet or pasted into the browser UI.
 
-- **Home Assistant OS** or **Supervised** (this is an add-on, not a standalone integration)
-- An [xAI API key](https://console.x.ai/) with access to Grok Voice (`grok-voice-think-fast-2.0`)
+## What it is
+
+Grok Voice Agent is an **add-on**, not a standalone integration. Install it from this GitHub repository in the Home Assistant Add-on store. After it starts, you can:
+
+- Talk from **Open Web UI** (the add-on page or the **Grok Voice** sidebar)
+- Wake a **Kiosk Satellite** tablet and talk in that room
+- Control lights, music, lists, and more through Home Assistant’s local MCP server
+
+## Requirements
+
+- **Home Assistant OS** or **Supervised** (add-ons are not available on Container or Core)
+- An [xAI API key](https://console.x.ai/) with Grok Voice (`grok-voice-think-fast-2.0`)
+- The official **Model Context Protocol Server** integration, with the entities Assist may control
 - Optional: **Kiosk Satellite** if you want wake-word tablets
 - Optional: [Music Assistant](https://www.music-assistant.io/), todo / shopping lists, and Mealie if you want those tools on a blank allowlist
 
-The GitHub repository must be **public**. The add-on store does not log into GitHub.
+## Install the repository
 
-## Install
-
-1. In Home Assistant: **Settings → Add-ons → Add-on store → ⋮ → Repositories**.
-2. Add `https://github.com/fabianluque/ha-grok-voice` and save.
-3. Open **Grok Voice Agent** and install it. Home Assistant builds the image from this repo.
-4. Open the add-on **Configuration** tab and save your options (below).
-5. Install the official **Model Context Protocol Server** integration and expose the entities Assist may control.
-6. Start the add-on.
+1. In Home Assistant, open **Settings → Add-ons → Add-on store**.
+2. Open the **⋮** menu and choose **Repositories**.
+3. Add `https://github.com/fabianluque/ha-grok-voice` and save.
+4. Find **Grok Voice Agent** on the store page and install it. Home Assistant builds the image from this repo (the first install can take a few minutes).
+5. Open the add-on **Configuration** tab and save your options (next section).
+6. Install **Model Context Protocol Server** if you have not already, and expose the entities Assist may control.
+7. Start the add-on.
 
 Leave **Home Assistant MCP URL** and **Long-lived token** blank. The add-on uses `http://supervisor/core/api/mcp` with the Supervisor token. Paste a long-lived token only if the log shows MCP HTTP 401. Startup should log `mcp_auth=supervisor`.
 
 ## Configure
 
+You only need the API key to talk. Everything else is optional.
+
 | Option | What to set |
 | --- | --- |
 | **xAI API key** | Required. Create one at [console.x.ai](https://console.x.ai/). |
-| **Home location** | Optional city, region, or ZIP (for example `Austin, TX`). Injected into every session so Grok can talk about weather and nearby events. **Leave blank** until you fill it in. |
+| **Home location** | Optional city, region, or ZIP (for example `Austin, TX`). Injected into every session so Grok can talk about weather and nearby events. Leave blank until you fill it in. |
 | **Default area** | Optional Home Assistant area name used when a kiosk did not send a room (Open Web UI, or lookup failed). Leave blank unless you want a fallback room. |
-| **Instructions** | Spoken persona. The shipped default is a short house voice: hang up after a successful home command or a goodbye; after a question it answers and then listens. Edit freely; do not put secrets here. |
+| **Instructions** | Spoken persona. The shipped default hangs up after a successful home command or a goodbye. After a question it answers, may offer more once, then waits. Edit freely. Do not put secrets here. |
 | **Idle timeout** | Seconds of silence after Grok finishes before the session ends (default **30**). |
 
 A blank **MCP tool allowlist** attaches lights, live context, media / Music Assistant, todo lists, and Mealie. Set `*` to offer every MCP tool. Details are in [`grok_voice_agent/DOCS.md`](grok_voice_agent/DOCS.md).
 
 Secrets belong only in add-on options (`xai_api_key`, optional long-lived token). Do not put keys in the dashboard inject, git, or `.env` files.
 
-## Try it (Open Web UI)
+## Open Web UI
+
+The fastest first-run path:
 
 1. Stay signed in to Home Assistant.
 2. Open the add-on and choose **Open Web UI**, or use **Grok Voice** in the sidebar.
@@ -65,33 +81,35 @@ On a tablet that already runs Kiosk Satellite with wake word enabled:
 
 If `homeassistant.local` does not resolve on that tablet, use your Home Assistant LAN IP instead (`http://<HA-LAN>:8080/grok-voice.js`), or set `window.GROK_VOICE_SCRIPT` / `window.GROK_VOICE_URL` before the tag.
 
-3. Reload the kiosk. Later add-on updates refresh `grok-voice.js`; you do not paste the full client into Remote Admin again.
+3. Reload the kiosk. Later add-on updates refresh `grok-voice.js`. You do not paste the full client into Remote Admin again.
 
 Each kiosk session is scoped to **that tablet’s Home Assistant area**, so “turn on the lights” or “play music” targets this room. Override with `window.GROK_VOICE_AREA` / `GROK_VOICE_AREA_ID` only if lookup is wrong.
 
 Setup, CORS, overlay, and area resolution are in [DOCS.md — Kiosk Satellite](grok_voice_agent/DOCS.md#kiosk-satellite).
 
-## Hang-up and duplex
+## Hang-up
 
-The microphone stays open while Grok is speaking, so you can talk over a reply (barge-in). The session **hangs up** after:
+The microphone stays open while Grok is speaking, so you can talk over a reply (barge-in).
 
-- a successful **home device or in-home media** action (lights, garage, locks, climate, covers, play/pause/volume),
-- **thank you** / **goodbye** / **that’s all** (and similar closers),
-- a tap on the kiosk conversation overlay,
-- or **idle** silence once Grok has finished (default 30 seconds).
+The session **hangs up** after:
 
-After a question, Grok gives a **short first answer**, may ask **one** brief offer of more (“Want his term?”), then **stops and waits**. It must not keep talking and answer that offer itself, and it does not hang up just because it finished a Q&A turn.
+- a successful **home device or in-home media** action (lights, garage, locks, climate, covers, play/pause/volume)
+- **thank you** / **goodbye** / **that’s all** (and similar closers)
+- a tap on the kiosk conversation overlay
+- **idle** silence once Grok has finished (default 30 seconds)
+
+Questions stay open. After sports, news, trivia, or other Q&A, Grok gives a **short first answer**, may ask **one** brief offer of more (“Want his term?”), then **stops and waits**. It must not keep talking and answer that offer itself. It does not hang up just because it finished a Q&A turn.
 
 ## Troubleshooting
 
-| Symptom | Where to look |
+| Symptom | What to try |
 | --- | --- |
-| Add-on does not appear in the store | Repo must be public; you added the GitHub URL under Repositories. |
+| Store page is empty after you add the repository | Refresh the Add-on store. Confirm the URL is `https://github.com/fabianluque/ha-grok-voice`. |
 | Mic blocked in the browser | Use Open Web UI over HTTPS, or see [LAN debug notes](grok_voice_agent/DOCS.md#lan-debug-port-8080). |
 | MCP HTTP 401 | Startup log should say `mcp_auth=supervisor`. Paste a long-lived token only as a fallback. |
-| Kiosk never starts Grok | Wake word must stay enabled; inject must load `http://<HA-LAN>:8080/grok-voice.js`; tablet must reach port 8080. |
+| Kiosk never starts Grok | Wake word must stay enabled. The inject must load `http://<HA-LAN>:8080/grok-voice.js`. The tablet must reach port 8080. |
 | Lights/music hit the wrong room | Set **Default area**, or `GROK_VOICE_AREA` on that kiosk. Confirm the tablet’s HA area. |
-| Grok does not know your city | Fill in **Home location**; leave it blank on purpose if you do not want a city. |
+| Grok does not know your city | Fill in **Home location**. Leave it blank on purpose if you do not want a city. |
 
 Logs: add-on **Log** tab. Deeper behavior, MCP allowlist, and development notes: [`grok_voice_agent/DOCS.md`](grok_voice_agent/DOCS.md).
 
@@ -99,7 +117,7 @@ Logs: add-on **Log** tab. Deeper behavior, MCP allowlist, and development notes:
 
 The version Home Assistant reads is `version` in `grok_voice_agent/config.yaml`. Git tags use the same number with a `v` prefix (`1.2.3` → `v1.2.3`).
 
-After this workflow is on `main`, ship from GitHub. The workflow uses the built-in `GITHUB_TOKEN` only. Do not create an API key, and do not push the tag yourself.
+Ship from GitHub. The workflow uses the built-in `GITHUB_TOKEN` only. Do not create an API key, and do not push the tag yourself.
 
 1. Open **Actions → Release → Run workflow**.
 2. Select branch **main**.

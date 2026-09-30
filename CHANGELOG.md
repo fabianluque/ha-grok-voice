@@ -4,6 +4,10 @@ Versions match `grok_voice_agent/config.yaml`. GitHub Releases list the
 merged pull requests since the previous tag. Issues closed with `Fixes #N`
 in those pull requests are included below when GitHub reports them.
 
+## [0.2.22] - 2026-09-30
+
+- Public README for first-time Home Assistant users: clear install / configure / Open Web UI / kiosk / hang-up sections, CI and Release badges, and no private-repo “does not appear” caveats.
+
 ## [0.2.21] - 2026-09-30
 
 - Stream overlay Grok and You: text **letter by letter** with a short slide/fade instead of dumping whole token chunks. A typewriter buffer drains new characters as they arrive and catches up when the stream ends so the line does not lag seconds behind TTS.

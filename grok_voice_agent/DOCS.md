@@ -8,8 +8,6 @@ This page is the detailed companion to the [root README](../README.md). Start th
 
 Home Assistant clones this GitHub URL as a store repository. The repo root has `repository.yaml`; the add-on itself is the `grok_voice_agent/` folder (`config.yaml`, `Dockerfile`, …).
 
-The GitHub repository must be **public**. The add-on store does not log into GitHub, so a private clone will not show **Grok Voice Agent**.
-
 1. In Home Assistant: **Settings → Add-ons → Add-on store → ⋮ → Repositories**.
 2. Add `https://github.com/fabianluque/ha-grok-voice` and save.
 3. On the store page, open **Grok Voice Agent** and install it. Home Assistant builds the image locally from the Dockerfile.
