@@ -8,6 +8,7 @@ function fakeHost(options: {
   hassUrl?: string;
   explicit?: string;
   debugPort?: number | string;
+  lanHost?: string;
   alreadyBooted?: boolean;
 }): { page: BootWindow; scripts: Array<{ src: string; async: boolean; dataset: { grokVoice?: string } }> } {
   const scripts: Array<{ src: string; async: boolean; dataset: { grokVoice?: string } }> = [];
@@ -18,6 +19,7 @@ function fakeHost(options: {
   const page: BootWindow = {
     GROK_VOICE_SCRIPT: options.explicit,
     GROK_VOICE_DEBUG_PORT: options.debugPort,
+    GROK_VOICE_DUPLEX_LAN_HOST: options.lanHost,
     __grokVoiceBoot: options.alreadyBooted,
     location: { protocol: options.protocol ?? "http:", host: options.host ?? "127.0.0.1:2325" },
     document: {
@@ -29,6 +31,12 @@ function fakeHost(options: {
           return scripts[0] ?? null;
         }
         return null;
+      },
+      querySelectorAll(selectors: string) {
+        if (selectors.includes("script")) {
+          return scripts;
+        }
+        return [];
       },
       createElement(tagName: string) {
         if (tagName !== "script") {
@@ -75,6 +83,12 @@ describe("kiosk bootstrap", () => {
     expect(bootKioskClient(custom.page)).toBe("http://192.168.1.10:8080/grok-voice.js?dev=1");
     const port = fakeHost({ hassUrl: "http://192.168.1.10:8123", debugPort: 9099 });
     expect(kioskClientScriptUrl(port.page)).toBe("http://192.168.1.10:9099/grok-voice.js");
+  });
+
+  it("loads grok-voice.js from GROK_VOICE_DUPLEX_LAN_HOST when hass is loopback", () => {
+    const { page, scripts } = fakeHost({ lanHost: "192.168.86.38" });
+    expect(bootKioskClient(page)).toBe("http://192.168.86.38:8080/grok-voice.js");
+    expect(scripts[0]?.src).toBe("http://192.168.86.38:8080/grok-voice.js");
   });
 
   it("does not inject twice when a client script tag is already on the page", () => {

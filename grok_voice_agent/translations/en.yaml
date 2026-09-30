@@ -38,6 +38,9 @@ configuration:
   default_area_id:
     name: Default area ID
     description: Optional Home Assistant area_id slug (for example kitchen). Leave blank to derive it from the area name. Set this if Assist needs the id and the name slug is wrong.
+  duplex_lan_host:
+    name: Duplex LAN host
+    description: Home Assistant LAN IP for Kiosk Satellite tablets that cannot resolve mDNS (for example 192.168.86.38). Used as the duplex WebSocket host when discovery only finds loopback or homeassistant.local. Leave blank to keep automatic discovery.
   home_location:
     name: Home location
     description: City, region, or ZIP (for example Austin, TX). Injected into every Grok session so it can answer where you live, what's nearby, and weather here. Leave blank if unset — Grok will not know the city.

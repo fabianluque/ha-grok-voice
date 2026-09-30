@@ -4,6 +4,10 @@ Versions match `grok_voice_agent/config.yaml`. GitHub Releases list the
 merged pull requests since the previous tag. Issues closed with `Fixes #N`
 in those pull requests are included below when GitHub reports them.
 
+## [0.2.24] - 2026-09-30
+
+- Add add-on option **Duplex LAN host** (`duplex_lan_host`) so Kiosk Satellite tablets can open duplex on a Home Assistant LAN IP (for example `192.168.86.38`) instead of falling through to `homeassistant.local`. Fire tablets often fail that mDNS name (`ERR_NAME_NOT_RESOLVED`). Leave the option blank to keep automatic discovery (HA connection host, ingress, script origin). The value is served at `/kiosk-config` and injected into `grok-voice.js` / `kiosk-boot.js`. Hang-up, Q&A, overlay streaming, and Listening-on-wake are unchanged.
+
 ## [0.2.23] - 2026-09-30
 
 - Fix the attic kiosk wake race after snappy Listening-on-wake: native Assist `vs_cancel` could close the first duplex (and its AudioContext) while `getUserMedia` was still in flight, so the mic graph was built on a closed context (`MediaStreamAudioSourceNode` / `ScriptProcessor` / `Gain` / “Connecting nodes after the context has been closed”), the overlay flashed Listening then disappeared, and KS re-armed without a live session. Ensure a fresh open AudioContext (or resume) before attaching the mic graph; abort instead of connecting after close; retry a duplex that dies during open without dismissing the overlay. Listening still paints immediately. Hang-up and Q&A policy are unchanged. A first-boot area fallback no longer blocks a later Home Assistant attic/area lookup.

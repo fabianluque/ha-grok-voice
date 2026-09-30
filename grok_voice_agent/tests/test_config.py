@@ -78,8 +78,29 @@ def test_home_location_and_memory_ttl_defaults(tmp_path, monkeypatch):
     monkeypatch.setenv("SUPERVISOR_TOKEN", "addon-token")
     settings = load_settings(_options(tmp_path, {}), env_dirs=())
     assert settings.home_location == ""
+    assert settings.duplex_lan_host == ""
     assert settings.conversation_memory_ttl_seconds == 480
     assert settings.idle_timeout_seconds == 30
+
+
+def test_duplex_lan_host_is_blank_and_accepts_a_lan_ip(tmp_path, monkeypatch):
+    from app.config import clean_duplex_lan_host
+
+    monkeypatch.setenv("SUPERVISOR_TOKEN", "addon-token")
+    settings = load_settings(_options(tmp_path, {}), env_dirs=())
+    assert settings.duplex_lan_host == ""
+    custom = load_settings(
+        _options(tmp_path, {"duplex_lan_host": " 192.168.86.38 "}),
+        env_dirs=(),
+    )
+    assert custom.duplex_lan_host == "192.168.86.38"
+    from_url = load_settings(
+        _options(tmp_path, {"duplex_lan_host": "http://192.168.86.38:8123/"}),
+        env_dirs=(),
+    )
+    assert from_url.duplex_lan_host == "192.168.86.38"
+    assert clean_duplex_lan_host("") == ""
+    assert clean_duplex_lan_host("homeassistant.local") == "homeassistant.local"
 
 
 def test_missing_addon_token_stays_empty(tmp_path, monkeypatch):

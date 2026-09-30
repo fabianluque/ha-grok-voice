@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
 from app.memory import DEFAULT_TTL_SECONDS, clamp_memory_ttl
 
@@ -70,11 +71,31 @@ class Settings:
     ha_api_url: str
     default_area: str = ""
     default_area_id: str = ""
+    duplex_lan_host: str = ""
     home_location: str = ""
     conversation_memory_ttl_seconds: int = DEFAULT_TTL_SECONDS
     ingress_port: int = 8099
     debug_port: int = 8080
     mcp_token_source: str = "missing"
+
+
+def clean_duplex_lan_host(value: object) -> str:
+    """Hostname or IP for the kiosk duplex debug port. URLs are reduced to host."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = urlparse(raw if "://" in raw else f"http://{raw}")
+        host = (parsed.hostname or "").strip()
+        if host:
+            return host
+    except ValueError:
+        pass
+    no_path = raw.split("/")[0].strip()
+    no_brackets = no_path.replace("[", "").replace("]", "")
+    if no_brackets.count(":") == 1:
+        return no_brackets.split(":", 1)[0].strip()
+    return no_brackets.strip()
 
 
 def parse_allowlist(raw: str | None) -> frozenset[str]:
@@ -152,6 +173,7 @@ def load_settings(
         ha_api_url=HOME_ASSISTANT_API_URL,
         default_area=str(options.get("default_area") or "").strip(),
         default_area_id=str(options.get("default_area_id") or "").strip(),
+        duplex_lan_host=clean_duplex_lan_host(options.get("duplex_lan_host")),
         home_location=str(options.get("home_location") or "").strip(),
         conversation_memory_ttl_seconds=clamp_memory_ttl(
             options.get("conversation_memory_ttl_seconds"),

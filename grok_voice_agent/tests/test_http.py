@@ -10,7 +10,16 @@ from websockets.datastructures import Headers
 from websockets.http11 import Request
 
 from app.server import drop_empty_content_length, voice_serve
-from app.static import FALLBACK_HTML, KIOSK_CLIENT_PATH, etag_for, http_file_response, process_http_request
+from app.static import (
+    FALLBACK_HTML,
+    KIOSK_CLIENT_PATH,
+    KIOSK_CONFIG_PATH,
+    etag_for,
+    http_file_response,
+    kiosk_bootstrap_prefix,
+    kiosk_config_payload,
+    process_http_request,
+)
 
 
 def _request(path: str, upgrade: str | None = None) -> Request:
@@ -265,3 +274,34 @@ def test_packaged_www_serves_the_kiosk_client():
     boot_served = http_file_response("/kiosk-boot.js", root)
     assert boot_served.status_code == 200
     assert b"grok-voice.js" in boot_served.body
+
+
+def test_kiosk_config_endpoint_exposes_duplex_lan_host():
+    empty = process_http_request(_request(KIOSK_CONFIG_PATH))
+    assert empty is not None
+    assert empty.status_code == 200
+    assert empty.headers["Content-Type"].startswith("application/json")
+    assert empty.headers["Access-Control-Allow-Origin"] == "*"
+    assert empty.body == b'{"duplex_lan_host":""}'
+    assert kiosk_config_payload("") == {"duplex_lan_host": ""}
+    filled = process_http_request(_request("/kiosk-config"), duplex_lan_host="192.168.86.38")
+    assert filled is not None
+    assert filled.body == b'{"duplex_lan_host":"192.168.86.38"}'
+    assert process_http_request(_request("/kiosk-config/"), duplex_lan_host="192.168.86.38").body == filled.body
+
+
+def test_kiosk_js_injects_duplex_lan_host_without_overwriting_an_inject_override(tmp_path: Path):
+    (tmp_path / "grok-voice.js").write_text("window.GrokVoice = true;", encoding="utf-8")
+    (tmp_path / "kiosk-boot.js").write_text("window.GrokVoiceBoot = true;", encoding="utf-8")
+    assert kiosk_bootstrap_prefix("") == b""
+    prefix = kiosk_bootstrap_prefix("192.168.86.38")
+    assert b"GROK_VOICE_DUPLEX_LAN_HOST" in prefix
+    assert b"192.168.86.38" in prefix
+    served = http_file_response("/grok-voice.js", tmp_path, duplex_lan_host="192.168.86.38")
+    assert served.status_code == 200
+    assert served.body.startswith(prefix)
+    assert b"window.GrokVoice = true;" in served.body
+    boot = http_file_response("/kiosk-boot.js", tmp_path, duplex_lan_host="192.168.86.38")
+    assert boot.body.startswith(prefix)
+    blank = http_file_response("/grok-voice.js", tmp_path)
+    assert blank.body == b"window.GrokVoice = true;"
