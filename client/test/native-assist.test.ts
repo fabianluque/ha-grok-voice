@@ -3,6 +3,7 @@ import {
   cancelNativeAssist,
   cancelServiceForDevice,
   esphomeNodeSlug,
+  matchDeviceId,
   nodeFromKioskEntityId,
   vsCancelCandidatesFromDeviceName,
 } from "../src/native-assist";
@@ -62,6 +63,50 @@ describe("native assist cancel target", () => {
       "ks_attic_dashboard_vs_cancel",
     );
     expect(cancelServiceForDevice("Attic Dashboard", [attic, dining], [], { ks_dining_room_vs_cancel: {} })).toBeNull();
+  });
+
+  it("matches a Dashboard kiosk name to HA name_by_user, name, or the room name", () => {
+    expect(
+      matchDeviceId(
+        [
+          { id: "dining", name: "Kiosk Satellite", name_by_user: "Dining Room Dashboard" },
+          { id: "attic", name: "Attic Dashboard" },
+        ],
+        "Dining Room Dashboard",
+      ),
+    ).toBe("dining");
+    expect(
+      matchDeviceId(
+        [
+          { id: "dining", name: "Dining Room Dashboard", name_by_user: "Dining Room" },
+          { id: "attic", name: "Attic Dashboard" },
+        ],
+        "Dining Room Dashboard",
+      ),
+    ).toBe("dining");
+    expect(matchDeviceId([attic, dining], "Dining Room Dashboard")).toBe("dining");
+  });
+
+  it("matches via this kiosk's button entity when the HA device name differs", () => {
+    expect(
+      matchDeviceId(
+        [
+          { id: "dining", name: "Fire tablet" },
+          { id: "attic", name: "Attic Dashboard" },
+        ],
+        "Dining Room Dashboard",
+        [
+          { entity_id: "button.ks_dining_room_dashboard_reload", device_id: "dining", platform: "esphome" },
+          { entity_id: "button.ks_attic_dashboard_reload", device_id: "attic", platform: "esphome" },
+        ],
+      ),
+    ).toBe("dining");
+  });
+
+  it("cancels native Assist for a Dashboard kiosk whose HA device uses the room name", () => {
+    expect(cancelServiceForDevice("Dining Room Dashboard", [attic, dining], entities, services)).toBe(
+      "ks_dining_room_vs_cancel",
+    );
   });
 
   it("calls only the resolved service", async () => {

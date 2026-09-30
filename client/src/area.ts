@@ -100,7 +100,7 @@ export function areaFromRegistries(input: {
   if (!deviceName) {
     return null;
   }
-  const deviceId = matchDeviceId(input.devices, deviceName);
+  const deviceId = matchDeviceId(input.devices, deviceName, input.entities);
   if (!deviceId) {
     return null;
   }
@@ -173,7 +173,8 @@ export async function resolveKioskArea(input: {
     return fromKiosk;
   }
 
-  const deviceName = info && typeof info === "object" ? trimString((info as { name?: unknown }).name) : "";
+  const fromInfo = info && typeof info === "object" ? trimString((info as { name?: unknown }).name) : "";
+  const deviceName = fromInfo || trimString(peekCachedKioskDevice()?.name);
   if (deviceName && input.hass) {
     try {
       const fromHa = await areaFromHomeAssistant(input.hass, deviceName);
@@ -194,6 +195,7 @@ function fallbackArea(name?: string): KioskArea {
 
 let areaCache: KioskArea | null = null;
 let areaPrefetch: Promise<KioskArea> | null = null;
+let areaPrefetchHasHass = false;
 let deviceCache: KioskDevice | null = null;
 let generatedDeviceId: string | null = null;
 
@@ -201,6 +203,7 @@ let generatedDeviceId: string | null = null;
 export function resetKioskAreaCache(storage?: Storage | null): void {
   areaCache = null;
   areaPrefetch = null;
+  areaPrefetchHasHass = false;
   deviceCache = null;
   generatedDeviceId = null;
   const store = storage === undefined ? defaultStorage() : storage;
@@ -216,13 +219,17 @@ export function peekCachedKioskArea(): KioskArea | null {
 }
 
 export function rememberKioskArea(area: KioskArea): KioskArea {
+  // A slower hass-less prefetch must not clobber a later HA hit.
+  if (area.source === "fallback" && areaCache && areaCache.source !== "fallback") {
+    return areaCache;
+  }
   areaCache = area;
   return area;
 }
 
 /**
- * Area to send on duplex auth. Must not await Home Assistant — that lookup
- * is what made listen-start feel 1–2s late after 0.2.6.
+ * Area for wake visuals / overlay. Must not await Home Assistant — that
+ * lookup is what made listen-start feel 1–2s late after 0.2.6.
  */
 export function immediateKioskArea(input: {
   explicit?: { area?: string; areaId?: string } | null;
@@ -232,28 +239,59 @@ export function immediateKioskArea(input: {
   return areaFromExplicit(input.explicit) ?? input.cached ?? fallbackArea(input.fallbackName);
 }
 
-/** Resolve and cache the kiosk area in the background (inject boot, not wake). */
-export function prefetchKioskArea(input: {
+type AreaResolveInput = {
   kiosk?: { getDeviceInfo?: () => Promise<unknown> } | null;
   hass?: NativeAssistHass | null;
   explicit?: { area?: string; areaId?: string } | null;
   fallbackName?: string;
-}): Promise<KioskArea> {
+};
+
+function hassWsReady(hass?: NativeAssistHass | null): boolean {
+  return typeof hass?.callWS === "function";
+}
+
+/** Resolve and cache the kiosk area in the background (inject boot, not wake). */
+export function prefetchKioskArea(input: AreaResolveInput): Promise<KioskArea> {
   // A first-boot fallback must not lock the attic (or any kiosk) out of a
   // later HA registry lookup once hass/callWS is actually available.
   if (areaCache && areaCache.source !== "fallback") {
     return Promise.resolve(areaCache);
   }
-  if (areaPrefetch) {
+  const hasHass = hassWsReady(input.hass);
+  if (areaPrefetch && (areaPrefetchHasHass || !hasHass)) {
     return areaPrefetch;
   }
-  areaPrefetch = resolveKioskArea(input)
+  areaPrefetchHasHass = hasHass;
+  const pending = resolveKioskArea(input)
     .then((area) => rememberKioskArea(area))
     .catch(() => rememberKioskArea(areaCache ?? fallbackArea(input.fallbackName)))
     .finally(() => {
-      areaPrefetch = null;
+      if (areaPrefetch === pending) {
+        areaPrefetch = null;
+        areaPrefetchHasHass = false;
+      }
     });
-  return areaPrefetch;
+  areaPrefetch = pending;
+  return pending;
+}
+
+/**
+ * Area to send on duplex auth. Listening is already painted; a short wait
+ * for HA registries once `callWS` is ready does not delay wake visuals.
+ */
+export async function sessionKioskArea(input: AreaResolveInput): Promise<KioskArea> {
+  const explicit = areaFromExplicit(input.explicit);
+  if (explicit) {
+    return rememberKioskArea(explicit);
+  }
+  const cached = peekCachedKioskArea();
+  if (cached && cached.source !== "fallback") {
+    return cached;
+  }
+  if (!hassWsReady(input.hass)) {
+    return cached ?? fallbackArea(input.fallbackName);
+  }
+  return prefetchKioskArea(input);
 }
 
 export function describeArea(area: KioskArea): string {

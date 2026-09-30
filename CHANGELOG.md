@@ -4,6 +4,10 @@ Versions match `grok_voice_agent/config.yaml`. GitHub Releases list the
 merged pull requests since the previous tag. Issues closed with `Fixes #N`
 in those pull requests are included below when GitHub reports them.
 
+## [0.2.25] - 2026-09-30
+
+- Auto-pick this kiosk's Home Assistant area when Kiosk Satellite does not expose area fields. Duplex auth no longer sticks on `Area (none) source=fallback` for a tablet whose HA device already has an area (Dining Room on "Dining Room Dashboard"): match `name_by_user` and `name` (including `{Room} Dashboard` vs `{Room}`), then unique ESPHome / `assist_satellite` ids, and wait briefly for registries on the session path once `callWS` is ready. Listening-on-wake, hang-up, Q&A, `duplex_lan_host`, and overlay streaming are unchanged. No per-tablet inject or global `default_area` required when the HA device has an area.
+
 ## [0.2.24] - 2026-09-30
 
 - Add add-on option **Duplex LAN host** (`duplex_lan_host`) so Kiosk Satellite tablets can open duplex on a Home Assistant LAN IP (for example `192.168.86.38`) instead of falling through to `homeassistant.local`. Fire tablets often fail that mDNS name (`ERR_NAME_NOT_RESOLVED`). Leave the option blank to keep automatic discovery (HA connection host, ingress, script origin). The value is served at `/kiosk-config` and injected into `grok-voice.js` / `kiosk-boot.js`. Hang-up, Q&A, overlay streaming, and Listening-on-wake are unchanged.

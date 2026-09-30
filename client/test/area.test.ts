@@ -13,6 +13,7 @@ import {
   prefetchKioskArea,
   resetKioskAreaCache,
   resolveKioskArea,
+  sessionKioskArea,
 } from "../src/area";
 
 describe("kiosk area", () => {
@@ -60,6 +61,50 @@ describe("kiosk area", () => {
         { area_id: "attic", name: "Attic" },
         { area_id: "dining_room", name: "Dining Room" },
       ],
+    });
+    expect(area).toEqual({ id: "dining_room", name: "Dining Room", source: "ha" });
+  });
+
+  it("matches a Dashboard-named kiosk to HA name_by_user or a shorter registry name", () => {
+    const areas = [
+      { area_id: "attic", name: "Attic" },
+      { area_id: "dining_room", name: "Dining Room" },
+    ];
+    const renamed = areaFromRegistries({
+      deviceName: "Dining Room Dashboard",
+      devices: [
+        { id: "dining", name: "Kiosk Satellite", name_by_user: "Dining Room Dashboard", area_id: "dining_room" },
+        { id: "attic", name: "Attic Dashboard", area_id: "attic" },
+      ],
+      entities: [],
+      areas,
+    });
+    expect(renamed).toEqual({ id: "dining_room", name: "Dining Room", source: "ha" });
+
+    const roomName = areaFromRegistries({
+      deviceName: "Dining Room Dashboard",
+      devices: [
+        { id: "dining", name: "Dining Room Dashboard", name_by_user: "Dining Room", area_id: "dining_room" },
+        { id: "attic", name: "Attic Dashboard", area_id: "attic" },
+      ],
+      entities: [{ entity_id: "button.ks_dining_room_reload", device_id: "dining" }],
+      areas,
+    });
+    expect(roomName).toEqual({ id: "dining_room", name: "Dining Room", source: "ha" });
+  });
+
+  it("uses the satellite entity area when the matched kiosk device has none", () => {
+    const area = areaFromRegistries({
+      deviceName: "Dining Room Dashboard",
+      devices: [{ id: "dining", name: "Dining Room Dashboard" }, { id: "attic", name: "Attic Dashboard" }],
+      entities: [
+        {
+          entity_id: "assist_satellite.dining_room_dashboard",
+          device_id: "dining",
+          area_id: "dining_room",
+        },
+      ],
+      areas: [{ area_id: "dining_room", name: "Dining Room" }],
     });
     expect(area).toEqual({ id: "dining_room", name: "Dining Room", source: "ha" });
   });
@@ -219,5 +264,65 @@ describe("kiosk area", () => {
     });
     expect(resolved).toEqual({ id: "attic", name: "Attic", source: "ha" });
     expect(immediateKioskArea({ cached: peekCachedKioskArea() })).toEqual(resolved);
+  });
+
+  function diningHassCallWS(message: unknown): unknown[] {
+    const type = (message as { type?: string }).type;
+    if (type === "config/device_registry/list") {
+      return [
+        { id: "dining", name: "Kiosk Satellite", name_by_user: "Dining Room", area_id: "dining_room" },
+        { id: "attic", name: "Attic Dashboard", area_id: "attic" },
+      ];
+    }
+    if (type === "config/entity_registry/list") {
+      return [
+        { entity_id: "button.ks_dining_room_reload", device_id: "dining" },
+        { entity_id: "assist_satellite.dining_room_dashboard", device_id: "dining" },
+      ];
+    }
+    if (type === "config/area_registry/list") {
+      return [
+        { area_id: "attic", name: "Attic" },
+        { area_id: "dining_room", name: "Dining Room" },
+      ];
+    }
+    return [];
+  }
+
+  it("sends the HA dining area on the session path for a Dashboard-named kiosk", async () => {
+    const started = Date.now();
+    const visual = immediateKioskArea({ cached: peekCachedKioskArea() });
+    expect(Date.now() - started).toBeLessThan(20);
+    expect(visual.source).toBe("fallback");
+
+    const area = await sessionKioskArea({
+      kiosk: { getDeviceInfo: async () => ({ name: "Dining Room Dashboard" }) },
+      hass: { callWS: async (message: unknown) => diningHassCallWS(message) },
+    });
+    expect(area).toEqual({ id: "dining_room", name: "Dining Room", source: "ha" });
+    expect(immediateKioskArea({ cached: peekCachedKioskArea() })).toEqual(area);
+  });
+
+  it("does not keep a hass-less in-flight prefetch once callWS is ready", async () => {
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const first = prefetchKioskArea({
+      kiosk: {
+        getDeviceInfo: async () => {
+          await blocked;
+          return { name: "Dining Room Dashboard" };
+        },
+      },
+    });
+    const second = sessionKioskArea({
+      kiosk: { getDeviceInfo: async () => ({ name: "Dining Room Dashboard" }) },
+      hass: { callWS: async (message: unknown) => diningHassCallWS(message) },
+    });
+    release();
+    await expect(second).resolves.toEqual({ id: "dining_room", name: "Dining Room", source: "ha" });
+    await first;
+    expect(peekCachedKioskArea()).toEqual({ id: "dining_room", name: "Dining Room", source: "ha" });
   });
 });

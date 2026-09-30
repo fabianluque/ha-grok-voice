@@ -109,7 +109,7 @@ Questions stay open. After sports, news, trivia, or other Q&A, Grok gives a **sh
 | Mic blocked in the browser | Use Open Web UI over HTTPS, or see [LAN debug notes](grok_voice_agent/DOCS.md#lan-debug-port-8080). |
 | MCP HTTP 401 | Startup log should say `mcp_auth=supervisor`. Paste a long-lived token only as a fallback. |
 | Kiosk never starts Grok | Wake word must stay enabled. The inject must load `http://<HA-LAN>:8080/grok-voice.js`. The tablet must reach port 8080. If the tablet log shows `homeassistant.local` / `ERR_NAME_NOT_RESOLVED`, set **Duplex LAN host** to the HA LAN IP. |
-| Lights/music hit the wrong room | Set **Default area**, or `GROK_VOICE_AREA` on that kiosk. Confirm the tablet’s HA area. |
+| Lights/music hit the wrong room | Confirm that kiosk’s Home Assistant device has an area. `default_area` / `GROK_VOICE_AREA` only if lookup is still wrong. |
 | Grok does not know your city | Fill in **Home location**. Leave it blank on purpose if you do not want a city. |
 
 Logs: add-on **Log** tab. Deeper behavior, MCP allowlist, and development notes: [`grok_voice_agent/DOCS.md`](grok_voice_agent/DOCS.md).
