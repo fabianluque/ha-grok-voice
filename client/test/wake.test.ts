@@ -93,7 +93,7 @@ describe("kiosk wake handoff", () => {
     expect(openSession).toHaveBeenCalledOnce();
     expect(session.captureActive).toBe(true);
     await finishAndSettle(session);
-    expect(kiosk.setInteractionActive).toHaveBeenNthCalledWith(1, true, "voice");
+    expect(kiosk.setInteractionActive).toHaveBeenCalledWith(true, "voice");
     expect(kiosk.setWakeWordActive).toHaveBeenCalledWith(true);
     expect(kiosk.setInteractionActive).toHaveBeenLastCalledWith(false, "voice");
   });
@@ -234,7 +234,7 @@ describe("kiosk wake handoff", () => {
 
     expect(pipelineRun).not.toHaveBeenCalled();
     expect(kiosk.setWakeWordActive).toHaveBeenCalledWith(true);
-    expect(kiosk.setInteractionActive).toHaveBeenNthCalledWith(1, true, "voice");
+    expect(kiosk.setInteractionActive).toHaveBeenCalledWith(true, "voice");
     expect(kiosk.setInteractionActive).toHaveBeenLastCalledWith(false, "voice");
   });
 
@@ -305,7 +305,6 @@ describe("kiosk wake handoff", () => {
     expect(pipelineRun).not.toHaveBeenCalled();
     expect(openSession).toHaveBeenCalledOnce();
     expect(session.captureActive).toBe(true);
-    expect(kiosk.setInteractionActive).toHaveBeenCalledTimes(1);
     expect(kiosk.setInteractionActive).toHaveBeenCalledWith(true, "voice");
     expect(kiosk.setWakeWordActive).toHaveBeenCalledWith(false);
 
@@ -360,7 +359,7 @@ describe("kiosk wake handoff", () => {
 
     expect(openSession).toHaveBeenCalledTimes(2);
     expect(kept.captureActive).toBe(true);
-    expect(kiosk.setInteractionActive).not.toHaveBeenCalledWith(false, "voice");
+    expect(kiosk.setInteractionActive).toHaveBeenLastCalledWith(true, "voice");
     expect(warn).toHaveBeenCalledWith(
       "[Grok Voice] openSession attempt 1 failed",
       '{"code":"unknown_command","message":"Connection lost"}',
@@ -481,7 +480,7 @@ describe("kiosk wake handoff", () => {
 
     expect(openSession.mock.calls.length).toBeGreaterThan(1);
     expect(kept.captureActive).toBe(true);
-    expect(kiosk.setInteractionActive).not.toHaveBeenCalledWith(false, "voice");
+    expect(kiosk.setInteractionActive).toHaveBeenLastCalledWith(true, "voice");
     await finishAndSettle(kept);
     expect(kiosk.setInteractionActive).toHaveBeenLastCalledWith(false, "voice");
   });
@@ -568,5 +567,66 @@ describe("kiosk wake handoff", () => {
     expect(kiosk.setWakeWordActive).toHaveBeenCalledTimes(2);
     expect(log).toHaveBeenCalledWith("[Grok Voice] Re-armed native wake listening");
     log.mockRestore();
+  });
+
+  it("restores KS wake listening when the inject boots after a dashboard refresh", async () => {
+    const events = wakeTarget();
+    const kiosk: KioskApi = {
+      platform: "kiosksatellite",
+      setInteractionActive: vi.fn(async () => true),
+      setWakeWordActive: vi.fn(async () => true),
+    };
+    expect(
+      installGrokVoice({
+        kiosk,
+        events,
+        openSession: async () => {
+          throw new Error("should not open");
+        },
+      }).installed,
+    ).toBe(true);
+    await flush();
+    expect(kiosk.setWakeWordActive).toHaveBeenCalledWith(true);
+    expect(kiosk.setInteractionActive).toHaveBeenCalledWith(false, "voice");
+  });
+
+  it("hangs up an orphan duplex and re-arms KS wake on pagehide", async () => {
+    const events = wakeTarget();
+    let session!: VoiceSession;
+    const sent: string[] = [];
+    const close = vi.fn();
+    const kiosk: KioskApi = {
+      platform: "kiosksatellite",
+      setInteractionActive: vi.fn(async () => true),
+      setWakeWordActive: vi.fn(async () => true),
+    };
+    installGrokVoice({
+      kiosk,
+      events,
+      openSession: async () => {
+        session = new VoiceSession(
+          () => ({ stop() {} }),
+          () => ({
+            send(data) {
+              if (typeof data === "string") {
+                sent.push(data);
+              }
+            },
+            close,
+          }),
+        );
+        return session;
+      },
+    });
+    events.dispatchEvent(new Event(WAKE_EVENT));
+    await flush();
+    expect(session.captureActive).toBe(true);
+    events.dispatchEvent(new Event("pagehide"));
+    await flush();
+    expect(session.captureActive).toBe(false);
+    expect(close).toHaveBeenCalled();
+    expect(sent).toContain(JSON.stringify({ type: "stop", reason: "unload" }));
+    expect(kiosk.setWakeWordActive).toHaveBeenLastCalledWith(true);
+    expect(kiosk.setInteractionActive).toHaveBeenLastCalledWith(false, "voice");
   });
 });

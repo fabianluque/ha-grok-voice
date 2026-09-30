@@ -1,8 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
+  applyOverlaySpeech,
+  attachOverlayDismiss,
   finalizeTranscript,
+  isOverlayTap,
   mergeTranscript,
   overlayStyle,
+  revisesUserSnapshot,
   speakerLabel,
   statusLabel,
   upsertTranscript,
@@ -43,7 +48,8 @@ describe("kiosk status pill", () => {
   it("covers the dashboard with readable conversation type", () => {
     const css = overlayStyle();
     expect(css).toContain("#grok-voice-overlay{");
-    expect(css).toContain("inset:0");
+    expect(css).toContain("pointer-events:auto");
+    expect(css).toContain("cursor:pointer");
     expect(css).toContain("backdrop-filter:blur(22px)");
     expect(css).toContain("rgba(6,8,14,.82)");
     expect(css).toContain("clamp(18px,2.9vw,28px)");
@@ -77,6 +83,15 @@ describe("kiosk status pill", () => {
     expect(mergeTranscript("Hello?", "Hello, my name is", "replace")).toBe("Hello, my name is");
   });
 
+  it("keeps one You: line for cumulative updated snapshots even if marked final", () => {
+    const messages = upsertTranscript([], "user", "Hello", true);
+    upsertTranscript(messages, "user", "Hello, my name is", false);
+    upsertTranscript(messages, "user", "Hello, my name is Grok", false);
+    expect(messages).toEqual([{ role: "user", text: "Hello, my name is Grok", final: false }]);
+    expect(revisesUserSnapshot("Hello?", "Hello, my name is")).toBe(true);
+    expect(revisesUserSnapshot("turn on the lights", "and the fan")).toBe(false);
+  });
+
   it("starts a new user line after the previous snapshot is finalized", () => {
     const messages = upsertTranscript([], "user", "turn on the lights", false);
     finalizeTranscript(messages, "user");
@@ -85,5 +100,51 @@ describe("kiosk status pill", () => {
       { role: "user", text: "turn on the lights", final: true },
       { role: "user", text: "and the fan", final: false },
     ]);
+  });
+
+  it("does not start a new You: line on extra speech_started mid-utterance", () => {
+    const messages = upsertTranscript([], "user", "turn on", false);
+    const speech = { userSpeaking: false };
+    applyOverlaySpeech(messages, speech, "speech_started");
+    upsertTranscript(messages, "user", "turn on the", false);
+    applyOverlaySpeech(messages, speech, "speech_started");
+    upsertTranscript(messages, "user", "turn on the lights", false);
+    expect(messages).toEqual([{ role: "user", text: "turn on the lights", final: false }]);
+    applyOverlaySpeech(messages, speech, "speech_stopped");
+    expect(messages).toEqual([{ role: "user", text: "turn on the lights", final: true }]);
+    applyOverlaySpeech(messages, speech, "speech_started");
+    upsertTranscript(messages, "user", "and the fan", false);
+    expect(messages).toEqual([
+      { role: "user", text: "turn on the lights", final: true },
+      { role: "user", text: "and the fan", final: false },
+    ]);
+  });
+
+  it("treats a short pointer gesture as a dismiss tap, not a scroll", () => {
+    expect(isOverlayTap({ x: 10, y: 10, t: 0 }, { x: 12, y: 11, t: 80 })).toBe(true);
+    expect(isOverlayTap({ x: 10, y: 10, t: 0 }, { x: 10, y: 80, t: 120 })).toBe(false);
+    expect(isOverlayTap(null, { x: 10, y: 10, t: 0 })).toBe(false);
+  });
+
+  it("dismisses the overlay on a tap", () => {
+    const listeners: Record<string, Array<(event: PointerEvent) => void>> = {};
+    const root = {
+      addEventListener(type: string, listener: (event: PointerEvent) => void) {
+        (listeners[type] ??= []).push(listener);
+      },
+    };
+    const onDismiss = vi.fn();
+    attachOverlayDismiss(root, onDismiss);
+    const fire = (type: string, event: Partial<PointerEvent>) => {
+      for (const listener of listeners[type] ?? []) {
+        listener(event as PointerEvent);
+      }
+    };
+    fire("pointerdown", { isPrimary: true, clientX: 40, clientY: 40, timeStamp: 1 });
+    fire("pointerup", { isPrimary: true, clientX: 42, clientY: 41, timeStamp: 40 });
+    expect(onDismiss).toHaveBeenCalledOnce();
+    fire("pointerdown", { isPrimary: true, clientX: 40, clientY: 40, timeStamp: 100 });
+    fire("pointerup", { isPrimary: true, clientX: 40, clientY: 90, timeStamp: 180 });
+    expect(onDismiss).toHaveBeenCalledOnce();
   });
 });

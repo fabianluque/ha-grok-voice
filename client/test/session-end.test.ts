@@ -92,6 +92,16 @@ describe("session end watch", () => {
     expect(onEnd).not.toHaveBeenCalled();
   });
 
+  it("ignores a closer until the user transcript is marked final", () => {
+    const onEnd = vi.fn();
+    const watch = new SessionEndWatch({ idleMs: 60_000, onEnd });
+    watch.handle({ type: "ready" });
+    expect(
+      watch.handle({ type: "transcript", role: "user", text: "thank you" }),
+    ).toBeNull();
+    expect(onEnd).not.toHaveBeenCalled();
+  });
+
   it("idles only after the assistant is done and the user is not speaking", () => {
     vi.useFakeTimers();
     const onEnd = vi.fn();

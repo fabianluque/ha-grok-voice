@@ -16,6 +16,7 @@ const STYLE = `
   box-sizing:border-box;
   padding:clamp(18px,4vh,40px) clamp(18px,4.5vw,48px) clamp(22px,4vh,44px);
   pointer-events:auto;
+  cursor:pointer;
   background:rgba(6,8,14,.82);
   color:#f4f6fb;
   font:clamp(18px,2.9vw,28px)/1.35 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
@@ -110,6 +111,34 @@ export function mergeTranscript(current: string, incoming: string, mode: "merge"
   return current + incoming;
 }
 
+function snapshotKey(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+/** True when `incoming` is the same utterance growing or an ASR revision. */
+export function revisesUserSnapshot(current: string, incoming: string): boolean {
+  const from = snapshotKey(current);
+  const to = snapshotKey(incoming);
+  if (!from || !to) {
+    return false;
+  }
+  return to.startsWith(from) || from.startsWith(to);
+}
+
+function shouldReplaceTranscript(last: OverlayMessage, role: string, text: string): boolean {
+  if (last.role !== role) {
+    return false;
+  }
+  if (!last.final) {
+    return true;
+  }
+  return role === "user" && revisesUserSnapshot(last.text, text);
+}
+
 /** Update the in-progress line for a role, otherwise append a new bubble. */
 export function upsertTranscript(
   messages: OverlayMessage[],
@@ -118,7 +147,7 @@ export function upsertTranscript(
   final: boolean,
 ): OverlayMessage[] {
   const last = messages[messages.length - 1];
-  if (last && last.role === role && !last.final) {
+  if (last && shouldReplaceTranscript(last, role, text)) {
     last.text = mergeTranscript(last.text, text, role === "user" ? "replace" : "merge");
     last.final = final;
     if (final) {
@@ -143,14 +172,98 @@ export function finalizeTranscript(messages: OverlayMessage[], role?: string): O
   return messages;
 }
 
+export interface OverlaySpeechState {
+  userSpeaking: boolean;
+}
+
+/**
+ * Close the previous You: bubble only when a *new* utterance starts.
+ * Extra `speech_started` events mid-turn must not finalize the live snapshot,
+ * or each ASR `updated` event becomes another growing You: line.
+ */
+export function applyOverlaySpeech(
+  messages: OverlayMessage[],
+  state: OverlaySpeechState,
+  type: string,
+): OverlayMessage[] {
+  if (type === "speech_started") {
+    if (!state.userSpeaking) {
+      finalizeTranscript(messages, "user");
+    }
+    state.userSpeaking = true;
+    return messages;
+  }
+  if (type === "speech_stopped") {
+    state.userSpeaking = false;
+    finalizeTranscript(messages, "user");
+  }
+  return messages;
+}
+
 export interface KioskOverlay {
   set(status: VoiceStatus): void;
   addMessage(role: string, text: string, final?: boolean): void;
+  handleDuplex(type: string): void;
   finalize(role?: string): void;
   remove(): void;
 }
 
-export function mountKioskStatus(doc: Document): KioskOverlay {
+export const OVERLAY_TAP_SLOP_PX = 24;
+export const OVERLAY_TAP_MAX_MS = 700;
+
+export interface OverlayPointer {
+  x: number;
+  y: number;
+  t: number;
+}
+
+/** True for a tap, false for a scroll/drag across the overlay. */
+export function isOverlayTap(start: OverlayPointer | null, end: OverlayPointer): boolean {
+  if (!start) {
+    return false;
+  }
+  if (end.t - start.t > OVERLAY_TAP_MAX_MS) {
+    return false;
+  }
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  return dx * dx + dy * dy <= OVERLAY_TAP_SLOP_PX * OVERLAY_TAP_SLOP_PX;
+}
+
+export function attachOverlayDismiss(
+  root: {
+    addEventListener(type: string, listener: (event: PointerEvent) => void): void;
+  },
+  onDismiss: () => void,
+): void {
+  let start: OverlayPointer | null = null;
+  root.addEventListener("pointerdown", (event) => {
+    if (event.isPrimary === false) {
+      return;
+    }
+    start = { x: event.clientX, y: event.clientY, t: event.timeStamp };
+  });
+  root.addEventListener("pointerup", (event) => {
+    if (event.isPrimary === false) {
+      return;
+    }
+    const origin = start;
+    start = null;
+    if (!isOverlayTap(origin, { x: event.clientX, y: event.clientY, t: event.timeStamp })) {
+      return;
+    }
+    onDismiss();
+  });
+  root.addEventListener("pointercancel", () => {
+    start = null;
+  });
+}
+
+export interface MountKioskStatusOptions {
+  onDismiss?: () => void;
+}
+
+export function mountKioskStatus(doc: Document, options: MountKioskStatusOptions = {}): KioskOverlay {
   if (!doc.getElementById(STYLE_ID) && (doc.head || doc.documentElement)) {
     const style = doc.createElement("style");
     style.id = STYLE_ID;
@@ -163,6 +276,10 @@ export function mountKioskStatus(doc: Document): KioskOverlay {
   root.id = OVERLAY_ID;
   root.setAttribute("role", "status");
   root.setAttribute("aria-live", "polite");
+  root.setAttribute("aria-label", "Grok conversation. Tap to hang up.");
+  if (options.onDismiss) {
+    attachOverlayDismiss(root, options.onDismiss);
+  }
   const header = doc.createElement("div");
   header.className = "header";
   const dot = doc.createElement("span");
@@ -182,13 +299,14 @@ export function mountKioskStatus(doc: Document): KioskOverlay {
   doc.body.appendChild(root);
 
   const messages: OverlayMessage[] = [];
-  let lastLine: HTMLParagraphElement | null = null;
-  let lastIndex = -1;
+  const speech: OverlaySpeechState = { userSpeaking: false };
 
   const paintLine = (message: OverlayMessage, index: number) => {
-    if (lastLine && lastIndex === index) {
-      lastLine.dataset.final = message.final ? "true" : "false";
-      const body = lastLine.querySelector(".body");
+    const existing = log.children[index] as HTMLParagraphElement | undefined;
+    if (existing) {
+      existing.dataset.final = message.final ? "true" : "false";
+      existing.dataset.role = message.role === "user" ? "user" : "assistant";
+      const body = existing.querySelector(".body");
       if (body) {
         body.textContent = message.text;
       }
@@ -209,8 +327,6 @@ export function mountKioskStatus(doc: Document): KioskOverlay {
     line.appendChild(doc.createTextNode(" "));
     line.appendChild(body);
     log.appendChild(line);
-    lastLine = line;
-    lastIndex = index;
     log.scrollTop = log.scrollHeight;
   };
 
@@ -221,8 +337,16 @@ export function mountKioskStatus(doc: Document): KioskOverlay {
   set("listening");
   return {
     set,
-    addMessage(role: string, text: string, final = true) {
+    addMessage(role: string, text: string, final = false) {
       upsertTranscript(messages, role, text, final);
+      const index = messages.length - 1;
+      if (index < 0) {
+        return;
+      }
+      paintLine(messages[index], index);
+    },
+    handleDuplex(type: string) {
+      applyOverlaySpeech(messages, speech, type);
       const index = messages.length - 1;
       if (index < 0) {
         return;
