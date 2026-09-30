@@ -16,7 +16,7 @@ The GitHub repository must be **public**. The add-on store does not log into Git
 6. Leave the MCP URL blank. It uses `http://supervisor/core/api/mcp` with the Supervisor add-on token (`SUPERVISOR_TOKEN`). Leave the long-lived token blank too. Paste a long-lived token only if the log shows MCP HTTP 401. A blank token is not sent. The startup log should say `mcp_auth=supervisor`.
 7. Start the add-on.
 
-A blank tool allowlist is `HassTurnOn`, `HassTurnOff`, `HassLightSet`, `GetLiveContext`, and `GetDateTime`. Home Assistant 2026.9 prefixes those with the integration domain (`intent__HassTurnOn`, `intent__HassTurnOff`, `light__HassLightSet`, `homeassistant__GetLiveContext`). The blank allowlist matches the bare name and the prefixed name, and the voice-session log reports the names that were attached. Set `*` to offer every MCP tool.
+A blank tool allowlist is lights (`HassTurnOn`, `HassTurnOff`, `HassLightSet`), live context (`GetLiveContext`, `GetDateTime`, `HassGetState`), media / Music Assistant (`HassMediaSearchAndPlay`, pause/volume/next, `play_media`, and the `media_player` / `music_assistant` domains), todo / shopping lists (`HassListAddItem` and the `todo` domain), and Mealie (`mealie`). Home Assistant 2026.9 prefixes those with the integration domain (`intent__HassTurnOn`, `music_assistant__play_media`, `todo__HassListAddItem`, `mealie__get_mealplan`). The blank allowlist matches the bare name, the prefixed name, and those domains. The voice-session log reports the names that were attached. Set `*` to offer every MCP tool.
 
 After a client UI change, run `npm run build` in `client/` so `grok_voice_agent/www` is current, then update/rebuild the add-on so `/app/www` is in the image.
 
@@ -72,7 +72,9 @@ Leave Voice Satellite's wake word on. Kiosk Satellite only detects a wake word w
 
 The microphone stays open while Grok is speaking. Talking over a reply flushes playback in the browser. A later tool call or second TTS generation does **not** cut the sentence already playing; new audio waits until that reply finishes. After wake, a conversation overlay sits on the dashboard with Listening / Speaking and the user and Grok transcripts. It disappears when the session ends.
 
-Each kiosk session is scoped to **that tablet's Home Assistant area** so "turn on the lights" or "play music" targets this room, not the whole house. The add-on fills Assist `area` / `area_id` on room-scoped tools when Grok omits them, and the voice prompt says not to ask which lights.
+Each kiosk session is scoped to **that tablet's Home Assistant area** so "turn on the lights" or "play music" targets this room, not the whole house. Bare "play X" / "play music" uses Music Assistant on this area's player (the Attic HomePod Mini when the session area is Attic) and does not ask which speaker. The add-on fills Assist `area` / `area_id` (and `target.area_id` on Music Assistant `play_media`) when Grok omits them, and the voice prompt says not to ask which lights or which speaker.
+
+The kiosk **prefetches** the HA/KS area when the inject loads. After 0.2.6, wake awaited device/entity/area registry lists before `getUserMedia` and the duplex socket, which made Listening start 1–2 seconds late. Wake now uses the cached or explicit area (Attic fallback) immediately, mounts the overlay, and opens the mic and WebSocket together.
 
 Resolution order:
 

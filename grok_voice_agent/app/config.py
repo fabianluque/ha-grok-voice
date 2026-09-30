@@ -12,6 +12,30 @@ DEFAULT_ALLOWLIST = (
     "HassLightSet",
     "GetLiveContext",
     "GetDateTime",
+    "HassGetState",
+    "HassMediaPause",
+    "HassMediaUnpause",
+    "HassMediaNext",
+    "HassMediaPrevious",
+    "HassSetVolume",
+    "HassSetVolumeRelative",
+    "HassVolumeSet",
+    "HassMediaPlayerMute",
+    "HassMediaPlayerUnmute",
+    "HassMediaSearchAndPlay",
+    "play_media",
+    "HassListAddItem",
+    "HassListCompleteItem",
+    "HassListRemoveItem",
+    "HassShoppingListAddItem",
+    "HassShoppingListCompleteItem",
+    # Home Assistant 2026.9 prefixes tools as domain__name. These entries
+    # attach every MCP tool from that integration (Music Assistant, Mealie, …).
+    "media_player",
+    "music_assistant",
+    "todo",
+    "mealie",
+    "calendar",
 )
 SUPERVISOR_MCP_URL = "http://supervisor/core/api/mcp"
 # User access tokens are checked against Core on the host. This add-on sets

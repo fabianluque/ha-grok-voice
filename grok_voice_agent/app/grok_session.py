@@ -146,7 +146,14 @@ def with_area_instructions(base: str, area: dict[str, str] | None) -> str:
     extra = (
         f"You are speaking from the {name} area of this home. "
         "When the user does not name another room, you MUST control lights, music, "
-        "and other room-scoped devices in that area. Do not ask which lights or which room."
+        "and other room-scoped devices in that area. Do not ask which lights or which room. "
+        "When they ask to play music, a song, artist, album, playlist, or radio, play it "
+        "through Music Assistant on the Music Assistant player in that area "
+        "(the HomePod Mini when this area is Attic). Use HassMediaSearchAndPlay or "
+        "music_assistant play_media with this area. Do not ask which speaker. "
+        "Do not play on this tablet. "
+        "Use GetLiveContext or HassGetState for exposed sensors, including Mealie meal "
+        "plans, and todo / shopping-list tools for lists."
     )
     area_id = area.get("id")
     if area_id:
@@ -155,7 +162,7 @@ def with_area_instructions(base: str, area: dict[str, str] | None) -> str:
         )
     else:
         extra += f" Pass Home Assistant area `{name}` on those tool calls."
-    extra += " If they name a different room, use that room instead."
+    extra += " If they name a different room or speaker, use that instead."
     root = (base or "").rstrip()
     return f"{root}\n\n{extra}" if root else extra
 

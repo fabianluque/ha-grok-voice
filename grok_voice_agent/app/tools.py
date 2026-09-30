@@ -12,29 +12,52 @@ ROOM_SCOPED_TOOLS = frozenset(
         "HassTurnOn",
         "HassTurnOff",
         "HassLightSet",
+        "HassGetState",
         "HassMediaPause",
         "HassMediaUnpause",
         "HassSetVolume",
+        "HassSetVolumeRelative",
         "HassVolumeSet",
         "HassMediaNext",
         "HassMediaPrevious",
+        "HassMediaPlayerMute",
+        "HassMediaPlayerUnmute",
+        "HassMediaSearchAndPlay",
+        "play_media",
+        "play_announcement",
     }
 )
 
+# music_assistant.play_media and similar service tools take a target mapping.
+MUSIC_SERVICE_TOOLS = frozenset({"play_media", "play_announcement"})
+
 
 def apply_default_area(name: str, arguments: dict, area: dict[str, str] | None) -> dict:
-    """Fill area on room-scoped tools when the model omitted it."""
+    """Fill area on room-scoped tools when the model omitted it.
+
+    Bare "play music" / "play X" from the attic tablet must target the Attic
+    Music Assistant player (HomePod Mini), not ask which speaker.
+    """
     if not area or not isinstance(arguments, dict):
         return arguments
     if bare_tool_name(name) not in ROOM_SCOPED_TOOLS:
         return arguments
-    if arguments.get("area") or arguments.get("area_id"):
+    target = arguments.get("target")
+    already_targeted = bool(
+        arguments.get("area")
+        or arguments.get("area_id")
+        or arguments.get("entity_id")
+        or (isinstance(target, dict) and (target.get("area_id") or target.get("entity_id")))
+    )
+    if already_targeted:
         return arguments
     filled = dict(arguments)
     if area.get("name"):
         filled["area"] = area["name"]
     if area.get("id"):
         filled["area_id"] = area["id"]
+    if bare_tool_name(name) in MUSIC_SERVICE_TOOLS and area.get("id"):
+        filled["target"] = {"area_id": area["id"]}
     return filled
 
 

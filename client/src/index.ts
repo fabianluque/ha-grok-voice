@@ -1,5 +1,10 @@
+import {
+  describeArea,
+  immediateKioskArea,
+  peekCachedKioskArea,
+  prefetchKioskArea,
+} from "./area";
 import { createBrowserSession } from "./browser";
-import { describeArea, resolveKioskArea } from "./area";
 import {
   accessToken,
   authModeForUrl,
@@ -23,6 +28,15 @@ interface KioskWindow extends Window {
 
 function boot(): void {
   const kiosk = (window as KioskWindow).kioskSatellite;
+  const areaInput = () => ({
+    kiosk,
+    hass: pageHass() as NativeAssistHass | null,
+    explicit: {
+      area: (window as KioskWindow).GROK_VOICE_AREA,
+      areaId: (window as KioskWindow).GROK_VOICE_AREA_ID,
+    },
+  });
+  void prefetchKioskArea(areaInput());
   installGrokVoice({
     kiosk,
     events: window,
@@ -59,14 +73,11 @@ function boot(): void {
       console.log(describeDuplexChoice({ authority: resolved.authority, host: hostLabel, authMode }));
       const token = accessToken(hass);
       console.log(`[Grok Voice] Opening duplex ${url} auth ${authMode}`);
-      const area = await resolveKioskArea({
-        kiosk,
-        hass: hass as NativeAssistHass,
-        explicit: {
-          area: (window as KioskWindow).GROK_VOICE_AREA,
-          areaId: (window as KioskWindow).GROK_VOICE_AREA_ID,
-        },
+      const area = immediateKioskArea({
+        explicit: areaInput().explicit,
+        cached: peekCachedKioskArea(),
       });
+      void prefetchKioskArea(areaInput());
       console.log(`[Grok Voice] Area ${describeArea(area)}`);
       const status = mountKioskStatus(document);
       try {

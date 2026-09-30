@@ -132,3 +132,4 @@ def test_session_instructions_include_client_area():
     assert "attic" in text
     assert "lights" in text
     assert "music" in text
+    assert "Music Assistant" in text

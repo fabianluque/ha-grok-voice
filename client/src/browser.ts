@@ -137,9 +137,12 @@ export async function createBrowserSession(
     wrapped(message);
   };
   try {
+    // Open the duplex socket while getUserMedia is in flight so VAD/ready
+    // is not serialized behind the mic prompt.
+    await session.start();
     mic = await captureMic(context, (pcm) => session.sendMic(pcm));
   } catch (error) {
-    void context.close();
+    session.finish("error");
     throw error;
   }
   return { session };

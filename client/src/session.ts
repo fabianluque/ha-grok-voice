@@ -22,6 +22,7 @@ export class VoiceSession {
   private socket: WebSocketLike | null = null;
   private endHandler: ((reason: string) => void) | null = null;
   private ended = false;
+  private endReason: string | null = null;
 
   constructor(
     private readonly play: (pcm: ArrayBuffer) => Playable,
@@ -30,11 +31,16 @@ export class VoiceSession {
 
   onEnd(handler: (reason: string) => void): void {
     this.endHandler = handler;
+    if (this.ended) {
+      handler(this.endReason ?? "end");
+    }
   }
 
   async start(): Promise<void> {
     this.captureActive = true;
-    this.socket = this.socketFactory();
+    if (!this.socket) {
+      this.socket = this.socketFactory();
+    }
   }
 
   /** Mic audio keeps flowing while a reply is playing. */
@@ -64,6 +70,7 @@ export class VoiceSession {
       return;
     }
     this.ended = true;
+    this.endReason = reason;
     this.captureActive = false;
     this.playback.speechStarted();
     if (this.socket && (reason === "done" || reason === "idle" || reason === "stop")) {

@@ -114,6 +114,14 @@ export function areaFromRegistries(input: {
   return { id: areaId, name: areaNameForId(areaId, input.areas), source: "ha" };
 }
 
+async function registryList<T>(hass: NativeAssistHass, type: string): Promise<T[]> {
+  try {
+    return asRecords<T>(await hass.callWS?.({ type }));
+  } catch {
+    return [];
+  }
+}
+
 export async function areaFromHomeAssistant(
   hass: NativeAssistHass,
   deviceName: string,
@@ -121,24 +129,13 @@ export async function areaFromHomeAssistant(
   if (!hass.callWS) {
     return null;
   }
-  let devices: DeviceAreaRecord[] = [];
-  let entities: EntityAreaRecord[] = [];
-  let areas: AreaRecord[] = [];
-  try {
-    devices = asRecords<DeviceAreaRecord>(await hass.callWS({ type: "config/device_registry/list" }));
-  } catch {
-    devices = [];
-  }
-  try {
-    entities = asRecords<EntityAreaRecord>(await hass.callWS({ type: "config/entity_registry/list" }));
-  } catch {
-    entities = [];
-  }
-  try {
-    areas = asRecords<AreaRecord>(await hass.callWS({ type: "config/area_registry/list" }));
-  } catch {
-    areas = [];
-  }
+  // Registries are independent. Sequential awaits on entity_registry/list
+  // (often large) delayed listen-start by 1–2s when this ran on wake.
+  const [devices, entities, areas] = await Promise.all([
+    registryList<DeviceAreaRecord>(hass, "config/device_registry/list"),
+    registryList<EntityAreaRecord>(hass, "config/entity_registry/list"),
+    registryList<AreaRecord>(hass, "config/area_registry/list"),
+  ]);
   return areaFromRegistries({ deviceName, devices, entities, areas });
 }
 
@@ -181,7 +178,63 @@ export async function resolveKioskArea(input: {
     }
   }
 
-  return { name: trimString(input.fallbackName) || FALLBACK_AREA_NAME, source: "fallback" };
+  return fallbackArea(input.fallbackName);
+}
+
+function fallbackArea(name?: string): KioskArea {
+  return { name: trimString(name) || FALLBACK_AREA_NAME, source: "fallback" };
+}
+
+let areaCache: KioskArea | null = null;
+let areaPrefetch: Promise<KioskArea> | null = null;
+
+/** Test hook. Production boot does not call this. */
+export function resetKioskAreaCache(): void {
+  areaCache = null;
+  areaPrefetch = null;
+}
+
+export function peekCachedKioskArea(): KioskArea | null {
+  return areaCache;
+}
+
+export function rememberKioskArea(area: KioskArea): KioskArea {
+  areaCache = area;
+  return area;
+}
+
+/**
+ * Area to send on duplex auth. Must not await Home Assistant — that lookup
+ * is what made listen-start feel 1–2s late after 0.2.6.
+ */
+export function immediateKioskArea(input: {
+  explicit?: { area?: string; areaId?: string } | null;
+  cached?: KioskArea | null;
+  fallbackName?: string;
+}): KioskArea {
+  return areaFromExplicit(input.explicit) ?? input.cached ?? fallbackArea(input.fallbackName);
+}
+
+/** Resolve and cache the kiosk area in the background (inject boot, not wake). */
+export function prefetchKioskArea(input: {
+  kiosk?: { getDeviceInfo?: () => Promise<unknown> } | null;
+  hass?: NativeAssistHass | null;
+  explicit?: { area?: string; areaId?: string } | null;
+  fallbackName?: string;
+}): Promise<KioskArea> {
+  if (areaCache) {
+    return Promise.resolve(areaCache);
+  }
+  if (areaPrefetch) {
+    return areaPrefetch;
+  }
+  areaPrefetch = resolveKioskArea(input)
+    .then((area) => rememberKioskArea(area))
+    .catch(() => rememberKioskArea(areaCache ?? fallbackArea(input.fallbackName)))
+    .finally(() => {
+      areaPrefetch = null;
+    });
+  return areaPrefetch;
 }
 
 export function describeArea(area: KioskArea): string {

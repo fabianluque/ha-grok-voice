@@ -53,7 +53,9 @@ def test_area_instructions_scope_bare_room_commands():
     assert "dining_room" in text
     assert "lights" in text
     assert "music" in text
+    assert "Music Assistant" in text
     assert "Do not ask which lights" in text
+    assert "Do not ask which speaker" in text
     assert with_area_instructions("Speak briefly.", None) == "Speak briefly."
     assert parse_client_area({}) is None
     assert parse_client_area("attic") is None

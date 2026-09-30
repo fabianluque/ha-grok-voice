@@ -1,14 +1,22 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   FALLBACK_AREA_NAME,
   areaFromExplicit,
   areaFromKioskInfo,
   areaFromRegistries,
   describeArea,
+  immediateKioskArea,
+  peekCachedKioskArea,
+  prefetchKioskArea,
+  resetKioskAreaCache,
   resolveKioskArea,
 } from "../src/area";
 
 describe("kiosk area", () => {
+  afterEach(() => {
+    resetKioskAreaCache();
+  });
+
   it("prefers an explicit inject override", async () => {
     expect(areaFromExplicit({ area: "Kitchen", areaId: "kitchen" })).toEqual({
       id: "kitchen",
@@ -82,5 +90,57 @@ describe("kiosk area", () => {
       },
     });
     expect(area).toEqual({ id: "attic", name: "Attic", source: "ha" });
+  });
+
+  it("does not await Home Assistant on the wake path", () => {
+    const started = Date.now();
+    const area = immediateKioskArea({
+      explicit: null,
+      cached: peekCachedKioskArea(),
+    });
+    expect(Date.now() - started).toBeLessThan(20);
+    expect(area).toEqual({ name: FALLBACK_AREA_NAME, source: "fallback" });
+  });
+
+  it("uses a cached HA area immediately without waiting on prefetch", async () => {
+    const delayed = prefetchKioskArea({
+      kiosk: { getDeviceInfo: async () => ({ name: "Attic Dashboard" }) },
+      hass: {
+        callWS: async (message: unknown) => {
+          await new Promise((resolve) => setTimeout(resolve, 40));
+          const type = (message as { type?: string }).type;
+          if (type === "config/device_registry/list") {
+            return [{ id: "attic", name: "Attic Dashboard", area_id: "attic" }];
+          }
+          if (type === "config/area_registry/list") {
+            return [{ area_id: "attic", name: "Attic" }];
+          }
+          return [];
+        },
+      },
+    });
+    expect(immediateKioskArea({ cached: peekCachedKioskArea() }).source).toBe("fallback");
+    const resolved = await delayed;
+    expect(resolved).toEqual({ id: "attic", name: "Attic", source: "ha" });
+    expect(immediateKioskArea({ cached: peekCachedKioskArea() })).toEqual(resolved);
+  });
+
+  it("loads device, entity, and area registries in parallel", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const area = await resolveKioskArea({
+      kiosk: { getDeviceInfo: async () => ({ name: "Attic Dashboard" }) },
+      hass: {
+        callWS: async () => {
+          inFlight += 1;
+          maxInFlight = Math.max(maxInFlight, inFlight);
+          await new Promise((resolve) => setTimeout(resolve, 25));
+          inFlight -= 1;
+          return [];
+        },
+      },
+    });
+    expect(area.source).toBe("fallback");
+    expect(maxInFlight).toBe(3);
   });
 });
