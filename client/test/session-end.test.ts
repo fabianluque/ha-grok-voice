@@ -102,7 +102,7 @@ describe("session end watch", () => {
     expect(onEnd).not.toHaveBeenCalled();
   });
 
-  it("does not hang up after a closer if Grok asks a follow-up", () => {
+  it("hangs up after thank you even if Grok asks anything else", () => {
     const onEnd = vi.fn();
     const watch = new SessionEndWatch({ idleMs: 60_000, onEnd });
     watch.handle({ type: "ready" });
@@ -113,9 +113,65 @@ describe("session end watch", () => {
       role: "assistant",
       text: "You're welcome. Anything else?",
     });
+    expect(watch.handle({ type: "response_done" })).toBe("done");
+    expect(onEnd).toHaveBeenCalledWith("done");
+  });
+
+  it("keeps a sports follow-up open until idle, not thank-you hang-up", () => {
+    const onEnd = vi.fn();
+    const watch = new SessionEndWatch({ idleMs: 60_000, onEnd });
+    watch.handle({ type: "ready" });
+    watch.handle({
+      type: "transcript",
+      role: "user",
+      text: "who won the mets game",
+      final: true,
+    });
+    watch.handle({ type: "response_started" });
+    watch.handle({
+      type: "transcript",
+      role: "assistant",
+      text: "The Mets won 4-2. Want last night's highlights?",
+    });
     expect(watch.handle({ type: "response_done" })).toBeNull();
     expect(onEnd).not.toHaveBeenCalled();
     watch.dispose();
+  });
+
+  it("overlay tap hangs up even while a follow-up is waiting", () => {
+    const sent: string[] = [];
+    const session = new VoiceSession(
+      () => ({ stop() {} }),
+      () => ({
+        send(data) {
+          if (typeof data === "string") {
+            sent.push(data);
+          }
+        },
+        close() {},
+      }),
+    );
+    const watch = new SessionEndWatch({
+      idleMs: 60_000,
+      onEnd: (reason) => session.finish(reason),
+    });
+    const originalFinish = session.finish.bind(session);
+    session.finish = (reason: string) => {
+      watch.dispose();
+      originalFinish(reason);
+    };
+    void session.start();
+    watch.handle({ type: "ready" });
+    watch.handle({ type: "response_started" });
+    watch.handle({
+      type: "transcript",
+      role: "assistant",
+      text: "The Mets won 4-2. Want last night's highlights?",
+    });
+    expect(watch.handle({ type: "response_done" })).toBeNull();
+    session.finish("done");
+    expect(sent).toEqual([JSON.stringify({ type: "stop", reason: "done" })]);
+    expect(session.captureActive).toBe(false);
   });
 
   it("gives extra idle after an assistant follow-up, then still ends", () => {

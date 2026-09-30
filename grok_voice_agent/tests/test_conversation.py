@@ -145,6 +145,8 @@ def test_end_session_tool_is_local_and_prompted():
     assert "same turn as a follow-up" in text
     assert "short follow-up" in text
     assert "clarifying" in text
+    assert "thank you" in text
+    assert "anything else" in text
 
 
 def test_home_control_tools_are_device_and_media_actions():

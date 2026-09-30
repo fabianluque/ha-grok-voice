@@ -160,7 +160,8 @@ def test_end_session_command_after_home_control_followup_stays_open():
     assert bridge.consume_end_session() is False
 
 
-def test_closing_phrase_then_followup_question_stays_open():
+def test_closing_phrase_then_anything_else_still_hangs_up():
+    """Fabian 0.2.16: thank you + 'Anything else?' left the duplex open."""
     bridge = GrokBridge(ToolGateway(FakeMcp(), frozenset({"HassTurnOn"})))
     bridge.note_closing_phrase()
     assert bridge.end_after_response is True
@@ -170,7 +171,35 @@ def test_closing_phrase_then_followup_question_stays_open():
             "transcript": "You're welcome. Anything else?",
         }
     )
-    assert bridge.consume_end_session() is False
+    assert bridge.assistant_asked_followup() is True
+    assert bridge.consume_end_session() is True
+
+
+def test_end_session_dismiss_after_closing_phrase_hangs_up_despite_anything_else():
+    bridge = GrokBridge(ToolGateway(FakeMcp(), frozenset({"HassTurnOn"})))
+    bridge.note_closing_phrase()
+
+    async def run():
+        return await bridge.handle_function_call(
+            {
+                "type": "response.function_call_arguments.done",
+                "name": "end_session",
+                "call_id": "call-end",
+                "arguments": json.dumps({"reason": "dismiss"}),
+            }
+        )
+
+    message = asyncio.run(run())
+    assert json.loads(message["item"]["output"])["ending"] is True
+    bridge.followup_after_tools()
+    bridge.client_messages(
+        {
+            "type": "response.output_audio_transcript.done",
+            "transcript": "You're welcome. Anything else?",
+        }
+    )
+    assert bridge.assistant_asked_followup() is True
+    assert bridge.consume_end_session() is True
 
 
 def test_idle_timeout_is_longer_after_a_followup():
@@ -601,3 +630,4 @@ def test_session_instructions_include_client_area():
     assert "Never call end_session after sports" in text
     assert "same turn as a follow-up" in text
     assert "short follow-up" in text
+    assert "thank you" in text

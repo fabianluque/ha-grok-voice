@@ -964,7 +964,9 @@ def test_end_session_dismiss_after_qna_followup_stays_open():
     assert _end_reason(sent) == "stop"
 
 
-def test_closing_phrase_then_assistant_followup_stays_open():
+def test_thank_you_hangs_up_even_if_ack_asks_anything_else():
+    """Fabian 0.2.16: thank you left the duplex open when Grok asked anything else."""
+
     async def run():
         client = QueueSocket()
         grok = QueueSocket()
@@ -979,6 +981,7 @@ def test_closing_phrase_then_assistant_followup_stays_open():
                 }
             )
         )
+        await grok.incoming.put(b"\xaa\xbb")
         await grok.incoming.put(
             json.dumps(
                 {
@@ -988,14 +991,126 @@ def test_closing_phrase_then_assistant_followup_stays_open():
             )
         )
         await grok.incoming.put(json.dumps({"type": "response.done"}))
-        await asyncio.sleep(0.05)
-        assert _end_reason(client.sent) is None
-        await client.incoming.put(json.dumps({"type": "stop", "reason": "stop"}))
         await asyncio.wait_for(task, timeout=2)
         return client.sent
 
     sent = asyncio.run(run())
-    assert _end_reason(sent) == "stop"
+    assert _end_reason(sent) == "done"
+    pcm_at = sent.index(b"\xaa\xbb")
+    end_at = next(i for i, item in enumerate(sent) if isinstance(item, str) and json.loads(item).get("type") == "end")
+    assert pcm_at < end_at
+
+
+def test_thank_you_and_end_session_dismiss_hangs_up_despite_anything_else():
+    async def run():
+        client = QueueSocket()
+        grok = QueueSocket()
+        await client.incoming.put(json.dumps({"type": "auth", "token": "good-token"}))
+        task = asyncio.create_task(_run_session(client, grok, idle=5))
+        await asyncio.sleep(0.03)
+        await grok.incoming.put(
+            json.dumps(
+                {
+                    "type": "conversation.item.input_audio_transcription.completed",
+                    "transcript": "thanks",
+                }
+            )
+        )
+        await grok.incoming.put(
+            json.dumps(
+                {
+                    "type": "response.function_call_arguments.done",
+                    "name": "end_session",
+                    "call_id": "e1",
+                    "arguments": json.dumps({"reason": "dismiss"}),
+                }
+            )
+        )
+        await grok.incoming.put(json.dumps({"type": "response.done"}))
+        await asyncio.sleep(0.03)
+        await grok.incoming.put(
+            json.dumps(
+                {
+                    "type": "response.output_audio_transcript.done",
+                    "transcript": "You're welcome. Anything else?",
+                }
+            )
+        )
+        await grok.incoming.put(json.dumps({"type": "response.done"}))
+        await asyncio.wait_for(task, timeout=2)
+        return client.sent
+
+    sent = asyncio.run(run())
+    assert _end_reason(sent) == "done"
+
+
+def test_late_asr_thank_you_after_ack_still_hangs_up():
+    async def run():
+        client = QueueSocket()
+        grok = QueueSocket()
+        await client.incoming.put(json.dumps({"type": "auth", "token": "good-token"}))
+        task = asyncio.create_task(_run_session(client, grok, idle=5))
+        await asyncio.sleep(0.03)
+        await grok.incoming.put(
+            json.dumps(
+                {
+                    "type": "response.output_audio_transcript.done",
+                    "transcript": "You're welcome. Anything else?",
+                }
+            )
+        )
+        await grok.incoming.put(json.dumps({"type": "response.done"}))
+        await asyncio.sleep(0.03)
+        assert _end_reason(client.sent) is None
+        await grok.incoming.put(
+            json.dumps(
+                {
+                    "type": "conversation.item.input_audio_transcription.completed",
+                    "transcript": "thank you",
+                }
+            )
+        )
+        await asyncio.wait_for(task, timeout=2)
+        return client.sent
+
+    sent = asyncio.run(run())
+    assert _end_reason(sent) == "done"
+
+
+def test_overlay_tap_hangs_up_during_qna_followup():
+    """Tap-dismiss is client stop(reason=done), not the end_session dismiss gate."""
+
+    async def run():
+        client = QueueSocket()
+        grok = QueueSocket()
+        await client.incoming.put(json.dumps({"type": "auth", "token": "good-token"}))
+        task = asyncio.create_task(_run_session(client, grok, idle=5))
+        await asyncio.sleep(0.03)
+        await grok.incoming.put(
+            json.dumps(
+                {
+                    "type": "conversation.item.input_audio_transcription.completed",
+                    "transcript": "who won the mets game",
+                }
+            )
+        )
+        await grok.incoming.put(
+            json.dumps(
+                {
+                    "type": "response.output_audio_transcript.done",
+                    "transcript": "The Mets won 4-2. Want last night's highlights?",
+                }
+            )
+        )
+        await grok.incoming.put(json.dumps({"type": "response.done"}))
+        await asyncio.sleep(0.05)
+        assert _end_reason(client.sent) is None
+        await client.incoming.put(json.dumps({"type": "stop", "reason": "done"}))
+        await asyncio.wait_for(task, timeout=2)
+        return client.sent
+
+    sent = asyncio.run(run())
+    assert _end_reason(sent) == "done"
 
 
 def test_followup_question_extends_idle_then_still_ends():
