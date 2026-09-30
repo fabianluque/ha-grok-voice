@@ -37,4 +37,41 @@ describe("playback queue", () => {
     queue.responseStarted();
     expect(queue.enqueue(pcm(6), play)).toBe(true);
   });
+
+  it("stopAccepting keeps playing audio and rejects later chunks", () => {
+    const stopped: ArrayBuffer[] = [];
+    const queue = new PlaybackQueue();
+    const play = (chunk: ArrayBuffer) => ({ stop: () => stopped.push(chunk) });
+    const first = pcm(2);
+    queue.responseStarted();
+    expect(queue.enqueue(first, play)).toBe(true);
+    queue.stopAccepting();
+    expect(queue.enqueue(pcm(8), play)).toBe(false);
+    expect(stopped).toEqual([]);
+  });
+
+  it("waitUntilDrained resolves after queued chunks end, not when a later response starts", async () => {
+    let release!: () => void;
+    const ended = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const queue = new PlaybackQueue();
+    const play = () => ({ stop() {}, ended });
+    queue.responseStarted();
+    expect(queue.enqueue(pcm(2), play)).toBe(true);
+    queue.responseStarted();
+    expect(queue.enqueue(pcm(4), play)).toBe(true);
+    expect(queue.hasQueuedAudio()).toBe(true);
+    const drained = queue.waitUntilDrained();
+    let done = false;
+    void drained.then(() => {
+      done = true;
+    });
+    await Promise.resolve();
+    expect(done).toBe(false);
+    release();
+    await drained;
+    expect(done).toBe(true);
+    expect(queue.hasQueuedAudio()).toBe(false);
+  });
 });

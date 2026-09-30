@@ -106,11 +106,9 @@ function boot(): void {
             }
           },
         });
-        const originalFinish = session.finish.bind(session);
-        session.finish = (reason) => {
+        session.onEnd(() => {
           status.remove();
-          originalFinish(reason);
-        };
+        });
         return session;
       } catch (error) {
         status.remove();

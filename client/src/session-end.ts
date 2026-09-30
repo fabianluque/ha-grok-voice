@@ -4,6 +4,9 @@ import { cancelTimeout, scheduleTimeout } from "./timers";
 
 export const DEFAULT_IDLE_MS = 20_000;
 
+/** If a closer has no ack turn yet, wait this long for Grok to start speaking. */
+export const ACK_GRACE_MS = 2_500;
+
 export interface SessionEndWatchOptions {
   idleMs?: number;
   onEnd(reason: "done" | "idle"): void;
@@ -14,6 +17,9 @@ export interface SessionEndWatchOptions {
 /**
  * Hang up after a goodbye phrase, or after configured silence once the
  * assistant has finished and the user is not mid-utterance.
+ *
+ * A closer does not hang up until Grok's ack turn has finished generating
+ * (`response_done`). Playback drain happens in `VoiceSession.finish`.
  */
 export class SessionEndWatch {
   userSpeaking = false;
@@ -24,6 +30,7 @@ export class SessionEndWatch {
   private readonly setTimer: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
   private readonly clearTimer: (id: ReturnType<typeof setTimeout>) => void;
   private armed = false;
+  private pendingDone = false;
 
   constructor(options: SessionEndWatchOptions) {
     this.idleMs = options.idleMs ?? DEFAULT_IDLE_MS;
@@ -68,6 +75,11 @@ export class SessionEndWatch {
     }
     if (message.type === "response_done") {
       this.assistantBusy = false;
+      if (this.pendingDone) {
+        this.dispose();
+        this.onEnd("done");
+        return "done";
+      }
       this.arm();
       return null;
     }
@@ -77,9 +89,9 @@ export class SessionEndWatch {
       message.final !== false &&
       isClosingUtterance(message.text)
     ) {
-      this.dispose();
-      this.onEnd("done");
-      return "done";
+      this.pendingDone = true;
+      this.arm();
+      return null;
     }
     return null;
   }
@@ -94,10 +106,11 @@ export class SessionEndWatch {
     if (!this.armed || this.userSpeaking || this.assistantBusy) {
       return;
     }
+    const ms = this.pendingDone ? ACK_GRACE_MS : this.idleMs;
     this.timer = this.setTimer(() => {
       this.timer = null;
-      this.onEnd("idle");
-    }, this.idleMs);
+      this.onEnd(this.pendingDone ? "done" : "idle");
+    }, ms);
   }
 
   private clear(): void {

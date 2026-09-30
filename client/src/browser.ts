@@ -139,18 +139,23 @@ export async function createBrowserSession(
     onEnd: (reason) => session.finish(reason),
   });
   session.finish = (reason) => {
+    endWatch.dispose();
+    originalFinish(reason);
+  };
+  session.onEnd((reason) => {
     if (closed) {
       return;
     }
     closed = true;
-    endWatch.dispose();
     mic?.stop();
-    const remainingMs = Math.max(0, Math.ceil((nextTime.t - context.currentTime) * 1000));
+    const remainingMs =
+      reason === "error" || reason === "unauthorized"
+        ? 0
+        : Math.max(0, Math.ceil((nextTime.t - context.currentTime) * 1000));
     scheduleTimeout(() => {
       void context.close();
     }, remainingMs + 80);
-    originalFinish(reason);
-  };
+  });
   const wrapped = session.handleServerText.bind(session);
   session.handleServerText = (message) => {
     if (message.type === "transcript" && message.text) {
@@ -158,7 +163,8 @@ export async function createBrowserSession(
     }
     // Only barge-in jumps the playback cursor. A tool follow-up
     // `response_started` must append after audio already scheduled.
-    if (message.type === "speech_started") {
+    // Hang-up has already stopped capture so barge-in cannot cut ack TTS.
+    if (message.type === "speech_started" && session.captureActive) {
       nextTime.t = context.currentTime;
     }
     options.onServerText?.(message);

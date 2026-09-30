@@ -464,7 +464,10 @@ class GrokBridge:
         return {"type": "response.create"}
 
     def consume_end_session(self) -> bool:
-        """True once tools are done and the ack turn (if any) has finished."""
+        """True once tools are done and the ack turn (if any) has finished generating.
+
+        The browser then drains queued playback before closing the duplex.
+        """
         if not self.end_after_response or self.awaiting_tool_followup:
             return False
         self.end_after_response = False

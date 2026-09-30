@@ -181,6 +181,17 @@ def test_trailing_thank_you_ends_the_session():
                 }
             )
         )
+        await asyncio.sleep(0.03)
+        assert _end_reason(client.sent) is None
+        await grok.incoming.put(
+            json.dumps(
+                {
+                    "type": "response.output_audio_transcript.done",
+                    "transcript": "You're welcome.",
+                }
+            )
+        )
+        await grok.incoming.put(json.dumps({"type": "response.done"}))
         await asyncio.wait_for(task, timeout=2)
         return client.sent
 
@@ -225,6 +236,17 @@ def test_thank_you_ends_the_session():
                 }
             )
         )
+        await asyncio.sleep(0.03)
+        assert _end_reason(client.sent) is None
+        await grok.incoming.put(
+            json.dumps(
+                {
+                    "type": "response.output_audio_transcript.done",
+                    "transcript": "Anytime.",
+                }
+            )
+        )
+        await grok.incoming.put(json.dumps({"type": "response.done"}))
         await asyncio.wait_for(task, timeout=2)
         return client.sent
 
@@ -623,6 +645,15 @@ def test_goodbye_clears_history_for_that_device():
                 }
             )
         )
+        await grok.incoming.put(
+            json.dumps(
+                {
+                    "type": "response.output_audio_transcript.done",
+                    "transcript": "You're welcome.",
+                }
+            )
+        )
+        await grok.incoming.put(json.dumps({"type": "response.done"}))
         await asyncio.wait_for(task, timeout=2)
 
     async def second():
@@ -647,6 +678,44 @@ def test_goodbye_clears_history_for_that_device():
     assert "what's this weekend" not in update["session"]["instructions"]
 
 
+def test_closing_phrase_forwards_ack_audio_before_hangup():
+    async def run():
+        client = QueueSocket()
+        grok = QueueSocket()
+        await client.incoming.put(json.dumps({"type": "auth", "token": "good-token"}))
+        task = asyncio.create_task(_run_session(client, grok, idle=5))
+        await asyncio.sleep(0.03)
+        await grok.incoming.put(
+            json.dumps(
+                {
+                    "type": "conversation.item.input_audio_transcription.completed",
+                    "transcript": "thank you",
+                }
+            )
+        )
+        await grok.incoming.put(b"\xaa\xbb")
+        await asyncio.sleep(0.03)
+        assert _end_reason(client.sent) is None
+        assert b"\xaa\xbb" in client.sent
+        await grok.incoming.put(
+            json.dumps(
+                {
+                    "type": "response.output_audio_transcript.done",
+                    "transcript": "You're welcome.",
+                }
+            )
+        )
+        await grok.incoming.put(json.dumps({"type": "response.done"}))
+        await asyncio.wait_for(task, timeout=2)
+        return client.sent
+
+    sent = asyncio.run(run())
+    assert _end_reason(sent) == "done"
+    pcm_at = sent.index(b"\xaa\xbb")
+    end_at = next(i for i, item in enumerate(sent) if isinstance(item, str) and json.loads(item).get("type") == "end")
+    assert pcm_at < end_at
+
+
 def test_end_session_tool_hangs_up_after_the_ack_turn():
     async def run():
         client = QueueSocket()
@@ -667,6 +736,7 @@ def test_end_session_tool_hangs_up_after_the_ack_turn():
         await grok.incoming.put(json.dumps({"type": "response.done"}))
         await asyncio.sleep(0.03)
         assert _end_reason(client.sent) is None
+        await grok.incoming.put(b"\x11\x22\x33\x44")
         await grok.incoming.put(
             json.dumps(
                 {
@@ -681,6 +751,10 @@ def test_end_session_tool_hangs_up_after_the_ack_turn():
 
     sent, grok_sent = asyncio.run(run())
     assert _end_reason(sent) == "done"
+    assert b"\x11\x22\x33\x44" in sent
+    pcm_at = sent.index(b"\x11\x22\x33\x44")
+    end_at = next(i for i, item in enumerate(sent) if isinstance(item, str) and json.loads(item).get("type") == "end")
+    assert pcm_at < end_at
     assert any(item.get("type") == "response.create" for item in (json.loads(x) for x in grok_sent if isinstance(x, str) and x.startswith("{")))
 
 

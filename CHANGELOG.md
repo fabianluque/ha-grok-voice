@@ -4,6 +4,10 @@ Versions match `grok_voice_agent/config.yaml`. GitHub Releases list the
 merged pull requests since the previous tag. Issues closed with `Fixes #N`
 in those pull requests are included below when GitHub reports them.
 
+## [0.2.11] - 2026-09-30
+
+- Let Grok’s hang-up ack finish playing before the duplex closes. `end_session` (command or dismiss) and closing-phrase hang-up wait until queued/playing assistant audio drains (the same sequential playback path used for tool TTS), then close the socket and microphone and re-arm Kiosk Satellite wake. Mid-session tool replies still are not clipped.
+
 ## [0.2.10] - 2026-09-30
 
 - Name the city in session location context. Add-on **Home location** (`Summit, NJ`) is expanded to **Summit, New Jersey** in the Grok instructions so answers can say the city, not only a vague home/GPS string.
