@@ -189,6 +189,7 @@ async function start(): Promise<void> {
       url,
       token,
       ingress,
+      device: { name: "web-ui", id: "web" },
       onTranscript: (role, text) => appendLine(role, text),
       onServerText,
     });

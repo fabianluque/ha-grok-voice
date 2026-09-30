@@ -332,11 +332,13 @@ describe("Open Web UI session", () => {
         token: "long-lived",
         url: "ws://192.168.86.38:8080/",
         area: { name: "Attic", id: "attic" },
+        device: { name: "Attic Dashboard", id: "attic-tablet" },
       }),
     ).toEqual({
       type: "auth",
       token: "long-lived",
       area: { name: "Attic", id: "attic" },
+      device: { name: "Attic Dashboard", id: "attic-tablet" },
     });
   });
 });

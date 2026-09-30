@@ -87,14 +87,29 @@ export function authHandshake(options: {
   token: string;
   url?: string;
   area?: { id?: string; name?: string } | null;
-}): { type: "auth"; via?: "ingress"; token?: string; area?: { id?: string; name: string } } {
+  device?: { id?: string; name?: string } | null;
+}): {
+  type: "auth";
+  via?: "ingress";
+  token?: string;
+  area?: { id?: string; name: string };
+  device?: { id?: string; name: string };
+} {
   const areaName = options.area?.name?.trim();
   const areaId = options.area?.id?.trim();
   const area = areaName || areaId ? { name: areaName || areaId!, id: areaId || undefined } : undefined;
+  const deviceName = options.device?.name?.trim();
+  const deviceId = options.device?.id?.trim();
+  const device =
+    deviceName || deviceId ? { name: deviceName || deviceId!, id: deviceId || undefined } : undefined;
+  const identity = {
+    ...(area ? { area } : {}),
+    ...(device ? { device } : {}),
+  };
   if (authModeForUrl(options.url || "", options.ingress) === "ingress") {
-    return area ? { type: "auth", via: "ingress", area } : { type: "auth", via: "ingress" };
+    return { type: "auth", via: "ingress", ...identity };
   }
-  return area ? { type: "auth", token: options.token, area } : { type: "auth", token: options.token };
+  return { type: "auth", token: options.token, ...identity };
 }
 
 export function shouldOfferTokenField(input: { pathname: string; authFailed: boolean }): boolean {

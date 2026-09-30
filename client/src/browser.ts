@@ -1,4 +1,4 @@
-import { downsample, floatToPcm16, schedulePcm } from "./audio";
+import { downsample, floatToPcm16, PcmPreroll, schedulePcm } from "./audio";
 import { authHandshake } from "./ingress";
 import { SessionEndWatch } from "./session-end";
 import { VoiceSession, type ServerMessage, type WebSocketLike } from "./session";
@@ -11,18 +11,23 @@ export function openSocket(
   session: VoiceSession,
   ingress = false,
   area?: { id?: string; name: string },
+  device?: { id?: string; name: string },
 ): WebSocketLike {
   const socket = new WebSocket(url);
-  const pending: Array<ArrayBuffer | string> = [];
+  const preroll = new PcmPreroll();
+  const pendingControl: string[] = [];
   let open = false;
   socket.binaryType = "arraybuffer";
   socket.addEventListener("open", () => {
-    socket.send(JSON.stringify(authHandshake({ ingress, token, url, area })));
+    socket.send(JSON.stringify(authHandshake({ ingress, token, url, area, device })));
     open = true;
-    for (const chunk of pending) {
+    for (const chunk of preroll.drain()) {
       socket.send(chunk);
     }
-    pending.length = 0;
+    for (const message of pendingControl) {
+      socket.send(message);
+    }
+    pendingControl.length = 0;
   });
   socket.addEventListener("message", (event) => {
     if (typeof event.data === "string") {
@@ -37,7 +42,11 @@ export function openSocket(
   return {
     send(data) {
       if (!open) {
-        pending.push(data);
+        if (typeof data === "string") {
+          pendingControl.push(data);
+          return;
+        }
+        preroll.push(data);
         return;
       }
       socket.send(data);
@@ -88,6 +97,7 @@ export interface BrowserSessionOptions {
   token: string;
   ingress?: boolean;
   area?: { id?: string; name: string };
+  device?: { id?: string; name: string };
   onTranscript?: (role: string, text: string, final?: boolean) => void;
   onServerText?: (message: ServerMessage) => void;
 }
@@ -104,7 +114,7 @@ export async function createBrowserSession(
   let closed = false;
   const session = new VoiceSession(
     (pcm) => schedulePcm(context, pcm, nextTime),
-    () => openSocket(options.url, options.token, session, options.ingress === true, options.area),
+    () => openSocket(options.url, options.token, session, options.ingress === true, options.area, options.device),
   );
   const originalFinish = session.finish.bind(session);
   const endWatch = new SessionEndWatch({

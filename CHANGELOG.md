@@ -4,6 +4,12 @@ Versions match `grok_voice_agent/config.yaml`. GitHub Releases list the
 merged pull requests since the previous tag. Issues closed with `Fixes #N`
 in those pull requests are included below when GitHub reports them.
 
+## [0.2.9] - 2026-09-30
+
+- Inject the current local date/time and home location into every Grok session at open (server-side `session.update` instructions). Timezone and GPS come from Home Assistant `/api/config` plus `zone.home`; the add-on **Home location** option supplies a city/ZIP such as Summit, NJ. The clock is computed when the session starts, not baked into the add-on.
+- Keep a short per-device conversation memory after hang-up so a new wake on the same satellite can follow up. Keyed by kiosk device (then area); TTL defaults to 8 minutes (`conversation_memory_ttl_seconds`). Cleared when that timer expires or the user says goodbye.
+- Soften server VAD slightly and include 400ms of audio pre-roll (`prefix_padding_ms`) so the first syllable after snappy listen-start is less likely to be clipped. Area lookup stays off the wake path.
+
 ## [0.2.8] - 2026-09-30
 
 - Serve the kiosk IIFE from the add-on at a stable URL (`http://<HA-LAN>:8080/grok-voice.js`, same port as duplex). The attic Kiosk Satellite inject is a one-time bootstrap; updating the add-on refreshes the client without pasting the full script into Remote Admin. Dining-room dashboards that never load the bootstrap stay untouched.

@@ -117,7 +117,9 @@ def test_session_update_echo_and_rejection_are_logged():
 def test_session_is_full_duplex_server_vad():
     payload = build_session(_settings(), [{"type": "function", "name": "HassTurnOn"}])
     session = payload["session"]
-    assert session["turn_detection"] == {"type": "server_vad"}
+    assert session["turn_detection"]["type"] == "server_vad"
+    assert session["turn_detection"]["prefix_padding_ms"] == 400
+    assert session["turn_detection"]["threshold"] == 0.4
     assert "idle_timeout_ms" not in json.dumps(payload)
     assert "silence_duration_ms" not in json.dumps(payload)
     assert session["audio"]["input"]["format"]["rate"] == 24000

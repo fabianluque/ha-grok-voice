@@ -29,6 +29,50 @@ export function floatToPcm16(samples: Float32Array): ArrayBuffer {
   return buffer;
 }
 
+/** 16-bit PCM at 24 kHz. */
+export const PCM_BYTES_PER_SECOND = 24000 * 2;
+
+/** Audio kept while the duplex socket is still opening. */
+export const PREROLL_MS = 400;
+
+/**
+ * Rolling mic buffer so the first syllable after a snappy listen-start is
+ * not dropped while the WebSocket handshake finishes. Does not wait on
+ * area lookup.
+ */
+export class PcmPreroll {
+  private chunks: ArrayBuffer[] = [];
+  private bytes = 0;
+
+  constructor(private readonly maxBytes = Math.floor((PCM_BYTES_PER_SECOND * PREROLL_MS) / 1000)) {}
+
+  push(pcm: ArrayBuffer): void {
+    if (!pcm.byteLength) {
+      return;
+    }
+    this.chunks.push(pcm);
+    this.bytes += pcm.byteLength;
+    while (this.bytes > this.maxBytes && this.chunks.length > 1) {
+      const dropped = this.chunks.shift();
+      if (dropped) {
+        this.bytes -= dropped.byteLength;
+      }
+    }
+    if (this.chunks.length === 1 && this.bytes > this.maxBytes) {
+      const only = this.chunks[0];
+      this.chunks = [only.slice(only.byteLength - this.maxBytes)];
+      this.bytes = this.maxBytes;
+    }
+  }
+
+  drain(): ArrayBuffer[] {
+    const out = this.chunks;
+    this.chunks = [];
+    this.bytes = 0;
+    return out;
+  }
+}
+
 export function pcm16ToFloat(pcm: ArrayBuffer): Float32Array {
   const view = new DataView(pcm);
   const samples = new Float32Array(pcm.byteLength / 2);

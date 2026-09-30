@@ -5,6 +5,7 @@ from app.grok_session import (
     is_closing_utterance,
     merge_session_area,
     parse_client_area,
+    parse_client_device,
     slug_area_id,
     with_area_instructions,
 )
@@ -72,6 +73,12 @@ def test_merge_session_area_prefers_kiosk_then_addon_default():
     other_room = merge_session_area({"name": "Kitchen"}, settings)
     assert other_room == {"name": "Kitchen", "id": "kitchen"}
     assert slug_area_id("Dining Room") == "dining_room"
+    assert parse_client_device({"name": "Attic Dashboard", "id": "attic-tablet"}) == {
+        "name": "Attic Dashboard",
+        "id": "attic-tablet",
+    }
+    assert parse_client_device({}) is None
+    assert parse_client_device("attic") is None
 
 
 def test_watch_is_quiet_only_after_assistant_done_and_user_not_speaking():

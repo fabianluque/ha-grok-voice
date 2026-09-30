@@ -1,6 +1,7 @@
 import {
   describeArea,
   immediateKioskArea,
+  immediateKioskDevice,
   peekCachedKioskArea,
   prefetchKioskArea,
 } from "./area";
@@ -83,6 +84,7 @@ function boot(): void {
         explicit: areaInput().explicit,
         cached: peekCachedKioskArea(),
       });
+      const device = immediateKioskDevice();
       void prefetchKioskArea(areaInput());
       console.log(`[Grok Voice] Area ${describeArea(area)}`);
       const status = mountKioskStatus(document);
@@ -92,6 +94,7 @@ function boot(): void {
           token,
           ingress: authMode === "ingress",
           area,
+          device: device ?? undefined,
           onTranscript: (role, text, final) => {
             status.addMessage(role, text, final !== false);
           },

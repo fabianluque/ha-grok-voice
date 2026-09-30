@@ -3,7 +3,8 @@ FROM ${BUILD_FROM}
 
 WORKDIR /app
 COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+RUN apk add --no-cache tzdata \
+    && pip install --no-cache-dir -r /app/requirements.txt
 COPY app /app/app
 COPY www /app/www
 COPY rootfs /
