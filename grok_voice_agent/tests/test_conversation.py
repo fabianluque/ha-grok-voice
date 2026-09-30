@@ -5,6 +5,7 @@ from app.grok_session import (
     END_SESSION_TOOL_NAME,
     is_closing_utterance,
     is_end_session_tool,
+    is_home_control_tool,
     merge_session_area,
     parse_client_area,
     parse_client_device,
@@ -116,5 +117,37 @@ def test_end_session_tool_is_local_and_prompted():
     assert is_end_session_tool("HassTurnOn") is False
     text = with_session_end_instructions("Speak briefly.")
     assert END_SESSION_TOOL_NAME in text
-    assert "one simple home command" in text
+    assert "home device or in-home media" in text
+    assert "Never call end_session after sports" in text
+    assert "short follow-up" in text
     assert "clarifying" in text
+
+
+def test_home_control_tools_are_device_and_media_actions():
+    for name in (
+        "HassTurnOn",
+        "intent__HassTurnOff",
+        "light__HassLightSet",
+        "HassOpenCover",
+        "cover__HassCloseCover",
+        "lock__HassLockLock",
+        "climate__HassSetTemperature",
+        "HassMediaSearchAndPlay",
+        "music_assistant__play_media",
+        "media_player__HassMediaPause",
+    ):
+        assert is_home_control_tool(name), name
+    for name in (
+        "GetLiveContext",
+        "homeassistant__GetLiveContext",
+        "HassGetState",
+        "GetDateTime",
+        "todo__HassListAddItem",
+        "mealie__get_mealplan",
+        "calendar__GetEvents",
+        "web_search",
+        "end_session",
+        "",
+        None,
+    ):
+        assert is_home_control_tool(name) is False, name

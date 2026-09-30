@@ -260,7 +260,12 @@ async def handle_socket(websocket, settings, http, grok_connect=None, memory=Non
                 denied = "tool_not_allowed" in output["item"]["output"]
                 name = str(event.get("name") or "")
                 if is_end_session_tool(name):
-                    log.info("voice end_session reason=%s", "dismiss" if bridge.end_session_forget else "command")
+                    log.info(
+                        "voice end_session reason=%s home_control=%s ending=%s",
+                        "dismiss" if bridge.end_session_forget else "command",
+                        bridge.home_control_this_turn,
+                        bridge.end_after_response,
+                    )
                 await websocket.send(
                     json.dumps(
                         {
