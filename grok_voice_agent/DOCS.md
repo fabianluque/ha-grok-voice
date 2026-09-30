@@ -108,7 +108,7 @@ The microphone stays open while Grok is speaking. Talking over a reply flushes p
 
 Each kiosk session is scoped to **that tablet's Home Assistant area** so "turn on the lights" or "play music" targets this room, not the whole house. Bare "play X" / "play music" uses Music Assistant on this area's player (the Attic HomePod Mini when the session area is Attic) and does not ask which speaker. The add-on fills Assist `area` / `area_id` (and `target.area_id` on Music Assistant `play_media`) when Grok omits them, and the voice prompt says not to ask which lights or which speaker.
 
-The kiosk **prefetches** the HA/KS area when the inject loads. After 0.2.6, wake awaited device/entity/area registry lists before `getUserMedia` and the duplex socket, which made Listening start 1–2 seconds late. Wake now uses the cached or explicit area (Attic fallback) immediately, mounts the overlay, and opens the mic and WebSocket together.
+The kiosk **prefetches** the HA/KS area when the inject loads. After 0.2.6, wake awaited device/entity/area registry lists before `getUserMedia` and the duplex socket, which made Listening start 1–2 seconds late. Wake now uses the cached or explicit area (Attic fallback) immediately, mounts the overlay, and opens the mic and WebSocket together. Device identity for conversation memory is cached on the same prefetch and sent on auth; it is not awaited on wake.
 
 Resolution order:
 
@@ -119,6 +119,21 @@ Resolution order:
 5. If the name is set and the id is still blank, the add-on derives a slug (`Attic` → `attic`).
 
 A dining-room tablet with the same inject would resolve **Dining Room** from its own KS/HA area. Do not hardcode a room in the inject unless you are forcing an override. The add-on default is only the fallback when the kiosk did not send an area (Open Web UI, or lookup failed).
+
+### Session date, location, and short memory
+
+At each duplex session open the add-on writes a fresh block into the Grok `session.update` instructions (every client: kiosk, Open Web UI, port 8080):
+
+- **Current local date/time** from Home Assistant's timezone (`/api/config` `time_zone`, typically `America/New_York`). Computed at session start, not stored in the add-on image.
+- **Home location** for local events: add-on **Home location** (`home_location`, for example `Summit, NJ`) plus HA `location_name`, country, GPS, and `zone.home` when those APIs answer in time. Fetch runs in parallel with MCP `tools/list` so it does not sit on the wake path.
+
+Short **conversation memory** is Assist-style, in the add-on process only (not forever, not across add-on restarts):
+
+- **Key:** kiosk `device` id/name from `getDeviceInfo()` (cached at inject boot), then the session area. Open Web UI uses `device=web` so it does not share the attic tablet's history. Attic vs dining room stay separate.
+- **TTL:** `conversation_memory_ttl_seconds` (default 480, eight minutes; configurable 60–3600). Sliding: a new session on that key refreshes the timer.
+- **Clear:** TTL expiry, or a goodbye hang-up (`thank you` / `that's all` / `goodbye`). An idle hang-up keeps the recent turns so a wake two minutes later can follow up.
+
+Mic audio that arrives before the duplex socket is open is capped to the last 400ms (pre-roll). Server VAD uses `prefix_padding_ms=400` and a slightly softer threshold (`0.4`) so the first syllable after listen-start is less likely to be cut. `idle_timeout_ms` and `silence_duration_ms` are still not set.
 
 Say **thank you**, **thanks**, **that's all**, **that's it**, **goodbye**, or **stop listening** to hang up. A longer utterance that *ends* with one of those still hangs up (`oh, that's great, thank you`). The same words in the middle of a request (`thank you for turning on the lights`) do not. The session also ends after `idle_timeout_seconds` of silence once Grok has finished and you are not mid-utterance. That timer uses xAI server VAD (`speech_started` / `speech_stopped` / `response.done`). xAI's `turn_detection.idle_timeout_ms` is not used — that option only triggers a proactive check-in, it does not close the session.
 

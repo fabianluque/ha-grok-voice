@@ -6,6 +6,8 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.memory import DEFAULT_TTL_SECONDS, clamp_memory_ttl
+
 DEFAULT_ALLOWLIST = (
     "HassTurnOn",
     "HassTurnOff",
@@ -68,6 +70,8 @@ class Settings:
     ha_api_url: str
     default_area: str = "Attic"
     default_area_id: str = ""
+    home_location: str = ""
+    conversation_memory_ttl_seconds: int = DEFAULT_TTL_SECONDS
     ingress_port: int = 8099
     debug_port: int = 8080
     mcp_token_source: str = "missing"
@@ -148,5 +152,10 @@ def load_settings(
         ha_api_url=HOME_ASSISTANT_API_URL,
         default_area=str(options.get("default_area") or "Attic").strip() or "Attic",
         default_area_id=str(options.get("default_area_id") or "").strip(),
+        home_location=str(options.get("home_location") or "").strip(),
+        conversation_memory_ttl_seconds=clamp_memory_ttl(
+            options.get("conversation_memory_ttl_seconds"),
+            DEFAULT_TTL_SECONDS,
+        ),
         mcp_token_source=mcp_token_source,
     )

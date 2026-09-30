@@ -10,14 +10,40 @@ from app.server import handle_socket
 
 
 class FakeResponse:
-    def __init__(self, status_code: int) -> None:
+    def __init__(self, status_code: int, text: str = '{"result":{"tools":[]}}') -> None:
         self.status_code = status_code
-        self.text = '{"result":{"tools":[]}}'
+        self.text = text
         self.headers = {}
 
 
 class FakeHttp:
     async def get(self, url, headers=None):
+        if str(url).endswith("/api/config"):
+            return FakeResponse(
+                200,
+                json.dumps(
+                    {
+                        "time_zone": "America/New_York",
+                        "location_name": "Home",
+                        "latitude": 40.7155,
+                        "longitude": -74.3646,
+                        "country": "US",
+                    }
+                ),
+            )
+        if str(url).endswith("/api/states/zone.home"):
+            return FakeResponse(
+                200,
+                json.dumps(
+                    {
+                        "attributes": {
+                            "friendly_name": "Home",
+                            "latitude": 40.7155,
+                            "longitude": -74.3646,
+                        }
+                    }
+                ),
+            )
         return FakeResponse(200)
 
     async def post(self, url, json=None, headers=None):
@@ -51,8 +77,8 @@ class QueueSocket:
         return None
 
 
-def _settings(idle: float = 0.2) -> Settings:
-    return Settings(
+def _settings(idle: float = 0.2, **overrides) -> Settings:
+    values = dict(
         xai_api_key="secret-key",
         instructions="speak briefly",
         voice="eve",
@@ -65,7 +91,11 @@ def _settings(idle: float = 0.2) -> Settings:
         allowlist=frozenset({"HassTurnOn"}),
         idle_timeout_seconds=idle,
         ha_api_url=HOME_ASSISTANT_API_URL,
+        home_location="Summit, NJ",
+        conversation_memory_ttl_seconds=480,
     )
+    values.update(overrides)
+    return Settings(**values)
 
 
 def _end_reason(sent: list) -> str | None:
@@ -81,11 +111,17 @@ def _end_reason(sent: list) -> str | None:
     return None
 
 
-async def _run_session(client: QueueSocket, grok: QueueSocket, idle: float = 0.2) -> None:
+async def _run_session(
+    client: QueueSocket,
+    grok: QueueSocket,
+    idle: float = 0.2,
+    memory=None,
+    **settings_overrides,
+) -> None:
     async def connect(_settings):
         return grok
 
-    await handle_socket(client, _settings(idle), FakeHttp(), connect)
+    await handle_socket(client, _settings(idle, **settings_overrides), FakeHttp(), connect, memory=memory)
 
 
 def test_pcm_alone_does_not_reset_idle_and_silence_ends_the_session():
@@ -280,3 +316,146 @@ def test_ready_includes_idle_timeout_seconds():
     ready = next(json.loads(item) for item in sent if isinstance(item, str) and '"ready"' in item)
     assert ready["type"] == "ready"
     assert ready["idleTimeoutSeconds"] == 0.1
+
+
+def test_session_update_injects_live_date_and_home_location():
+    async def run():
+        client = QueueSocket()
+        grok = QueueSocket()
+        await client.incoming.put(json.dumps({"type": "auth", "token": "good-token"}))
+        task = asyncio.create_task(_run_session(client, grok, idle=0.1))
+        await asyncio.wait_for(task, timeout=2)
+        return grok.sent
+
+    sent = asyncio.run(run())
+    update = next(json.loads(item) for item in sent if isinstance(item, str) and "session.update" in item)
+    text = update["session"]["instructions"]
+    assert "Summit, NJ" in text
+    assert "America/New_York" in text
+    assert "current local date and time" in text
+    assert update["session"]["turn_detection"]["prefix_padding_ms"] == 400
+
+
+def test_idle_keeps_short_history_for_the_same_device():
+    from app.memory import ConversationMemory
+
+    memory = ConversationMemory(ttl_seconds=480)
+
+    async def first():
+        client = QueueSocket()
+        grok = QueueSocket()
+        await client.incoming.put(
+            json.dumps(
+                {
+                    "type": "auth",
+                    "token": "good-token",
+                    "area": {"name": "Attic", "id": "attic"},
+                    "device": {"name": "Attic Dashboard", "id": "attic-tablet"},
+                }
+            )
+        )
+        task = asyncio.create_task(_run_session(client, grok, idle=5, memory=memory))
+        await asyncio.sleep(0.03)
+        await grok.incoming.put(
+            json.dumps(
+                {
+                    "type": "conversation.item.input_audio_transcription.completed",
+                    "transcript": "what's happening this weekend",
+                }
+            )
+        )
+        await grok.incoming.put(
+            json.dumps(
+                {
+                    "type": "response.output_audio_transcript.done",
+                    "transcript": "A concert in Summit on Saturday.",
+                }
+            )
+        )
+        await grok.incoming.put(json.dumps({"type": "response.done"}))
+        await asyncio.sleep(0.03)
+        await client.incoming.put(json.dumps({"type": "stop", "reason": "idle"}))
+        await asyncio.wait_for(task, timeout=2)
+
+    async def second():
+        client = QueueSocket()
+        grok = QueueSocket()
+        await client.incoming.put(
+            json.dumps(
+                {
+                    "type": "auth",
+                    "token": "good-token",
+                    "area": {"name": "Attic", "id": "attic"},
+                    "device": {"name": "Attic Dashboard", "id": "attic-tablet"},
+                }
+            )
+        )
+        task = asyncio.create_task(_run_session(client, grok, idle=0.1, memory=memory))
+        await asyncio.wait_for(task, timeout=2)
+        return grok.sent
+
+    asyncio.run(first())
+    sent = asyncio.run(second())
+    update = next(json.loads(item) for item in sent if isinstance(item, str) and "session.update" in item)
+    text = update["session"]["instructions"]
+    assert "what's happening this weekend" in text
+    assert "concert in Summit" in text
+
+
+def test_goodbye_clears_history_for_that_device():
+    from app.memory import ConversationMemory
+
+    memory = ConversationMemory(ttl_seconds=480)
+
+    async def first():
+        client = QueueSocket()
+        grok = QueueSocket()
+        await client.incoming.put(
+            json.dumps(
+                {
+                    "type": "auth",
+                    "token": "good-token",
+                    "device": {"name": "Attic Dashboard", "id": "attic-tablet"},
+                }
+            )
+        )
+        task = asyncio.create_task(_run_session(client, grok, idle=5, memory=memory))
+        await asyncio.sleep(0.03)
+        await grok.incoming.put(
+            json.dumps(
+                {
+                    "type": "conversation.item.input_audio_transcription.completed",
+                    "transcript": "what's this weekend",
+                }
+            )
+        )
+        await grok.incoming.put(
+            json.dumps(
+                {
+                    "type": "conversation.item.input_audio_transcription.completed",
+                    "transcript": "thank you",
+                }
+            )
+        )
+        await asyncio.wait_for(task, timeout=2)
+
+    async def second():
+        client = QueueSocket()
+        grok = QueueSocket()
+        await client.incoming.put(
+            json.dumps(
+                {
+                    "type": "auth",
+                    "token": "good-token",
+                    "device": {"name": "Attic Dashboard", "id": "attic-tablet"},
+                }
+            )
+        )
+        task = asyncio.create_task(_run_session(client, grok, idle=0.1, memory=memory))
+        await asyncio.wait_for(task, timeout=2)
+        return grok.sent
+
+    asyncio.run(first())
+    sent = asyncio.run(second())
+    update = next(json.loads(item) for item in sent if isinstance(item, str) and "session.update" in item)
+    assert "what's this weekend" not in update["session"]["instructions"]

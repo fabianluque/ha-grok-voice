@@ -5,8 +5,11 @@ import {
   areaFromKioskInfo,
   areaFromRegistries,
   describeArea,
+  deviceFromKioskInfo,
   immediateKioskArea,
+  immediateKioskDevice,
   peekCachedKioskArea,
+  peekCachedKioskDevice,
   prefetchKioskArea,
   resetKioskAreaCache,
   resolveKioskArea,
@@ -142,5 +145,24 @@ describe("kiosk area", () => {
     });
     expect(area.source).toBe("fallback");
     expect(maxInFlight).toBe(3);
+  });
+
+  it("caches kiosk device identity during area prefetch without blocking wake", async () => {
+    expect(immediateKioskDevice()).toBeNull();
+    expect(
+      deviceFromKioskInfo({ name: "Attic Dashboard", deviceId: "attic-tablet" }),
+    ).toEqual({ name: "Attic Dashboard", id: "attic-tablet" });
+    const delayed = prefetchKioskArea({
+      kiosk: {
+        getDeviceInfo: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 30));
+          return { name: "Attic Dashboard", id: "attic-tablet" };
+        },
+      },
+    });
+    expect(immediateKioskDevice()).toBeNull();
+    await delayed;
+    expect(peekCachedKioskDevice()).toEqual({ name: "Attic Dashboard", id: "attic-tablet" });
+    expect(immediateKioskDevice()).toEqual({ name: "Attic Dashboard", id: "attic-tablet" });
   });
 });

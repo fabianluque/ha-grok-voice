@@ -11,6 +11,11 @@ export interface KioskArea {
   source: AreaSource;
 }
 
+export interface KioskDevice {
+  name: string;
+  id?: string;
+}
+
 export interface AreaRecord {
   area_id?: string | null;
   name?: string | null;
@@ -150,17 +155,19 @@ export async function resolveKioskArea(input: {
   explicit?: { area?: string; areaId?: string } | null;
   fallbackName?: string;
 }): Promise<KioskArea> {
-  const explicit = areaFromExplicit(input.explicit);
-  if (explicit) {
-    return explicit;
-  }
-
   let info: unknown;
   try {
     info = await input.kiosk?.getDeviceInfo?.();
   } catch {
     info = null;
   }
+  rememberKioskDevice(deviceFromKioskInfo(info));
+
+  const explicit = areaFromExplicit(input.explicit);
+  if (explicit) {
+    return explicit;
+  }
+
   const fromKiosk = areaFromKioskInfo(info);
   if (fromKiosk) {
     return fromKiosk;
@@ -187,11 +194,13 @@ function fallbackArea(name?: string): KioskArea {
 
 let areaCache: KioskArea | null = null;
 let areaPrefetch: Promise<KioskArea> | null = null;
+let deviceCache: KioskDevice | null = null;
 
 /** Test hook. Production boot does not call this. */
 export function resetKioskAreaCache(): void {
   areaCache = null;
   areaPrefetch = null;
+  deviceCache = null;
 }
 
 export function peekCachedKioskArea(): KioskArea | null {
@@ -240,4 +249,35 @@ export function prefetchKioskArea(input: {
 export function describeArea(area: KioskArea): string {
   const id = area.id ? ` id=${area.id}` : "";
   return `${area.name}${id} source=${area.source}`;
+}
+
+const DEVICE_ID_KEYS = ["id", "deviceId", "device_id", "ha_device_id", "serial"];
+
+export function deviceFromKioskInfo(info: unknown): KioskDevice | null {
+  if (!info || typeof info !== "object") {
+    return null;
+  }
+  const record = info as Record<string, unknown>;
+  const name = trimString(record.name);
+  const id = firstString(record, DEVICE_ID_KEYS);
+  if (!name && !id) {
+    return null;
+  }
+  return { name: name || id, id: id || undefined };
+}
+
+export function peekCachedKioskDevice(): KioskDevice | null {
+  return deviceCache;
+}
+
+export function rememberKioskDevice(device: KioskDevice | null): KioskDevice | null {
+  if (device) {
+    deviceCache = device;
+  }
+  return deviceCache;
+}
+
+/** Cached satellite identity for the auth message. Never awaits HA. */
+export function immediateKioskDevice(): KioskDevice | null {
+  return deviceCache;
 }

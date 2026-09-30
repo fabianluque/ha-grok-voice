@@ -74,6 +74,13 @@ def test_default_area_is_attic_and_can_be_overridden(tmp_path, monkeypatch):
     assert custom.default_area_id == "kitchen"
 
 
+def test_home_location_and_memory_ttl_defaults(tmp_path, monkeypatch):
+    monkeypatch.setenv("SUPERVISOR_TOKEN", "addon-token")
+    settings = load_settings(_options(tmp_path, {}), env_dirs=())
+    assert settings.home_location == ""
+    assert settings.conversation_memory_ttl_seconds == 480
+
+
 def test_missing_addon_token_stays_empty(tmp_path, monkeypatch):
     monkeypatch.delenv("SUPERVISOR_TOKEN", raising=False)
     monkeypatch.delenv("HASSIO_TOKEN", raising=False)

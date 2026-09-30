@@ -179,9 +179,13 @@ def test_ingress_socket_opens_grok_without_a_user_token():
         await handle_socket(socket, _settings(), http, connect)
 
     asyncio.run(run())
-    assert http.calls == []
     assert grok.sent
     assert any('"type": "ready"' in str(item) for item in socket.sent)
+    assert all(
+        str(url).endswith("/api/config") or str(url).endswith("/api/states/zone.home")
+        for url, _headers in http.calls
+    )
+    assert all(headers["Authorization"] == "Bearer supervisor-token" for _url, headers in http.calls)
 
 
 def test_spoofed_ingress_headers_on_the_debug_port_still_need_a_token():

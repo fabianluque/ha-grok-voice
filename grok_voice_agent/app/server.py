@@ -18,10 +18,13 @@ from app.grok_session import (
     build_session,
     is_closing_utterance,
     merge_session_area,
+    parse_client_device,
     xai_realtime_error_log,
     xai_session_tools_log,
 )
+from app.ha_context import CONFIG_FETCH_TIMEOUT_SECONDS, fallback_home_context, fetch_home_context
 from app.mcp_client import McpHttpClient, function_tools, voice_tool_log
+from app.memory import ConversationMemory, SessionTranscript, conversation_key
 from app.static import process_http_request
 from app.tools import ToolGateway
 
@@ -85,7 +88,26 @@ def install_redacting_logs(secrets: list[str]) -> None:
     logging.getLogger().addFilter(_Redact())
 
 
-async def handle_socket(websocket, settings, http, grok_connect=None) -> None:
+async def _home_context(http, settings):
+    try:
+        return await asyncio.wait_for(
+            fetch_home_context(http, settings),
+            timeout=CONFIG_FETCH_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:
+        log.info("home context fallback (%s)", type(exc).__name__)
+        return fallback_home_context(settings)
+
+
+async def _list_tools(gateway):
+    try:
+        return await gateway.mcp.list_tools()
+    except Exception as exc:
+        log.exception("MCP tools/list failed: %s", exc)
+        return []
+
+
+async def handle_socket(websocket, settings, http, grok_connect=None, memory=None) -> None:
     connection = VoiceConnection(settings, http, grok_connect)
     ingress_user = ingress_user_from_socket(websocket, settings.ingress_port)
     try:
@@ -125,22 +147,33 @@ async def handle_socket(websocket, settings, http, grok_connect=None) -> None:
     else:
         log.info("voice session authenticated")
     area = merge_session_area(message.get("area"), settings)
+    device = parse_client_device(message.get("device"))
+    store = memory if memory is not None else ConversationMemory(settings.conversation_memory_ttl_seconds)
+    memory_key = conversation_key(device, area)
+    history = store.get(memory_key)
     if area:
         log.info("voice area name=%s id=%s", area.get("name"), area.get("id") or "")
+    if device:
+        log.info("voice device name=%s id=%s", device.get("name"), device.get("id") or "")
+    if history:
+        log.info("voice memory key=%s turns=%s", memory_key, len(history))
     gateway = ToolGateway(
         McpHttpClient(settings.ha_mcp_url, settings.mcp_token, http),
         settings.allowlist,
         default_area=area,
     )
-    try:
-        listed = await gateway.mcp.list_tools()
-    except Exception as exc:
-        log.exception("MCP tools/list failed: %s", exc)
-        listed = []
+    listed, context = await asyncio.gather(_list_tools(gateway), _home_context(http, settings))
     grok_tools = function_tools(listed, settings.allowlist)
-    level, message = voice_tool_log(listed, grok_tools)
-    getattr(log, level)(message)
-    await connection.grok.send(json.dumps(build_session(settings, grok_tools, area)))
+    level, tool_message = voice_tool_log(listed, grok_tools)
+    getattr(log, level)(tool_message)
+    log.info(
+        "voice context tz=%s location=%s",
+        context.time_zone,
+        context.home_location or context.zone_name or context.location_name or "",
+    )
+    await connection.grok.send(
+        json.dumps(build_session(settings, grok_tools, area, context=context, history=history))
+    )
     await websocket.send(
         json.dumps(
             {
@@ -153,6 +186,7 @@ async def handle_socket(websocket, settings, http, grok_connect=None) -> None:
 
     bridge = GrokBridge(gateway)
     watch = ConversationWatch()
+    transcript = SessionTranscript()
     idle = asyncio.Event()
     activity = asyncio.Event()
     end_reason = "idle"
@@ -234,6 +268,12 @@ async def handle_socket(websocket, settings, http, grok_connect=None) -> None:
                     await websocket.send(client_event["pcm"])
                     continue
                 await websocket.send(json.dumps(client_event))
+                if client_event.get("type") == "transcript":
+                    transcript.add(
+                        client_event.get("role"),
+                        client_event.get("text"),
+                        bool(client_event.get("final")),
+                    )
                 if (
                     client_event.get("type") == "transcript"
                     and client_event.get("role") == "user"
@@ -275,6 +315,10 @@ async def handle_socket(websocket, settings, http, grok_connect=None) -> None:
         log.error("grok connection ended: %s", type(grok_task.exception()).__name__)
     elif client_task.done() and not client_task.cancelled() and end_reason == "idle":
         reason = "stop"
+    if reason == "done":
+        store.forget(memory_key)
+    elif transcript.turns:
+        store.remember(memory_key, transcript.turns)
     await _end(websocket, reason)
     with contextlib.suppress(Exception):
         await connection.grok.close()
@@ -348,8 +392,10 @@ def voice_serve(handler, host: str, port: int, process_request):
 
 
 async def serve_voice(settings, http) -> None:
+    memory = ConversationMemory(settings.conversation_memory_ttl_seconds)
+
     async def handler(websocket):
-        await handle_socket(websocket, settings, http)
+        await handle_socket(websocket, settings, http, memory=memory)
 
     async def process_request(_connection, request):
         return process_http_request(request)

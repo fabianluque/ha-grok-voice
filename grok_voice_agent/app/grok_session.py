@@ -11,8 +11,11 @@ import base64
 import json
 import re
 import unicodedata
+from datetime import datetime
 from typing import Any
 
+from app.ha_context import HomeContext, with_home_context
+from app.memory import Turn, with_history_instructions
 from app.tools import ToolGateway
 
 AUDIO_DELTA_TYPES = {"response.output_audio.delta", "response.audio.delta"}
@@ -113,6 +116,26 @@ def parse_client_area(value: object) -> dict[str, str] | None:
     if area_id:
         area["id"] = area_id
     return area
+
+
+def parse_client_device(value: object) -> dict[str, str] | None:
+    """Optional satellite/device identity sent on the voice auth message."""
+    if not isinstance(value, dict):
+        return None
+    name = str(value.get("name") or "").strip()
+    device_id = str(
+        value.get("id") or value.get("device_id") or value.get("deviceId") or ""
+    ).strip()
+    if not name and not device_id:
+        return None
+    if len(name) > 80:
+        name = name[:80]
+    if len(device_id) > 80:
+        device_id = device_id[:80]
+    device: dict[str, str] = {"name": name or device_id}
+    if device_id:
+        device["id"] = device_id
+    return device
 
 
 def slug_area_id(name: str) -> str:
@@ -224,22 +247,58 @@ def xai_realtime_error_log(event: dict) -> str | None:
     return f"xAI realtime error: {detail}"
 
 
-def build_session(settings, function_tools: list[dict], area: dict[str, str] | None = None) -> dict:
+# Soft server VAD with audio pre-roll so the first syllable after a snappy
+# listen-start is not clipped. Do not set idle_timeout_ms (xAI check-in) or
+# silence_duration_ms (leave the platform default for turn end).
+SERVER_VAD = {
+    "type": "server_vad",
+    "threshold": 0.4,
+    "prefix_padding_ms": 400,
+}
+
+
+def compose_instructions(
+    base: str,
+    area: dict[str, str] | None = None,
+    context: HomeContext | None = None,
+    history: list[Turn] | None = None,
+    now: datetime | None = None,
+) -> str:
+    text = with_area_instructions(base, area)
+    text = with_home_context(text, context, now=now)
+    return with_history_instructions(text, history)
+
+
+def build_session(
+    settings,
+    function_tools: list[dict],
+    area: dict[str, str] | None = None,
+    context: HomeContext | None = None,
+    history: list[Turn] | None = None,
+    now: datetime | None = None,
+) -> dict:
     tools: list[dict] = list(function_tools)
     if settings.enable_web_search:
         tools.append({"type": "web_search"})
     if settings.enable_x_search:
         tools.append({"type": "x_search"})
+    home = context or HomeContext(home_location=str(getattr(settings, "home_location", "") or ""))
     return {
         "type": "session.update",
         "session": {
             "voice": settings.voice,
-            "instructions": with_area_instructions(settings.instructions, area),
+            "instructions": compose_instructions(
+                settings.instructions,
+                area,
+                home,
+                history,
+                now=now,
+            ),
             "reasoning": {"effort": settings.reasoning_effort},
             # server_vad ends the user turn. Do not set idle_timeout_ms: xAI
             # treats that as a check-in, not a hang-up. Session end uses our
             # idle_timeout_seconds after VAD-quiet (see ConversationWatch).
-            "turn_detection": {"type": "server_vad"},
+            "turn_detection": dict(SERVER_VAD),
             "audio": {
                 "input": {"format": {"type": "audio/pcm", "rate": 24000}},
                 "output": {"format": {"type": "audio/pcm", "rate": 24000}},
