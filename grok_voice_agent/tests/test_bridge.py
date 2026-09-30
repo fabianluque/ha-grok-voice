@@ -88,6 +88,51 @@ def test_speech_started_is_forwarded_immediately():
     ]
 
 
+def test_assistant_transcript_deltas_stream_then_finalize():
+    bridge = GrokBridge(ToolGateway(FakeMcp(), frozenset({"HassTurnOn"})))
+    assert bridge.client_messages({"type": "response.audio_transcript.delta", "delta": "The lights"}) == [
+        {"type": "transcript", "role": "assistant", "text": "The lights", "final": False}
+    ]
+    assert bridge.client_messages(
+        {"type": "response.output_audio_transcript.delta", "delta": " are on."}
+    ) == [{"type": "transcript", "role": "assistant", "text": "The lights are on.", "final": False}]
+    assert bridge.client_messages(
+        {"type": "response.audio_transcript.done", "transcript": "The lights are on."}
+    ) == [{"type": "transcript", "role": "assistant", "text": "The lights are on.", "final": True}]
+    assert bridge.client_messages({"type": "response.audio_transcript.delta", "delta": "Okay"}) == [
+        {"type": "transcript", "role": "assistant", "text": "Okay", "final": False}
+    ]
+
+
+def test_assistant_cumulative_delta_replaces_partial():
+    bridge = GrokBridge(ToolGateway(FakeMcp(), frozenset({"HassTurnOn"})))
+    assert bridge.client_messages(
+        {"type": "response.output_audio_transcript.delta", "delta": "Hi"}
+    ) == [{"type": "transcript", "role": "assistant", "text": "Hi", "final": False}]
+    assert bridge.client_messages(
+        {"type": "response.output_audio_transcript.delta", "delta": "Hi there"}
+    ) == [{"type": "transcript", "role": "assistant", "text": "Hi there", "final": False}]
+
+
+def test_user_transcript_delta_streams():
+    bridge = GrokBridge(ToolGateway(FakeMcp(), frozenset({"HassTurnOn"})))
+    assert bridge.client_messages(
+        {"type": "conversation.item.input_audio_transcription.delta", "delta": "turn on"}
+    ) == [{"type": "transcript", "role": "user", "text": "turn on", "final": False}]
+    assert bridge.client_messages(
+        {"type": "conversation.item.input_audio_transcription.delta", "delta": " the lights"}
+    ) == [{"type": "transcript", "role": "user", "text": "turn on the lights", "final": False}]
+
+
+def test_speech_started_resets_assistant_partial():
+    bridge = GrokBridge(ToolGateway(FakeMcp(), frozenset({"HassTurnOn"})))
+    bridge.client_messages({"type": "response.audio_transcript.delta", "delta": "Hello"})
+    assert bridge.client_messages({"type": "input_audio_buffer.speech_started"}) == [{"type": "speech_started"}]
+    assert bridge.client_messages({"type": "response.audio_transcript.delta", "delta": "Yes"}) == [
+        {"type": "transcript", "role": "assistant", "text": "Yes", "final": False}
+    ]
+
+
 def test_completed_user_transcript_is_marked_final():
     bridge = GrokBridge(ToolGateway(FakeMcp(), frozenset({"HassTurnOn"})))
     assert bridge.client_messages(

@@ -24,12 +24,23 @@ TRANSCRIPT_ROLES = {
     "conversation.item.input_audio_transcription.completed": "user",
     "response.output_audio_transcript.done": "assistant",
     "response.audio_transcript.done": "assistant",
+    "response.output_text.done": "assistant",
+    "response.text.done": "assistant",
 }
 FINAL_TRANSCRIPT_TYPES = {
     "conversation.item.input_audio_transcription.completed",
     "response.output_audio_transcript.done",
     "response.audio_transcript.done",
+    "response.output_text.done",
+    "response.text.done",
 }
+ASSISTANT_DELTA_TYPES = {
+    "response.output_audio_transcript.delta",
+    "response.audio_transcript.delta",
+    "response.output_text.delta",
+    "response.text.delta",
+}
+USER_DELTA_TYPES = {"conversation.item.input_audio_transcription.delta"}
 
 _APOS = str.maketrans({"\u2019": "'", "\u2018": "'", "`": "'"})
 _FILLERS = frozenset(
@@ -402,6 +413,8 @@ class GrokBridge:
         self.awaiting_tool_followup = False
         self.end_after_response = False
         self.end_session_forget = False
+        self._assistant_partial = ""
+        self._user_partial = ""
 
     def client_audio(self, pcm: bytes) -> dict:
         """Always append mic audio, including while the assistant is speaking."""
@@ -461,15 +474,21 @@ class GrokBridge:
         event_type = event.get("type")
         if event_type == "input_audio_buffer.speech_started":
             self.playing = False
+            self._assistant_partial = ""
+            self._user_partial = ""
             return [{"type": "speech_started"}]
         if event_type == "input_audio_buffer.speech_stopped":
             return [{"type": "speech_stopped"}]
         if event_type == "response.created":
+            self._assistant_partial = ""
             response = event.get("response") or {}
             return [{"type": "response_started", "responseId": response.get("id")}]
         if event_type in AUDIO_DELTA_TYPES and event.get("delta"):
             self.playing = True
             return [{"type": "binary", "pcm": base64.b64decode(event["delta"])}]
+        partial = _stream_transcript(self, event_type, event)
+        if partial:
+            return [partial]
         role = TRANSCRIPT_ROLES.get(event_type or "")
         if role:
             text = event.get("transcript") or event.get("delta") or ""
@@ -486,6 +505,46 @@ class GrokBridge:
         if item_transcript:
             return [item_transcript]
         return []
+
+
+def _extend_partial(current: str, piece: str) -> str:
+    """Merge a delta chunk that may be incremental or a cumulative snapshot."""
+    chunk = str(piece or "")
+    if not chunk:
+        return current
+    if not current:
+        return chunk
+    if chunk.startswith(current):
+        return chunk
+    if current.startswith(chunk):
+        return current
+    return current + chunk
+
+
+def _stream_transcript(bridge: GrokBridge, event_type: object, event: dict) -> dict[str, Any] | None:
+    """Forward in-progress user/assistant text as overlay upserts, not only *.done."""
+    kind = str(event_type or "")
+    if kind in ASSISTANT_DELTA_TYPES:
+        piece = str(event.get("delta") or event.get("transcript") or event.get("text") or "")
+        bridge._assistant_partial = _extend_partial(bridge._assistant_partial, piece)
+        text = bridge._assistant_partial.strip()
+        if not text:
+            return None
+        return {"type": "transcript", "role": "assistant", "text": text, "final": False}
+    if kind in USER_DELTA_TYPES:
+        piece = str(event.get("delta") or event.get("transcript") or event.get("text") or "")
+        bridge._user_partial = _extend_partial(bridge._user_partial, piece)
+        text = bridge._user_partial.strip()
+        if not text:
+            return None
+        return {"type": "transcript", "role": "user", "text": text, "final": False}
+    if kind in FINAL_TRANSCRIPT_TYPES:
+        role = TRANSCRIPT_ROLES.get(kind)
+        if role == "assistant":
+            bridge._assistant_partial = ""
+        elif role == "user":
+            bridge._user_partial = ""
+    return None
 
 
 def _message_item_transcript(event: dict) -> dict[str, Any] | None:
