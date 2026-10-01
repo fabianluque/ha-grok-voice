@@ -27,24 +27,28 @@ def test_closing_utterances_match_natural_variants():
         "thank you",
         "Thanks!",
         "thanks grok",
+        "thanks a lot",
+        "thank you so much",
         "OK that's all",
         "that’s it",
         "that's it, thanks",
+        "thanks that's all",
+        "that'll be all",
+        "that'll do",
         "goodbye",
         "Good bye.",
-        "stop listening",
-        "please stop listening",
-        "thank you so much",
+        "good night",
+        "goodnight",
         "oh, that's great, thank you",
         "that's great, thanks",
         "alright, goodbye",
         "ok bye",
         "that's all for now, thank you",
-        "you can go now",
-        "you can go",
         "thanks I'm done",
         "I'm done",
-        "never mind",
+        "we're done",
+        "we're good",
+        "we're all set",
         "all set",
     ):
         assert is_closing_utterance(text), text
@@ -54,12 +58,22 @@ def test_requests_are_not_closing_utterances():
     for text in (
         "thank you for turning on the lights",
         "thanks, now turn off the kitchen",
+        "stop listening",
+        "please stop listening",
         "stop listening to the radio",
         "that's all the lights in the attic",
         "could you thank you later for me",
         "don't stop listening until I say so",
-        "tell me when I'm done",
+        "you can go now",
+        "you can go",
+        "never mind",
         "never mind the kitchen lights",
+        "that's enough",
+        "that's everything",
+        "carry on",
+        "go now",
+        "tell me when I'm done",
+        "tell me when we're done",
         "",
         None,
     ):
@@ -150,29 +164,30 @@ def test_end_session_tool_is_local_and_prompted():
     assert END_SESSION_TOOL_NAME in text
     assert "home device or in-home media" in text
     assert "Never call end_session after sports" in text
-    assert "same turn as a follow-up" in text
+    assert "same turn as a question" in text
     assert "short first answer" in text
-    assert "ONE brief offer" in text
-    assert "answer that follow-up yourself" in text
+    assert "Do not ask a follow-up" in text
+    assert "ONE brief offer" not in text
     assert "clarifying" in text
     assert "thank you" in text
-    assert "anything else" in text
+    assert "Anything else" not in text
     description = str(END_SESSION_TOOL["description"])
     assert "keep listening" in description
-    assert "answer that offer yourself" in description
+    assert "do not ask a follow-up" in description
+    assert "ONE brief offer" not in description
     assert "ask a brief follow-up instead" not in description
 
 
-def test_qa_turn_policy_is_short_answer_one_offer_then_stop():
+def test_qa_turn_policy_is_short_answer_then_stop():
     text = with_qa_turn_instructions("Speak briefly.")
     assert "Speak briefly." in text
     assert "short first answer" in text
-    assert "ONE brief offer" in text
-    assert "Want his term?" in text
     assert "Then STOP" in text
-    assert "answer that follow-up yourself" in text
-    assert "Want more? He served 1789" in text
-    assert "Want his term dates?" in text
+    assert "Do not ask a follow-up" in text
+    assert "Do not offer more" in text
+    assert "ONE brief offer" not in text
+    assert "Want his term" not in text
+    assert "Anything else" not in text
     assert "Do not hang up after Q&A" in text
 
 
@@ -185,16 +200,18 @@ def test_composed_instructions_put_qa_policy_after_history():
     assert text.index("what's this weekend") < text.index("Q&A policy")
     assert text.rstrip().endswith("Do not hang up after Q&A.")
     assert "Never call end_session after sports" in text
-    assert "same turn as a follow-up" in text
+    assert "Do not ask a follow-up" in text
+    assert "ONE brief offer" not in text
 
 
 def test_default_addon_instructions_match_qa_stop_policy():
     text = (Path(__file__).resolve().parents[1] / "config.yaml").read_text(encoding="utf-8")
     assert "short first answer" in text
-    assert "ONE brief offer" in text
     assert "Then STOP" in text
-    assert "answer that offer yourself" in text
-    assert "ask a brief follow-up" not in text
+    assert "Do not ask a follow-up" in text
+    assert "ONE brief offer" not in text
+    assert "Anything else" not in text
+    assert "Want his term" not in text
 
 
 def test_home_control_tools_are_device_and_media_actions():

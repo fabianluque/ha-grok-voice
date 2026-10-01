@@ -112,6 +112,32 @@ function fakeStream(): MediaStream {
   return { getTracks: () => [track] } as unknown as MediaStream;
 }
 
+describe("duplex getUserMedia constraints", () => {
+  afterEach(() => {
+    resetAudioContextGate();
+  });
+
+  it("requests echoCancellation, noiseSuppression, and autoGainControl", async () => {
+    const context = new FakeAudioContext();
+    let constraints: MediaStreamConstraints | undefined;
+    const captured = await captureMic(context as unknown as AudioContext, () => undefined, {
+      getUserMedia: async (requested) => {
+        constraints = requested;
+        return fakeStream();
+      },
+    });
+    expect(constraints).toEqual({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        channelCount: 1,
+      },
+    });
+    captured.stop();
+  });
+});
+
 describe("live AudioContext before mic graph", () => {
   afterEach(() => {
     resetAudioContextGate();

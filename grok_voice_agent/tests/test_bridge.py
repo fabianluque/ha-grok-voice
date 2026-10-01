@@ -628,10 +628,10 @@ def test_session_instructions_include_client_area():
     assert "Music Assistant" in text
     assert "end_session" in text
     assert "Never call end_session after sports" in text
-    assert "same turn as a follow-up" in text
+    assert "same turn as a question" in text
     assert "short first answer" in text
-    assert "ONE brief offer" in text
     assert "Then STOP" in text
-    assert "answer that follow-up yourself" in text
+    assert "Do not ask a follow-up" in text
+    assert "ONE brief offer" not in text
     assert "thank you" in text
     assert text.rstrip().endswith("Do not hang up after Q&A.")

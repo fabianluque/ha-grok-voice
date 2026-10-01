@@ -4,6 +4,11 @@ Versions match `grok_voice_agent/config.yaml`. GitHub Releases list the
 merged pull requests since the previous tag. Issues closed with `Fixes #N`
 in those pull requests are included below when GitHub reports them.
 
+## [0.2.26] - 2026-10-01
+
+- Narrow dismiss hang-up to clear thank-you / that's-all closers (`thank you`, `thanks`, `that's all`, `that's it`, `that'll do`, `goodbye`, `bye`, `good night`, `I'm done`, `we're done`, `we're good`, `all set`, and close variants). Drop weaker phrases that caused false hang-ups (`stop listening`, `you can go`, `never mind`, `that's enough`, `that's everything`, `carry on`, `go now`).
+- Stop offering Q&A follow-ups. After sports/news/trivia, Grok gives a short first answer and waits. Prompt text no longer steers it to ask “Want his term?” or “Anything else?”. Home-command hang-up, overlay tap, and idle are unchanged; Q&A still does not hang up on its own.
+
 ## [0.2.25] - 2026-09-30
 
 - Auto-pick this kiosk's Home Assistant area when Kiosk Satellite does not expose area fields. Duplex auth no longer sticks on `Area (none) source=fallback` for a tablet whose HA device already has an area (Dining Room on "Dining Room Dashboard"): match `name_by_user` and `name` (including `{Room} Dashboard` vs `{Room}`), then unique ESPHome / `assist_satellite` ids, and wait briefly for registries on the session path once `callWS` is ready. Listening-on-wake, hang-up, Q&A, `duplex_lan_host`, and overlay streaming are unchanged. No per-tablet inject or global `default_area` required when the HA device has an area.

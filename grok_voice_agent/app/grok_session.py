@@ -77,8 +77,10 @@ _SUFFIX_CLOSERS = frozenset(
         "that is it",
         "thatll be all",
         "that will be all",
-        "thats everything",
-        "that is everything",
+        "thatll do",
+        "that will do",
+        "thatll do it",
+        "that will do it",
         "thats all thanks",
         "thats it thanks",
         "thanks thats all",
@@ -86,18 +88,13 @@ _SUFFIX_CLOSERS = frozenset(
         "thank you thats all",
         "thank you thats it",
         "thats all for now",
+        "that is all for now",
         "goodbye",
         "good bye",
         "bye",
         "bye bye",
-        "stop listening",
-        "please stop listening",
-        "you can go",
-        "you can go now",
-        "you may go",
-        "you may go now",
-        "thats enough",
-        "that is enough",
+        "good night",
+        "goodnight",
         "thanks im done",
         "thank you im done",
         "im done thanks",
@@ -113,11 +110,9 @@ _EXACT_CLOSERS = frozenset(
     {
         "im done",
         "i am done",
+        "were done",
+        "we are done",
         "all set",
-        "never mind",
-        "nevermind",
-        "carry on",
-        "go now",
     }
 )
 _CLOSERS = _SUFFIX_CLOSERS | _EXACT_CLOSERS
@@ -283,17 +278,16 @@ END_SESSION_TOOL = {
     "description": (
         "End this voice session and return the tablet to wake-word listening. "
         "Call after a brief spoken acknowledgment when the user dismisses you "
-        "('thank you', 'thanks', 'that's all', 'you can go', 'you can go now', "
-        "'thanks I'm done', 'never mind', 'goodbye') or after a successful home "
-        "device or in-home media action (lights, garage, lock, climate, cover, "
-        "play/pause/volume) that already succeeded and needs no follow-up. Do "
-        "not call after sports, news, events, history, or general Q&A — keep "
-        "listening. After a short first answer you may ask one brief offer of "
-        "more, then STOP; do not continue and answer that offer yourself. After "
-        "a goodbye or thank you, do not ask a follow-up. Never call this in the "
-        "same turn as a follow-up question. Do not call during a multi-step "
-        "task, while asking a clarifying question, or when the user is listing "
-        "several requests."
+        "('thank you', 'thanks', 'that's all', 'that's it', 'that'll do', "
+        "'goodbye', 'bye', 'good night', 'I'm done', 'we're done', 'we're good', "
+        "'all set') or after a successful home device or in-home media action "
+        "(lights, garage, lock, climate, cover, play/pause/volume) that already "
+        "succeeded. Do not call after sports, news, events, history, or general "
+        "Q&A — keep listening. After a short first answer, STOP and wait; do "
+        "not ask a follow-up. After a goodbye or thank you, just ack and hang "
+        "up. Never call this in the same turn as a question. Do not call during "
+        "a multi-step task, while asking a clarifying question, or when the "
+        "user is listing several requests."
     ),
     "parameters": {
         "type": "object",
@@ -406,40 +400,35 @@ def tool_output_failed(output: str) -> bool:
 def with_session_end_instructions(base: str) -> str:
     extra = (
         "Call end_session only in these cases: (1) the user dismissed you "
-        "(goodbye, thank you, thanks, that's all, you can go), reason=dismiss; "
+        "(thank you, thanks, that's all, that's it, goodbye, bye, good night, "
+        "I'm done, we're done, we're good, all set), reason=dismiss; "
         "or (2) you just successfully ran a home device or in-home media action "
         "(lights, garage, locks, climate, covers, play/pause/volume on a house "
         "speaker) and you are not asking a question, reason=command. Speak a "
-        "very short ack first. After thank you or goodbye, do not ask "
-        "'anything else' — just ack and hang up. Never call end_session after "
-        "sports, news, events, history, calendars, lists, trivia, or other "
-        "conversation — not even with reason=dismiss. For those Q&A turns: "
-        "short first answer, optional ONE brief offer of more, then STOP and "
-        "wait. Never continue and answer that follow-up yourself. Never call "
-        "end_session in the same turn as a follow-up question. Never hang up "
-        "until the user answers, says goodbye, or goes silent. Do not hang up "
-        "mid multi-step task or while waiting for a clarifying answer."
+        "very short ack first. After thank you or goodbye, just ack and hang "
+        "up. Never call end_session after sports, news, events, history, "
+        "calendars, lists, trivia, or other conversation — not even with "
+        "reason=dismiss. For those Q&A turns: short first answer, then STOP "
+        "and wait. Do not ask a follow-up. Never call end_session in the same "
+        "turn as a question. Never hang up until the user answers, says "
+        "goodbye, or goes silent. Do not hang up mid multi-step task or while "
+        "waiting for a clarifying answer."
     )
     root = (base or "").rstrip()
     return f"{root}\n\n{extra}" if root else extra
 
 
 def with_qa_turn_instructions(base: str) -> str:
-    """Last-injected Q&A turn shape: short answer, optional one offer, stop.
+    """Last-injected Q&A turn shape: short answer, stop, no follow-up offer.
 
     Hang-up policy stays in ``with_session_end_instructions``. This block is
-    appended after history so the model does not monologue past the offer.
+    appended after history so the model does not keep talking past the answer.
     """
     extra = (
         "Q&A policy (sports, events, history, news, trivia, facts): Give a "
-        "short first answer to the question (one sentence, two max). You may "
-        "then ask ONE brief offer of a follow-up (for example 'Want his term?' "
-        "or 'Anything else?'). Then STOP and wait for the user. Never continue "
-        "and answer that follow-up yourself in the same turn. Never monologue: "
-        "long answer + 'want more?' + then keeping talking. "
-        "Bad: 'George Washington. Want more? He served 1789 to 1797.' "
-        "Good: 'George Washington was the first U.S. president. Want his term "
-        "dates?' then silence. Do not hang up after Q&A."
+        "short first answer to the question (one sentence, two max). Then STOP "
+        "and wait for the user. Do not ask a follow-up. Do not offer more. "
+        "Never monologue past that first answer. Do not hang up after Q&A."
     )
     root = (base or "").rstrip()
     return f"{root}\n\n{extra}" if root else extra
@@ -526,7 +515,7 @@ def compose_instructions(
     text = with_area_instructions(text, area)
     text = with_session_end_instructions(text)
     text = with_history_instructions(text, history)
-    # Q&A stop-after-offer last so history does not bury it.
+    # Q&A stop-after-answer last so history does not bury it.
     return with_qa_turn_instructions(text)
 
 

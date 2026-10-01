@@ -46,7 +46,7 @@ You only need the API key to talk. Everything else is optional.
 | **Home location** | Optional city, region, or ZIP (for example `Austin, TX`). Injected into every session so Grok can talk about weather and nearby events. Leave blank until you fill it in. |
 | **Default area** | Optional Home Assistant area name used when a kiosk did not send a room (Open Web UI, or lookup failed). Leave blank unless you want a fallback room. |
 | **Duplex LAN host** | Optional Home Assistant LAN IP for Kiosk Satellite tablets that cannot resolve `homeassistant.local` (for example `192.168.86.38`). Leave blank to keep automatic discovery. |
-| **Instructions** | Spoken persona. The shipped default hangs up after a successful home command or a goodbye. After a question it answers, may offer more once, then waits. Edit freely. Do not put secrets here. |
+| **Instructions** | Spoken persona. The shipped default hangs up after a successful home command or a goodbye. After a question it answers, then waits — it does not offer more. Edit freely. Do not put secrets here. |
 | **Idle timeout** | Seconds of silence after Grok finishes before the session ends (default **30**). |
 
 A blank **MCP tool allowlist** attaches lights, live context, media / Music Assistant, todo lists, and Mealie. Set `*` to offer every MCP tool. Details are in [`grok_voice_agent/DOCS.md`](grok_voice_agent/DOCS.md).
@@ -95,11 +95,11 @@ The microphone stays open while Grok is speaking, so you can talk over a reply (
 The session **hangs up** after:
 
 - a successful **home device or in-home media** action (lights, garage, locks, climate, covers, play/pause/volume)
-- **thank you** / **goodbye** / **that’s all** (and similar closers)
+- **thank you** / **thanks** / **that’s all** / **goodbye** / **bye** / **good night** / **I’m done** (and close variants)
 - a tap on the kiosk conversation overlay
 - **idle** silence once Grok has finished (default 30 seconds)
 
-Questions stay open. After sports, news, trivia, or other Q&A, Grok gives a **short first answer**, may ask **one** brief offer of more (“Want his term?”), then **stops and waits**. It must not keep talking and answer that offer itself. It does not hang up just because it finished a Q&A turn.
+Questions stay open. After sports, news, trivia, or other Q&A, Grok gives a **short first answer**, then **stops and waits**. It does not offer a follow-up. It does not hang up just because it finished a Q&A turn.
 
 ## Troubleshooting
 
