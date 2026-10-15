@@ -20,6 +20,7 @@ HELP_ACTIONS = frozenset({"help", "info", "usage", "?"})
 # Event types the relay already handles or that are expected noise (not timeline-worthy).
 KNOWN_UPSTREAM = frozenset({
     "error",
+    "ping",
     "session.created",
     "session.updated",
     "rate_limits.updated",
@@ -28,6 +29,7 @@ KNOWN_UPSTREAM = frozenset({
     "input_audio_buffer.committed",
     "input_audio_buffer.cleared",
     "input_audio_buffer.append",
+    "conversation.created",
     "conversation.item.created",
     "conversation.item.added",
     "conversation.item.done",
@@ -35,6 +37,7 @@ KNOWN_UPSTREAM = frozenset({
     "conversation.item.deleted",
     "conversation.item.input_audio_transcription.completed",
     "conversation.item.input_audio_transcription.failed",
+    "conversation.item.input_audio_transcription.updated",
     "response.created",
     "response.done",
     "response.output_item.added",

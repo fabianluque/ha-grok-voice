@@ -4,6 +4,11 @@ Versions match `grok_voice_agent/config.yaml`. GitHub Releases list the
 merged pull requests since the previous tag. Issues closed with `Fixes #N`
 in those pull requests are included below when GitHub reports them.
 
+## [0.3.6] - 2026-10-15
+
+- Skills imported from Home Assistant `script.skill` (`ha_skill` actions with an empty args spec) pass every argument through instead of rejecting them as unknown. Declared args on `ha_skill` still validate. Import may fill simple `{arg}` lists from HA help text (`ask {request}`); anything more complex stays pass-through. The Skills tab labels those actions **pass-through (any args)**.
+- Timeline: treat documented xAI keepalive and session events (`ping`, `conversation.created`, `conversation.item.input_audio_transcription.updated`) as known so they do not appear as unknown `upstream_event` rows.
+
 ## [0.3.5] - 2026-10-15
 
 - Timeline records xAI provider tools (`web_search`, `x_keyword_search`, …) that Grok reports as function calls after the spoken answer, plus `response.done` status and a compact output list. Unknown non-delta upstream events are logged once per type per response (bounded). The tablet still sees the same forwarded events as before.

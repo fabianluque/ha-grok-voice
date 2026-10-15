@@ -304,4 +304,47 @@ describe("relay panel HTML", () => {
     expect(tip!.textContent).toContain("3 min");
     expect(tip!.textContent).toContain("$0.0100");
   });
+
+  it("labels empty ha_skill actions as pass-through (any args)", () => {
+    const html = readFileSync(panelPath, "utf8");
+    const scripts = inlineScripts(html);
+    const markup = html.replace(/<script\b[\s\S]*?<\/script>/gi, "");
+    document.documentElement.innerHTML = markup
+      .replace(/^[\s\S]*?<html[^>]*>/i, "")
+      .replace(/<\/html>\s*$/i, "");
+    (0, eval)(
+      scripts[0] +
+        "\n;globalThis.__panel={setS(v){S=v},setTab(v){tab=v},setDraft(v){draft=v},setSel(v){selSkill=v},render};",
+    );
+    const skill = {
+      name: "helper", enabled: true, direct: false, index: "helper", help: "ask {request}", aliases: [],
+      actions: [
+        { name: "ask", aliases: [], backend: { type: "ha_skill", target: "", fixed: {} }, args: [] },
+        { name: "lookup", aliases: [], backend: { type: "ha_skill", target: "", fixed: {} },
+          args: [{ name: "food", required: true, aliases: [] }] },
+      ],
+    };
+    globalThis.__panel.setS({
+      relay: { listening: true, port: 8766 },
+      backends: ["script", "service", "relay", "ha_skill"],
+      coerce: [""],
+      scripts: [],
+      services: {},
+      relay_handlers: [],
+      preview: { tools: [], bytes: 0, tokens_estimate: 0 },
+      skills: [skill],
+      settings: {},
+      status: { ha_ready: true, sessions: { live: [], recent: [] }, memory: [] },
+    });
+    globalThis.__panel.setDraft([JSON.parse(JSON.stringify(skill))]);
+    globalThis.__panel.setSel(0);
+    globalThis.__panel.setTab("Skills");
+    globalThis.__panel.render();
+    const names = [...document.querySelectorAll('.act [data-a="name"]')].map((el) => el.value);
+    expect(names).toEqual(["ask", "lookup"]);
+    const acts = [...document.querySelectorAll(".act")];
+    expect(acts).toHaveLength(2);
+    expect(acts[0].textContent).toContain("pass-through (any args)");
+    expect(acts[1].textContent).not.toContain("pass-through (any args)");
+  });
 });
