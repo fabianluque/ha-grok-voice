@@ -34,8 +34,9 @@ from websockets.asyncio.client import connect as ws_connect
 from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed
 
+from app.auth import peer_host, redact
 from app.ks_relay.dates import annotate_dates, clock_time, date_line  # noqa: F401 - clock_time re-exported
-from app.ks_relay.ha import HaLink, find_tablet
+from app.ks_relay.ha import HaLink, identify_tablet, usable_ipv4
 from app.ks_relay.memory import (
     MemorySettings,
     RelayMemory,
@@ -294,23 +295,37 @@ class RelaySession:
             upstream = self.upstream or await upstream_task
             await upstream.send(raw)
 
+    def _remote_ip(self) -> str:
+        return usable_ipv4(peer_host(getattr(self.ks, "remote_address", None)))
+
     def _session_for_xai(self, session: dict) -> dict:
         instructions = str(session.get("instructions") or "")
         device_hint = (self.query.get("device") or [""])[0]
         named = _DEVICE_RE.search(instructions)
         area = _AREA_RE.search(instructions)
-        tablet = find_tablet(
+        remote_ip = self._remote_ip()
+        house = self.context.settings.get()
+        tablet, method = identify_tablet(
             self.ha.cache,
             device=device_hint,
             name=named.group(1) if named else "",
             area=area.group(1) if area else "",
+            remote_ip=remote_ip,
+            ip_tablets=house.get("ip_tablets") or {},
         )
+        snippet = redact(instructions[:200].replace("\n", " "), [self.settings.xai_api_key, self.settings.secret])
+        log.debug("[%s] KS instructions: %s", remote_ip or "?", snippet)
+        if tablet:
+            log.info("[%s] identified via %s from %s", tablet.name, method, remote_ip or "-")
+            self.label = tablet.name
+        else:
+            self.label = f"unknown tablet ({remote_ip})" if remote_ip else "unknown tablet"
+            log.info("[%s] unmatched from %s", self.label, remote_ip or "-")
         self.cfg = self.context.settings.for_tablet(tablet.device_id if tablet else "")
         skills = self.context.skills.get()
         self.tools = RelayTools(
             self.ha, tablet, skills=skills, dry_run=self.settings.dry_run, dry_run_delay=self.settings.dry_run_delay
         )
-        self.label = tablet.name if tablet else (named.group(1) if named else "unknown tablet")
         memory_key = tablet.device_id if tablet else self.label
         self.context.status.update(self.status_id, tablet=self.label, device_id=tablet.device_id if tablet else "")
         self.record = SessionLog(tablet=memory_key, area=tablet.area_name if tablet else (area.group(1) if area else ""))

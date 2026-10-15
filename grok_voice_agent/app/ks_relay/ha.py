@@ -15,6 +15,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
+from urllib.parse import urlparse
 
 import httpx
 from websockets.asyncio.client import connect as ws_connect
@@ -30,6 +31,9 @@ REGISTRY_EVENTS = (
 )
 
 
+KS_KIND = "kiosk_satellite"
+
+
 @dataclass(frozen=True)
 class Tablet:
     """A voice satellite device (a Kiosk Satellite tablet, a Voice PE, ...)."""
@@ -39,6 +43,8 @@ class Tablet:
     name: str
     area_id: str = ""
     area_name: str = ""
+    ips: tuple[str, ...] = ()
+    kind: str = ""
 
 
 @dataclass
@@ -71,6 +77,69 @@ def _norm(text: object) -> str:
     return re.sub(r"[^a-z0-9]+", " ", str(text or "").lower()).strip()
 
 
+def canonical_ipv4(text: object) -> str:
+    """Return a dotted IPv4 string, including from ``::ffff:`` mapped addresses."""
+    raw = str(text or "").strip()
+    if raw.startswith("::ffff:"):
+        raw = raw[7:]
+    parts = raw.split(".")
+    if len(parts) != 4:
+        return ""
+    try:
+        nums = [int(part) for part in parts]
+    except ValueError:
+        return ""
+    if any(n < 0 or n > 255 for n in nums):
+        return ""
+    return ".".join(str(n) for n in nums)
+
+
+def usable_ipv4(text: object) -> str:
+    """LAN IPv4 suitable for matching a tablet; drops loopback and unspecified."""
+    ip = canonical_ipv4(text)
+    if not ip or ip in ("0.0.0.0", "255.255.255.255"):
+        return ""
+    if ip.startswith("127."):
+        return ""
+    return ip
+
+
+def _is_kiosk_satellite(device: dict) -> bool:
+    manufacturer = re.sub(r"[^a-z0-9]+", "_", str(device.get("manufacturer") or "").lower()).strip("_")
+    if "kiosk_satellite" in manufacturer or manufacturer == "kiosksatellite":
+        return True
+    url = str(device.get("configuration_url") or "")
+    try:
+        return urlparse(url).port == 2324
+    except ValueError:
+        return False
+
+
+def _looks_like_ipv4_sensor(entity_id: str, entry: dict) -> bool:
+    ident = entity_id.lower()
+    if "ipv4_address" in ident or ident.endswith("_ip_address") or ident.endswith("_ipv4"):
+        return True
+    name = str(entry.get("original_name") or entry.get("name") or "").lower()
+    return "ipv4" in name and "address" in name
+
+
+def tablet_ips(cache: HaCache, device_id: str, device: dict) -> tuple[str, ...]:
+    """IPs for this HA device: configuration_url host and ipv4 address sensors."""
+    found: list[str] = []
+    host = urlparse(str(device.get("configuration_url") or "")).hostname or ""
+    ip = usable_ipv4(host)
+    if ip:
+        found.append(ip)
+    for entity_id, entry in cache.entities.items():
+        if entry.get("device_id") != device_id or not _looks_like_ipv4_sensor(entity_id, entry):
+            continue
+        state = (cache.states.get(entity_id) or {}).get("state")
+        ip = usable_ipv4(state)
+        if ip:
+            found.append(ip)
+    return tuple(dict.fromkeys(found))
+
+
 def build_tablets(cache: HaCache) -> tuple[Tablet, ...]:
     tablets = []
     for entity_id, entry in cache.entities.items():
@@ -85,26 +154,82 @@ def build_tablets(cache: HaCache) -> tuple[Tablet, ...]:
                 name=str(device.get("name_by_user") or device.get("name") or ""),
                 area_id=area_id,
                 area_name=cache.area_name(area_id),
+                ips=tablet_ips(cache, entry["device_id"], device),
+                kind=KS_KIND if _is_kiosk_satellite(device) else "",
             )
         )
     return tuple(sorted(tablets, key=lambda t: t.name))
 
 
-def find_tablet(cache: HaCache, *, device: str = "", name: str = "", area: str = "") -> Tablet | None:
-    """Pick the tablet from an explicit id/name hint, then the KS device name, then a unique area."""
-    for hint in (device, name):
-        key = _norm(hint)
-        if not key:
-            continue
+def _prefer_kiosk(matches: list[Tablet]) -> Tablet | None:
+    """Area (and IP) fallback: a unique match, or the unique Kiosk Satellite among several."""
+    if len(matches) == 1:
+        return matches[0]
+    ks = [tablet for tablet in matches if tablet.kind == KS_KIND]
+    if len(ks) == 1:
+        return ks[0]
+    return None
+
+
+def identify_tablet(
+    cache: HaCache,
+    *,
+    device: str = "",
+    name: str = "",
+    area: str = "",
+    remote_ip: str = "",
+    ip_tablets: dict | None = None,
+) -> tuple[Tablet | None, str]:
+    """Resolve a session to a tablet and say how.
+
+    Order: ``?device=`` query, KS instruction name, assigned IP, HA-derived IP,
+    then a unique area (Kiosk Satellite preferred over Voice PE).
+    """
+    if device:
+        key = _norm(device)
         for tablet in cache.tablets:
-            if hint in (tablet.device_id, tablet.satellite_entity) or _norm(tablet.name) == key:
-                return tablet
+            if device in (tablet.device_id, tablet.satellite_entity) or (key and _norm(tablet.name) == key):
+                return tablet, "query"
+    if name:
+        key = _norm(name)
+        for tablet in cache.tablets:
+            if name in (tablet.device_id, tablet.satellite_entity) or (key and _norm(tablet.name) == key):
+                return tablet, "name"
+    ip = usable_ipv4(remote_ip)
+    assigned = ip_tablets or {}
+    if ip and ip in assigned:
+        device_id = str(assigned.get(ip) or "")
+        for tablet in cache.tablets:
+            if tablet.device_id == device_id:
+                return tablet, "assigned_ip"
+    if ip:
+        hits = [tablet for tablet in cache.tablets if ip in tablet.ips]
+        matched = _prefer_kiosk(hits)
+        if matched:
+            return matched, "ha_ip"
     key = _norm(area)
     if key:
         matches = [t for t in cache.tablets if _norm(t.area_name) == key or t.area_id == area]
-        if len(matches) == 1:
-            return matches[0]
-    return None
+        matched = _prefer_kiosk(matches)
+        if matched:
+            return matched, "area"
+    return None, ""
+
+
+def find_tablet(
+    cache: HaCache,
+    *,
+    device: str = "",
+    name: str = "",
+    area: str = "",
+    remote_ip: str = "",
+    ip_tablets: dict | None = None,
+) -> Tablet | None:
+    """Pick the tablet from an explicit id/name hint, then IP, then a unique area."""
+    tablet, _method = identify_tablet(
+        cache, device=device, name=name, area=area, remote_ip=remote_ip, ip_tablets=ip_tablets
+    )
+    return tablet
 
 
 class HaLink:

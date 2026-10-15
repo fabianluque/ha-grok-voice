@@ -18,6 +18,7 @@ from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed
 
 from app.ks_relay.dates import DEFAULT_DATE_TEMPLATE
+from app.ks_relay.ha import usable_ipv4
 from app.ks_relay.settings_store import (
     DEFAULTS,
     TABLET_KEYS,
@@ -40,10 +41,36 @@ PAGE = Path(__file__).resolve().parent / "www" / "index.html"
 
 
 def _tablets(context) -> list[dict]:
-    return [
-        {"device_id": t.device_id, "name": t.name, "area": t.area_name, "entity": t.satellite_entity}
-        for t in context.ha.cache.tablets
-    ]
+    assigned = context.settings.get().get("ip_tablets") or {}
+    rows = []
+    for t in context.ha.cache.tablets:
+        extra = sorted(ip for ip, device_id in assigned.items() if device_id == t.device_id and ip not in t.ips)
+        rows.append(
+            {
+                "device_id": t.device_id,
+                "name": t.name,
+                "area": t.area_name,
+                "entity": t.satellite_entity,
+                "ips": list(t.ips),
+                "assigned_ips": extra,
+                "kind": t.kind,
+            }
+        )
+    return rows
+
+
+def _unmatched_ips(context) -> list[str]:
+    known = set()
+    for tablet in context.ha.cache.tablets:
+        known.update(tablet.ips)
+    known.update((context.settings.get().get("ip_tablets") or {}).keys())
+    seen: list[str] = []
+    snapshot = context.status.snapshot()
+    for row in list(snapshot.get("live") or []) + list(snapshot.get("recent") or []):
+        ip = usable_ipv4(row.get("remote") or "")
+        if ip and ip not in known and ip not in seen and not row.get("device_id"):
+            seen.append(ip)
+    return seen
 
 
 def _scripts(context) -> list[dict]:
@@ -125,6 +152,7 @@ async def handle(context, message: dict) -> dict:
             "relay_handlers": list(RELAY_HANDLERS),
             "coerce": list(COERCE),
             "tablets": _tablets(context),
+            "unmatched_ips": _unmatched_ips(context),
             "scripts": _scripts(context),
             "services": context.ha.cache.services,
             "ha_skill_description": context.ha.cache.skill_description,
@@ -135,7 +163,12 @@ async def handle(context, message: dict) -> dict:
         return {"status": _status(context)}
     if op == "save_settings":
         try:
-            return {"settings": context.settings.save(message.get("settings"))}
+            saved = context.settings.save(message.get("settings"))
+            return {
+                "settings": saved,
+                "tablets": _tablets(context),
+                "unmatched_ips": _unmatched_ips(context),
+            }
         except SettingsError as exc:
             return {"errors": exc.errors}
     if op in ("save_skills", "preview"):

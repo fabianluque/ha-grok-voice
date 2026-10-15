@@ -90,7 +90,8 @@ the Settings tab without restarting the add-on.
   **Import from HA script.skill** (adds anything HA has that the relay lacks as a
   pass-through; nothing is removed), and **Import / Export skills JSON** (same-named
   skills are replaced). Imports are previewed; nothing is saved until **Save**.
-- **Tablets:** per-tablet overrides (reasoning effort, VAD, date/time, day labels, extra
+- **Tablets:** detected IP(s) per satellite, unmatched session IPs with
+  **Assign to tablet**, and per-tablet overrides (reasoning effort, VAD, date/time, day labels, extra
   instructions, tool families, memory on/off).
 
 The panel is only served through Home Assistant ingress (signed-in user); the
@@ -104,6 +105,13 @@ LAN port never accepts it. API keys are never shown.
 | API key | the relay secret |
 | Tools | **None** (the relay brings its own) |
 | History (realtime) | its minimum, when relay memory is on (the relay also drops KS's history block) |
+
+Optional: append `&device=<name>` to the Endpoint (the Home Assistant device
+name, or its device id) if the relay cannot tell tablets apart. The relay
+otherwise matches the connecting IP to each satellite's `configuration_url`
+and `sensor.*_ipv4_address`, then a unique area (Kiosk Satellite preferred
+over a Voice PE in the same room). The Tablets tab can assign an unmatched
+session IP by hand.
 
 Then **Save & Validate**. Plain `ws://` is fine on the LAN. `GET /health` on the
 relay port answers `ok` once the Home Assistant link is up.
