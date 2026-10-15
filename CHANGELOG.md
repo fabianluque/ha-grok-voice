@@ -4,6 +4,12 @@ Versions match `grok_voice_agent/config.yaml`. GitHub Releases list the
 merged pull requests since the previous tag. Issues closed with `Fixes #N`
 in those pull requests are included below when GitHub reports them.
 
+## [0.3.3] - 2026-10-15
+
+- Identify Kiosk Satellite tablets by connecting IP when `?device=` and the KS instruction name are missing: each satellite's Home Assistant `configuration_url` host and ipv4 address sensor, refreshed with the cache. Area fallback prefers a KS tablet over a Voice PE in the same room.
+- Tablets tab shows detected IPs, lists unmatched session remotes with **Assign to tablet**, and stores the map in settings (hot-applied). Logs which method matched and the remote IP; unknown sessions are labeled `unknown tablet (<ip>)`.
+- Document optional Endpoint `&device=<name>` in DOCS.md.
+
 ## [0.3.2] - 2026-10-15
 
 - Fix the relay panel inline script so the Status / Settings / Skills / Tablets / Test tabs render. A stray semicolon after the Settings “copy secret” handler left a bare `else` (`Unexpected token else`) and Chrome stopped the script before `nav()` ran.

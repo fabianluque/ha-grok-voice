@@ -78,7 +78,7 @@ Start (or restart) the add-on. Everything else is set in the panel.
 
 | KS setting | Value |
 | --- | --- |
-| **Endpoint** | `ws://<ha-host>:8766/v1/realtime?model=grok-voice-latest` |
+| **Endpoint** | `ws://<ha-host>:8766/v1/realtime?model=grok-voice-latest` (optional `&device=<name>`) |
 | **API key** | the relay secret |
 | **Tools** | **None** (the relay brings its own) |
 | **History** | its minimum (the relay keeps its own short-term memory) |

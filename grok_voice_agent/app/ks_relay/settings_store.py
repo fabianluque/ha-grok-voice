@@ -16,6 +16,7 @@ import threading
 from pathlib import Path
 
 from app.ks_relay.dates import template_errors
+from app.ks_relay.ha import usable_ipv4
 
 log = logging.getLogger("grok_voice.ks_relay.settings")
 
@@ -64,6 +65,7 @@ DEFAULTS: dict = {
     },
     "ha_sensors": False,
     "tablets": {},
+    "ip_tablets": {},
 }
 TABLET_KEYS = ("reasoning_effort", "vad", "inject_datetime", "annotate_tool_dates", "extra_instructions", "tools", "memory_enabled")
 _MODEL_RE = re.compile(r"^[A-Za-z0-9._-]{0,64}$")
@@ -265,6 +267,21 @@ def validate(data: object) -> dict:
         clean = {k: v for k, v in clean.items() if v is not None}
         if clean:
             merged["tablets"][device_id] = clean
+    raw_ips = data.get("ip_tablets", merged["ip_tablets"])
+    if not isinstance(raw_ips, dict):
+        errors.append("ip_tablets must be an object")
+        raw_ips = {}
+    clean_ips: dict[str, str] = {}
+    for ip_key, device_id in raw_ips.items():
+        ip = usable_ipv4(ip_key)
+        if not ip:
+            errors.append(f"ip_tablets.{ip_key}: not an IPv4 address")
+            continue
+        if not isinstance(device_id, str) or not re.match(r"^[A-Za-z0-9_.-]{1,64}$", device_id):
+            errors.append(f"ip_tablets.{ip}: bad device id")
+            continue
+        clean_ips[ip] = device_id
+    merged["ip_tablets"] = clean_ips
     if errors:
         raise SettingsError(errors)
     return merged
@@ -282,6 +299,7 @@ def effective(settings: dict, device_id: str = "") -> dict:
         else:
             out[key] = value
     out.pop("tablets", None)
+    out.pop("ip_tablets", None)
     return out
 
 

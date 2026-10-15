@@ -13,7 +13,7 @@ from websockets.asyncio.server import serve
 from websockets.exceptions import InvalidStatus
 
 from app.ks_relay import admin
-from app.ks_relay.ha import HaCache, Tablet, find_tablet
+from app.ks_relay.ha import HaCache, Tablet, build_tablets, find_tablet, identify_tablet, usable_ipv4
 from app.ks_relay.memory import MemorySettings, RelayMemory, SessionLog, strip_ks_history
 from app.ks_relay.relay import (
     RelayContext,
@@ -90,6 +90,188 @@ def test_tablet_from_ks_location_line():
     assert find_tablet(cache, name="Attic Dashboard").device_id == "d1"
     assert find_tablet(cache, area="attic").device_id == "d1"
     assert find_tablet(cache, name="Kitchen") is None
+
+
+def _kitchen_cache(*, ks_url="http://192.168.1.20:2324", ks_ip="192.168.1.20", pe_url="http://192.168.1.21:80"):
+    devices = {
+        "dev_ks": {
+            "id": "dev_ks",
+            "name": "Kitchen Dashboard",
+            "manufacturer": "kiosk_satellite",
+            "configuration_url": ks_url,
+            "area_id": "kitchen",
+        },
+        "dev_pe": {
+            "id": "dev_pe",
+            "name": "Kitchen Voice PE",
+            "manufacturer": "Home Assistant",
+            "configuration_url": pe_url,
+            "area_id": "kitchen",
+        },
+    }
+    entities = {
+        "assist_satellite.kitchen_dashboard": {"device_id": "dev_ks", "area_id": "kitchen"},
+        "sensor.kitchen_dashboard_ipv4_address": {"device_id": "dev_ks"},
+        "assist_satellite.kitchen_voice_pe": {"device_id": "dev_pe", "area_id": "kitchen"},
+    }
+    states = {
+        "sensor.kitchen_dashboard_ipv4_address": {"entity_id": "sensor.kitchen_dashboard_ipv4_address", "state": ks_ip}
+    }
+    cache = HaCache(
+        devices=devices,
+        entities=entities,
+        states=states,
+        areas={"kitchen": {"name": "Kitchen", "area_id": "kitchen"}},
+    )
+    cache.tablets = build_tablets(cache)
+    return cache
+
+
+def test_usable_ipv4_strips_mapped_v6_and_drops_loopback():
+    assert usable_ipv4("::ffff:192.168.1.20") == "192.168.1.20"
+    assert usable_ipv4("127.0.0.1") == ""
+    assert usable_ipv4("0.0.0.0") == ""
+    assert usable_ipv4("not-an-ip") == ""
+
+
+def test_build_tablets_collects_configuration_url_and_ipv4_sensor():
+    cache = _kitchen_cache()
+    ks = next(t for t in cache.tablets if t.device_id == "dev_ks")
+    assert ks.ips == ("192.168.1.20",)
+    assert ks.kind == "kiosk_satellite"
+    pe = next(t for t in cache.tablets if t.device_id == "dev_pe")
+    assert pe.ips == ("192.168.1.21",)
+    assert pe.kind == ""
+
+
+def test_build_tablets_uses_ipv4_sensor_when_url_is_a_hostname():
+    cache = _kitchen_cache(ks_url="http://kitchen-dashboard.local:2324", ks_ip="192.168.1.24")
+    ks = next(t for t in cache.tablets if t.device_id == "dev_ks")
+    assert ks.ips == ("192.168.1.24",)
+    assert ks.kind == "kiosk_satellite"
+
+
+def test_identify_tablet_ip_after_device_query_before_area():
+    cache = _kitchen_cache()
+    tablet, method = identify_tablet(cache, device="Kitchen Dashboard", remote_ip="192.168.1.21")
+    assert tablet.device_id == "dev_ks" and method == "query"
+    tablet, method = identify_tablet(cache, remote_ip="192.168.1.20")
+    assert tablet.device_id == "dev_ks" and method == "ha_ip"
+    tablet, method = identify_tablet(cache, remote_ip="::ffff:192.168.1.20")
+    assert tablet.device_id == "dev_ks" and method == "ha_ip"
+    tablet, method = identify_tablet(cache, area="Kitchen")
+    assert tablet.device_id == "dev_ks" and method == "area"
+    tablet, method = identify_tablet(
+        cache, remote_ip="192.168.1.33", ip_tablets={"192.168.1.33": "dev_ks"}
+    )
+    assert tablet.device_id == "dev_ks" and method == "assigned_ip"
+    assert identify_tablet(cache, remote_ip="192.168.1.40") == (None, "")
+
+
+def test_area_fallback_prefers_kiosk_satellite_over_voice_pe():
+    cache = _kitchen_cache()
+    assert len([t for t in cache.tablets if t.area_id == "kitchen"]) == 2
+    assert find_tablet(cache, area="Kitchen").device_id == "dev_ks"
+
+
+def test_assigned_ip_is_stored_in_settings(tmp_path):
+    store = SettingsStore(tmp_path / "settings.json")
+    saved = store.save({"ip_tablets": {"192.168.1.22": "dev_ks"}})
+    assert saved["ip_tablets"] == {"192.168.1.22": "dev_ks"}
+    assert "ip_tablets" not in effective(saved, "dev_ks")
+    with pytest.raises(SettingsError):
+        validate({"ip_tablets": {"not-an-ip": "dev_ks"}})
+
+
+def test_session_identifies_by_ip_when_ks_instructions_have_no_device_line(tmp_path, caplog):
+    import logging
+
+    cache = _kitchen_cache()
+    context = RelayContext(
+        ha=FakeHa(),
+        settings=SettingsStore(tmp_path / "s.json"),
+        skills=SkillStore(tmp_path / "k.json"),
+    )
+    context.ha.cache = cache
+
+    class Ks:
+        remote_address = ("192.168.1.20", 54321)
+
+    session = RelaySession(
+        Ks(),
+        RelaySettings(xai_api_key="xai-secret-key", secret="relay-secret"),
+        context,
+        query={},
+    )
+    with caplog.at_level(logging.DEBUG, logger="grok_voice.ks_relay"):
+        session._session_for_xai({"instructions": "Be brief. xai-secret-key must not leak.", "tools": []})
+    assert session.label == "Kitchen Dashboard"
+    assert any("identified via ha_ip from 192.168.1.20" in rec.getMessage() for rec in caplog.records)
+    debug = [rec.getMessage() for rec in caplog.records if rec.levelno == logging.DEBUG]
+    assert debug and "Be brief." in debug[0]
+    assert "xai-secret-key" not in debug[0]
+
+
+def test_unknown_tablet_label_includes_remote_ip(tmp_path):
+    context = RelayContext(
+        ha=FakeHa(),
+        settings=SettingsStore(tmp_path / "s.json"),
+        skills=SkillStore(tmp_path / "k.json"),
+    )
+
+    class Ks:
+        remote_address = ("192.168.1.33", 9)
+
+    session = RelaySession(Ks(), RelaySettings(xai_api_key="x", secret="s"), context, query={})
+    session._session_for_xai({"instructions": "Hello from a tablet.", "tools": []})
+    assert session.label == "unknown tablet (192.168.1.33)"
+
+
+def test_query_device_param_overrides_ip(tmp_path):
+    cache = _kitchen_cache()
+    context = RelayContext(
+        ha=FakeHa(),
+        settings=SettingsStore(tmp_path / "s.json"),
+        skills=SkillStore(tmp_path / "k.json"),
+    )
+    context.ha.cache = cache
+
+    class Ks:
+        remote_address = ("192.168.1.21", 9)
+
+    session = RelaySession(
+        Ks(), RelaySettings(xai_api_key="x", secret="s"), context, query={"device": ["Kitchen Dashboard"]}
+    )
+    session._session_for_xai({"instructions": "No name here.", "tools": []})
+    assert session.label == "Kitchen Dashboard"
+
+
+def test_panel_lists_unmatched_ips_and_assignment(tmp_path):
+    context = RelayContext(
+        ha=FakeHa(),
+        settings=SettingsStore(tmp_path / "s.json"),
+        skills=SkillStore(tmp_path / "k.json"),
+    )
+    context.ha.cache = _kitchen_cache()
+    context.status.open("192.168.1.33")
+
+    async def run():
+        loaded = await admin.handle(context, {"op": "load"})
+        assigned = await admin.handle(
+            context,
+            {"op": "save_settings", "settings": {**loaded["settings"], "ip_tablets": {"192.168.1.33": "dev_ks"}}},
+        )
+        again = await admin.handle(context, {"op": "load"})
+        return loaded, assigned, again
+
+    loaded, assigned, again = asyncio.run(run())
+    assert "192.168.1.33" in loaded["unmatched_ips"]
+    kitchen = next(t for t in loaded["tablets"] if t["device_id"] == "dev_ks")
+    assert "192.168.1.20" in kitchen["ips"]
+    assert assigned["settings"]["ip_tablets"]["192.168.1.33"] == "dev_ks"
+    assert "192.168.1.33" not in assigned["unmatched_ips"]
+    kitchen2 = next(t for t in again["tablets"] if t["device_id"] == "dev_ks")
+    assert "192.168.1.33" in kitchen2["assigned_ips"]
 
 
 # settings ---------------------------------------------------------------------
@@ -369,6 +551,8 @@ def test_panel_page_is_served_on_relay_path():
     assert b"Automatic retry stopped" in root.body
     assert b'allow="microphone; autoplay"' in root.body
     assert b"test/" in root.body
+    assert b"Assign to tablet" in root.body
+    assert b"Detected IP" in root.body
 
     class Sock:
         request = Request("/relay/ws", Headers())

@@ -234,12 +234,54 @@ function actionEditor(s,a,j){const dl="dl_"+j;const c=$(`<div class="act"><div c
 // ---------- tablets
 function testClient(m){m.append($(`<div class="card"><h2>Browser test client</h2><p class="muted">Legacy duplex mic UI (Open Web UI). Kiosk Satellite tablets use the relay on port 8766, not this page. The test client opens its own voice websocket; the panel uses <code>/relay/ws</code>.</p>
   <iframe title="Grok Voice test client" src="${esc(testFrameSrc())}" allow="microphone; autoplay" style="width:100%;height:70vh;border:1px solid var(--line);border-radius:8px;background:#111"></iframe></div>`))}
-function tablets(m){const c=$(`<div class="card"><h2>Tablets</h2><p class="muted">Per-tablet overrides (JSON). Allowed keys: ${S.tablet_keys.join(", ")}. Example: {"reasoning_effort":"high","tools":{"locks":"off"}}. Empty = house settings.</p></div>`);
- S.tablets.forEach(t=>{const cur=S.settings.tablets[t.device_id];c.append($(`<div><h3>${esc(t.name)} <span class="muted">${esc(t.area)} · ${esc(t.device_id)}</span></h3><textarea data-id="${esc(t.device_id)}">${cur?esc(JSON.stringify(cur,null,1)):""}</textarea></div>`))});
- const b=$(`<div><button class="b">Save overrides</button><span class="err" id="terr"></span></div>`);c.append(b);m.append(c);
- b.querySelector("button").onclick=()=>{const t={};let bad="";c.querySelectorAll("textarea").forEach(x=>{if(!x.value.trim())return;try{t[x.dataset.id]=JSON.parse(x.value)}catch{bad+=`${x.dataset.id}: not JSON\n`}});
-  if(bad)return document.getElementById("terr").textContent=bad;
-  call({op:"save_settings",settings:{...S.settings,tablets:t}}).then(d=>{const e=document.getElementById("terr");if(d.errors)e.textContent=" "+d.errors.join("\n");else{S.settings=d.settings;e.innerHTML=' <span class="ok">Saved.</span>'}})}}
+function applyTabletSave(d, errId, redraw){
+  const e=document.getElementById(errId);
+  if(d.errors){if(e)e.textContent=" "+d.errors.join("\n");return}
+  S.settings=d.settings;
+  if(d.tablets)S.tablets=d.tablets;
+  if(d.unmatched_ips)S.unmatched_ips=d.unmatched_ips;
+  if(redraw){render();return}
+  if(e)e.innerHTML=' <span class="ok">Saved. Applies to the next session.</span>';
+}
+function assignIp(ip, deviceId){
+  const map={...(S.settings.ip_tablets||{})};
+  if(deviceId){map[ip]=deviceId}else{delete map[ip]}
+  call({op:"save_settings",settings:{...S.settings,ip_tablets:map}}).then(d=>applyTabletSave(d,"terr",true)).catch(e=>{const n=document.getElementById("terr");if(n)n.textContent=" "+e.message});
+}
+function tablets(m){
+  const unmatched=S.unmatched_ips||[];
+  if(unmatched.length){
+    const u=$(`<div class="card"><h2>Unmatched session IPs</h2><p class="muted">Recent connections the relay could not map to a tablet. Assign to a tablet; it applies to the next session without a restart.</p></div>`);
+    unmatched.forEach(ip=>{
+      const opts=(S.tablets||[]).map(t=>`<option value="${esc(t.device_id)}">${esc(t.name)}</option>`).join("");
+      const row=$(`<div class="row"><p><code>${esc(ip)}</code></p><select>${opts}</select><button class="b" type="button">Assign to tablet</button></div>`);
+      row.querySelector("button").onclick=()=>assignIp(ip, row.querySelector("select").value);
+      u.append(row);
+    });
+    m.append(u);
+  }
+  const c=$(`<div class="card"><h2>Tablets</h2><p class="muted">Detected IPs come from each Home Assistant device's configuration URL and ipv4 address sensor. Per-tablet overrides (JSON). Allowed keys: ${S.tablet_keys.join(", ")}. Example: {"reasoning_effort":"high","tools":{"locks":"off"}}. Empty = house settings.</p></div>`);
+  S.tablets.forEach(t=>{
+    const cur=S.settings.tablets[t.device_id];
+    const haIps=(t.ips&&t.ips.length)?t.ips.join(", "):"none yet";
+    const kind=t.kind==="kiosk_satellite"?'<span class="pill">KS</span>':"";
+    const block=$(`<div><h3>${esc(t.name)} ${kind} <span class="muted">${esc(t.area)} · ${esc(t.device_id)}</span></h3><p class="muted">Detected IP(s): ${esc(haIps)}</p><div class="assigned"></div><textarea data-id="${esc(t.device_id)}">${cur?esc(JSON.stringify(cur,null,1)):""}</textarea></div>`);
+    (t.assigned_ips||[]).forEach(ip=>{
+      const row=$(`<p>Assigned ${esc(ip)} <button class="b d" type="button">Remove</button></p>`);
+      row.querySelector("button").onclick=()=>assignIp(ip, "");
+      block.querySelector(".assigned").append(row);
+    });
+    c.append(block);
+  });
+  const b=$(`<div><button class="b" type="button">Save overrides</button><span class="err" id="terr"></span></div>`);
+  c.append(b);m.append(c);
+  b.querySelector("button").onclick=()=>{
+    const t={};let bad="";
+    c.querySelectorAll("textarea").forEach(x=>{if(!x.value.trim())return;try{t[x.dataset.id]=JSON.parse(x.value)}catch{bad+=`${x.dataset.id}: not JSON\n`}});
+    if(bad){document.getElementById("terr").textContent=bad;return}
+    call({op:"save_settings",settings:{...S.settings,tablets:t}}).then(d=>applyTabletSave(d,"terr")).catch(e=>{document.getElementById("terr").textContent=" "+e.message});
+  };
+}
 connect();render();
 </script>
 </body>
