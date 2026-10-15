@@ -36,7 +36,7 @@ def _settings(**overrides) -> Settings:
         allowlist=frozenset({"HassTurnOn"}),
         idle_timeout_seconds=20,
         ha_api_url="http://127.0.0.1:8123",
-        home_location="Summit, NJ",
+        home_location="Springfield, IL",
     )
     values.update(overrides)
     return Settings(**values)
@@ -56,28 +56,28 @@ def test_location_prefers_addon_label_then_ha_coords():
     context = HomeContext(
         time_zone="America/New_York",
         location_name="Home",
-        home_location="Summit, NJ",
+        home_location="Springfield, IL",
         country="US",
-        latitude=40.7155,
-        longitude=-74.3646,
+        latitude=39.7817,
+        longitude=-89.6501,
         zone_name="Home",
     )
     text = format_home_location(context)
-    assert "Summit, NJ" in text
-    assert "Summit, New Jersey" in text
-    assert "40.7155°N" in text
-    assert "74.3646°W" in text
+    assert "Springfield, IL" in text
+    assert "Springfield, Illinois" in text
+    assert "39.7817°N" in text
+    assert "89.6501°W" in text
     assert "US" in text
 
 
 def test_instructions_include_fresh_date_and_location():
-    context = HomeContext(home_location="Summit, NJ", time_zone="America/New_York")
+    context = HomeContext(home_location="Springfield, IL", time_zone="America/New_York")
     text = with_home_context("Speak briefly.", context, now=NOW)
     assert "Speak briefly." in text
     assert "September 30, 2026" in text
-    assert "The user lives in Summit, NJ" in text
-    assert "Summit, NJ" in text
-    assert "Summit, New Jersey" in text
+    assert "The user lives in Springfield, IL" in text
+    assert "Springfield, IL" in text
+    assert "Springfield, Illinois" in text
     assert "city name" in text
     assert "training data" in text
     assert "where they live" in text
@@ -89,15 +89,15 @@ def test_session_update_gets_context_at_open():
         _settings(),
         [],
         {"name": "Attic", "id": "attic"},
-        context=HomeContext(home_location="Summit, NJ"),
+        context=HomeContext(home_location="Springfield, IL"),
         now=NOW,
     )
     text = payload["session"]["instructions"]
     assert "Attic" in text
     assert "September 30, 2026" in text
-    assert "The user lives in Summit, NJ" in text
-    assert "Summit, NJ" in text
-    assert "Summit, New Jersey" in text
+    assert "The user lives in Springfield, IL" in text
+    assert "Springfield, IL" in text
+    assert "Springfield, Illinois" in text
     assert payload["session"]["turn_detection"]["prefix_padding_ms"] == 800
     assert payload["session"]["turn_detection"]["threshold"] == 0.35
     assert "idle_timeout_ms" not in str(payload)
@@ -107,7 +107,7 @@ def test_session_update_gets_context_at_open():
 def test_session_instructions_include_configured_home_location():
     """Live session.update must carry the Home location option, not only date."""
     payload = build_session(
-        _settings(instructions="Be a pirate. Never mention tools.", home_location="Summit, NJ"),
+        _settings(instructions="Be a pirate. Never mention tools.", home_location="Springfield, IL"),
         [],
         {"name": "Attic", "id": "attic"},
         context=HomeContext(location_name="Home", zone_name="Home", time_zone="America/New_York"),
@@ -115,9 +115,9 @@ def test_session_instructions_include_configured_home_location():
     )
     text = payload["session"]["instructions"]
     assert "Be a pirate. Never mention tools." in text
-    assert "The user lives in Summit, NJ" in text
-    assert "Summit, NJ" in text
-    assert "Summit, New Jersey" in text
+    assert "The user lives in Springfield, IL" in text
+    assert "Springfield, IL" in text
+    assert "Springfield, Illinois" in text
     assert "where they live" in text
     assert "Attic" in text
     assert "September 30, 2026" in text
@@ -125,8 +125,8 @@ def test_session_instructions_include_configured_home_location():
 
 def test_merge_home_location_prefers_addon_option():
     context = HomeContext(location_name="Home", zone_name="Home", time_zone="America/New_York")
-    merged = merge_home_location(context, _settings(home_location="Summit, NJ"))
-    assert merged.home_location == "Summit, NJ"
+    merged = merge_home_location(context, _settings(home_location="Springfield, IL"))
+    assert merged.home_location == "Springfield, IL"
     assert merged.location_name == "Home"
     blank = merge_home_location(HomeContext(home_location="keep-me"), _settings(home_location=""))
     assert blank.home_location == "keep-me"
@@ -139,10 +139,10 @@ def test_empty_home_location_does_not_invent_a_city():
         now=NOW,
     )
     assert "The user lives in" not in text
-    assert "Summit" not in text
+    assert "Springfield" not in text
     payload = build_session(_settings(home_location=""), [], now=NOW)
     assert "The user lives in" not in payload["session"]["instructions"]
-    assert "Summit" not in payload["session"]["instructions"]
+    assert "Springfield" not in payload["session"]["instructions"]
 
 
 def test_parse_ha_config_and_zone_home():
@@ -151,17 +151,17 @@ def test_parse_ha_config_and_zone_home():
         {
             "time_zone": "America/New_York",
             "location_name": "Home",
-            "latitude": 40.7155,
-            "longitude": -74.3646,
+            "latitude": 39.7817,
+            "longitude": -89.6501,
             "country": "US",
         },
         settings,
     )
     assert context.time_zone == "America/New_York"
-    assert context.home_location == "Summit, NJ"
+    assert context.home_location == "Springfield, IL"
     merged = with_zone_home(context, {"attributes": {"friendly_name": "Home", "latitude": 40.7}})
-    assert merged.latitude == 40.7155
-    assert fallback_home_context(settings).home_location == "Summit, NJ"
+    assert merged.latitude == 39.7817
+    assert fallback_home_context(settings).home_location == "Springfield, IL"
 
 
 def test_fetch_home_context_reads_ha_config():
@@ -178,8 +178,8 @@ def test_fetch_home_context_reads_ha_config():
                             {
                                 "time_zone": "America/New_York",
                                 "location_name": "Home",
-                                "latitude": 40.7155,
-                                "longitude": -74.3646,
+                                "latitude": 39.7817,
+                                "longitude": -89.6501,
                                 "country": "US",
                             }
                         ),
@@ -194,8 +194,8 @@ def test_fetch_home_context_reads_ha_config():
                         {
                             "attributes": {
                                 "friendly_name": "Home",
-                                "latitude": 40.7155,
-                                "longitude": -74.3646,
+                                "latitude": 39.7817,
+                                "longitude": -89.6501,
                             }
                         }
                     ),
@@ -204,27 +204,27 @@ def test_fetch_home_context_reads_ha_config():
 
     context = asyncio.run(fetch_home_context(Http(), _settings()))
     assert context.time_zone == "America/New_York"
-    assert context.home_location == "Summit, NJ"
-    assert context.latitude == 40.7155
+    assert context.home_location == "Springfield, IL"
+    assert context.latitude == 39.7817
 
 
-def test_expand_city_name_surfaces_summit_new_jersey():
-    display, city = expand_city_name("Summit, NJ")
-    assert display == "Summit, NJ / Summit, New Jersey"
-    assert city == "Summit, New Jersey"
-    assert expand_city_name("Summit NJ")[1] == "Summit, New Jersey"
+def test_expand_city_name_surfaces_springfield_illinois():
+    display, city = expand_city_name("Springfield, IL")
+    assert display == "Springfield, IL / Springfield, Illinois"
+    assert city == "Springfield, Illinois"
+    assert expand_city_name("Springfield IL")[1] == "Springfield, Illinois"
 
 
 def test_generic_ha_home_name_does_not_hide_addon_city():
     context = HomeContext(
         location_name="Home",
-        home_location="Summit, NJ",
+        home_location="Springfield, IL",
         zone_name="Home",
         time_zone="America/New_York",
     )
     text = with_home_context("Speak briefly.", context, now=NOW)
-    assert "The user lives in Summit, NJ" in text
-    assert "Summit, New Jersey" in text
+    assert "The user lives in Springfield, IL" in text
+    assert "Springfield, Illinois" in text
     assert "city name" in text
     assert "unnamed location" in text
 
@@ -233,9 +233,9 @@ def test_load_settings_reads_home_location_and_memory_ttl(tmp_path, monkeypatch)
     monkeypatch.setenv("SUPERVISOR_TOKEN", "addon-token")
     path = tmp_path / "options.json"
     path.write_text(
-        json.dumps({"home_location": "Summit, NJ", "conversation_memory_ttl_seconds": 600}),
+        json.dumps({"home_location": "Springfield, IL", "conversation_memory_ttl_seconds": 600}),
         encoding="utf-8",
     )
     settings = load_settings(path, env_dirs=())
-    assert settings.home_location == "Summit, NJ"
+    assert settings.home_location == "Springfield, IL"
     assert settings.conversation_memory_ttl_seconds == 600

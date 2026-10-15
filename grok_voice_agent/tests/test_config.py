@@ -90,15 +90,15 @@ def test_duplex_lan_host_is_blank_and_accepts_a_lan_ip(tmp_path, monkeypatch):
     settings = load_settings(_options(tmp_path, {}), env_dirs=())
     assert settings.duplex_lan_host == ""
     custom = load_settings(
-        _options(tmp_path, {"duplex_lan_host": " 192.168.86.38 "}),
+        _options(tmp_path, {"duplex_lan_host": " 192.168.1.50 "}),
         env_dirs=(),
     )
-    assert custom.duplex_lan_host == "192.168.86.38"
+    assert custom.duplex_lan_host == "192.168.1.50"
     from_url = load_settings(
-        _options(tmp_path, {"duplex_lan_host": "http://192.168.86.38:8123/"}),
+        _options(tmp_path, {"duplex_lan_host": "http://192.168.1.50:8123/"}),
         env_dirs=(),
     )
-    assert from_url.duplex_lan_host == "192.168.86.38"
+    assert from_url.duplex_lan_host == "192.168.1.50"
     assert clean_duplex_lan_host("") == ""
     assert clean_duplex_lan_host("homeassistant.local") == "homeassistant.local"
 

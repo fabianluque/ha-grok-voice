@@ -36,7 +36,7 @@ def test_ttl_expires_and_goodbye_forgets():
 
     memory = ConversationMemory(ttl_seconds=300, clock=now)
     key = "device:attic_tablet"
-    memory.remember(key, [Turn("user", "what's this weekend"), Turn("assistant", "a concert in Summit")])
+    memory.remember(key, [Turn("user", "what's this weekend"), Turn("assistant", "a concert in Springfield")])
     assert memory.get(key)[0].text == "what's this weekend"
     clock["t"] = 120
     assert len(memory.get(key)) == 2
