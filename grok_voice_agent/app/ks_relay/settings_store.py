@@ -64,6 +64,7 @@ DEFAULTS: dict = {
         "retention_days": 90,
     },
     "ha_sensors": False,
+    "cache_readonly_skills": True,
     "tablets": {},
     "ip_tablets": {},
 }
@@ -238,6 +239,10 @@ def validate(data: object) -> dict:
         flag = _bool(data["ha_sensors"], "ha_sensors", errors)
         if flag is not None:
             merged["ha_sensors"] = flag
+    if "cache_readonly_skills" in data:
+        flag = _bool(data["cache_readonly_skills"], "cache_readonly_skills", errors)
+        if flag is not None:
+            merged["cache_readonly_skills"] = flag
     tablets = data.get("tablets", {})
     if not isinstance(tablets, dict):
         errors.append("tablets must be an object")

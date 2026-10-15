@@ -9,12 +9,14 @@ gives timers and "here" their usual meaning.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import re
 
 from app.ks_relay.ha import HaLink, Tablet
-from app.ks_relay.skills import SKILL_TOOL, resolve
+from app.ks_relay.skills import SKILL_TOOL, key, resolve
+from app.ks_relay.timeline import HELP_ACTIONS, READONLY_SKILL_ACTIONS
 
 log = logging.getLogger("grok_voice.ks_relay.tools")
 
@@ -183,6 +185,7 @@ class RelayTools:
         skills: list[dict] | None = None,
         dry_run: bool = False,
         dry_run_delay: float = 0.0,
+        cache_readonly: bool = True,
     ) -> None:
         self.ha = ha
         self.skills = skills or []
@@ -190,6 +193,32 @@ class RelayTools:
         self.tablet = tablet
         self.dry_run = dry_run
         self.dry_run_delay = dry_run_delay
+        self.cache_readonly = cache_readonly
+        self._skill_cache: dict[tuple, dict] = {}
+
+    def _cache_key(self, skill_name: str, action: str, data: dict) -> tuple:
+        payload = json.dumps(data or {}, sort_keys=True, default=str, separators=(",", ":"))
+        return (skill_name, action, payload)
+
+    def _invalidate_skill(self, skill_name: str) -> None:
+        self._skill_cache = {k: v for k, v in self._skill_cache.items() if k[0] != skill_name}
+
+    def _cache_get(self, skill_name: str, action: str, data: dict) -> dict | None:
+        if not self.cache_readonly:
+            return None
+        hit = self._skill_cache.get(self._cache_key(skill_name, action, data))
+        if hit is None:
+            return None
+        out = copy.deepcopy(hit)
+        out["_cached"] = True
+        return out
+
+    def _cache_put(self, skill_name: str, action: str, data: dict, result: dict) -> None:
+        if not self.cache_readonly or (isinstance(result, dict) and result.get("ok") is False):
+            return
+        stored = copy.deepcopy(result) if isinstance(result, dict) else {"ok": True, "value": result}
+        stored.pop("_cached", None)
+        self._skill_cache[self._cache_key(skill_name, action, data)] = stored
 
     def _with_area(self, args: dict) -> dict:
         if not args.get("name") and not args.get("area") and self.tablet and self.tablet.area_name:
@@ -365,13 +394,37 @@ class RelayTools:
     # skills -----------------------------------------------------------------
     async def run_skill(self, name, action, args) -> dict:
         skill, chosen, data = resolve(self.skills, name, action, args or {})
-        if chosen is None:
+        if skill is None:
             return data
+        wanted = key(action)
+        readonly_action = None
+        cache_data: dict = {}
+        if chosen is None:
+            if wanted in HELP_ACTIONS:
+                readonly_action = "help" if wanted in HELP_ACTIONS else wanted
+                cache_data = {}
+                hit = self._cache_get(skill["name"], "help", cache_data)
+                if hit is not None:
+                    return hit
+                if data.get("ok") is not False:
+                    self._cache_put(skill["name"], "help", cache_data, data)
+            return data
+        if chosen["name"] in READONLY_SKILL_ACTIONS:
+            readonly_action = chosen["name"]
+            cache_data = data
+            hit = self._cache_get(skill["name"], readonly_action, cache_data)
+            if hit is not None:
+                return hit
+        else:
+            self._invalidate_skill(skill["name"])
         backend = chosen["backend"]
         payload = {**backend.get("fixed", {}), **data}
         if self.dry_run:
             await asyncio.sleep(self.dry_run_delay)
-            return {"ok": True, "dry_run": True, "skill": skill["name"], "action": chosen["name"], "backend": backend["type"], "data": payload}
+            result = {"ok": True, "dry_run": True, "skill": skill["name"], "action": chosen["name"], "backend": backend["type"], "data": payload}
+            if readonly_action:
+                self._cache_put(skill["name"], readonly_action, cache_data, result)
+            return result
         kind, target = backend["type"], backend.get("target", "")
         if kind == "relay":
             return await self._relay_handler(target, payload)
@@ -386,8 +439,12 @@ class RelayTools:
             wants = kind == "script" or backend.get("response", True)
             response = await self.ha.call_service(domain, service, payload, return_response=wants, timeout=120)
         if response in (None, {}) or not isinstance(response, dict):
-            return {"ok": True, "skill": skill["name"], "action": chosen["name"], "say": "Done.", **({"response": response} if response else {})}
-        return response
+            result = {"ok": True, "skill": skill["name"], "action": chosen["name"], "say": "Done.", **({"response": response} if response else {})}
+        else:
+            result = response
+        if readonly_action:
+            self._cache_put(skill["name"], readonly_action, cache_data, result)
+        return result
 
     async def _relay_handler(self, target: str, data: dict) -> dict:
         target_args = self._with_area(_clean(data, "name", "area"))
@@ -446,18 +503,19 @@ def _words(text: object) -> str:
     return re.sub(r"[^a-z0-9]+", " ", str(text or "").lower()).strip()
 
 
-async def run_tool(tools: RelayTools, name: str, arguments: str, timeout: float) -> tuple[str, bool]:
-    """Run one call and return (output text for the model, ok)."""
+async def run_tool(tools: RelayTools, name: str, arguments: str, timeout: float) -> tuple[str, bool, bool]:
+    """Run one call and return (output text for the model, ok, cached)."""
     try:
         args = json.loads(arguments) if arguments else {}
     except json.JSONDecodeError:
-        return json.dumps({"ok": False, "error": "unreadable arguments"}), False
+        return json.dumps({"ok": False, "error": "unreadable arguments"}), False, False
     try:
         result = await asyncio.wait_for(tools.execute(name, args), timeout)
     except asyncio.TimeoutError:
-        return json.dumps({"ok": False, "error": "timed out"}), False
+        return json.dumps({"ok": False, "error": "timed out"}), False, False
     except Exception as exc:  # noqa: BLE001 - the model gets the failure
         log.warning("tool %s failed: %s", name, type(exc).__name__)
-        return json.dumps({"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:200]}"}), False
+        return json.dumps({"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:200]}"}), False, False
+    cached = isinstance(result, dict) and bool(result.pop("_cached", False))
     ok = not (isinstance(result, dict) and result.get("ok") is False)
-    return json.dumps(result, ensure_ascii=False, default=str)[:8000], ok
+    return json.dumps(result, ensure_ascii=False, default=str)[:8000], ok, cached

@@ -4,6 +4,12 @@ Versions match `grok_voice_agent/config.yaml`. GitHub Releases list the
 merged pull requests since the previous tag. Issues closed with `Fixes #N`
 in those pull requests are included below when GitHub reports them.
 
+## [0.3.4] - 2026-10-15
+
+- Session detail on the Status tab is a per-session timeline/waterfall: connect/auth, KS `session.update`, upstream xAI open, `session.updated` (ready); per turn speech start/stop (VAD), user and assistant transcripts when xAI sends them, end-of-speech → first audio, first audio → `response.done`, total response time, audio seconds; per tool call name, arguments and result (truncated, full payload on click), model `function_call` → relay dispatch, Home Assistant time, tool result → next first audio; memory-summary timing and tokens; token usage per `response.done`; session end reason (`end_conversation`, client close, idle). Stored in `stats.db` next to existing session rows (payloads truncated, retention unchanged, secret-like keys and known secrets redacted).
+- Optional per-session cache for identical read-only skill calls (`help` / `catalog` / `get` / `list`, same name/action/args). Default on; a write to that skill invalidates it. Cache hits are marked on the timeline so duplicate catalog/help round-trips are visible.
+- Short-term memory stores tool lines as `turn_on ok` or `skill dashboard.set failed` (no args or results). Empty summaries are not saved. Existing bloated rows are compacted the same way when injected into the next session, and rows with empty summaries are skipped.
+
 ## [0.3.3] - 2026-10-15
 
 - Identify Kiosk Satellite tablets by connecting IP when `?device=` and the KS instruction name are missing: each satellite's Home Assistant `configuration_url` host and ipv4 address sensor, refreshed with the cache. Area fallback prefers a KS tablet over a Voice PE in the same room.

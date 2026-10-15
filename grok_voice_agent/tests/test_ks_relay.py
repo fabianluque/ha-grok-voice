@@ -14,11 +14,19 @@ from websockets.exceptions import InvalidStatus
 
 from app.ks_relay import admin
 from app.ks_relay.ha import HaCache, Tablet, build_tablets, find_tablet, identify_tablet, usable_ipv4
-from app.ks_relay.memory import MemorySettings, RelayMemory, SessionLog, strip_ks_history
+from app.ks_relay.memory import (
+    MemorySettings,
+    RelayMemory,
+    SessionLog,
+    compact_stored_fact,
+    compact_tool_line,
+    strip_ks_history,
+)
 from app.ks_relay.relay import (
     RelayContext,
     RelaySession,
     RelaySettings,
+    _BACKGROUND,
     bearer_ok,
     clock_line,
     rewrite_session,
@@ -27,8 +35,9 @@ from app.ks_relay.relay import (
 )
 from app.ks_relay.settings_store import DEFAULTS, SettingsError, SettingsStore, effective, validate
 from app.ks_relay.stats import StatsStore, add_usage, percentile, sensor_states
+from app.ks_relay.timeline import sanitize
 from app.ks_relay.skills import SkillStore, load_seed, merge_import, preview, resolve, skill_specs, validate_skills
-from app.ks_relay.tools import tool_specs
+from app.ks_relay.tools import RelayTools, tool_specs
 
 KS_SESSION = {
     "voice": "eve",
@@ -365,6 +374,7 @@ def test_memory_raw_fallback_and_context_block(tmp_path):
         log = SessionLog(tablet="d1", area="Attic")
         log.said("user", "Turn on the attic lights")
         log.tool("turn_on", '{"domain":"light"}', '{"ok": true, "say": "Turned on the lights"}', True)
+        log.tool("skill", '{"name":"dashboard","action":"set","args":{"layout":"kitchen","layout_json":"{\\"tiles\\":[]}"}}', '{"ok": true, "say": "saved"}', True)
         log.said("assistant", "Attic lights are on.")
         cfg = MemorySettings()
         memory.finish(log, cfg)
@@ -376,7 +386,10 @@ def test_memory_raw_fallback_and_context_block(tmp_path):
 
     block, other, cleared, after = asyncio.run(run())
     assert block.startswith("Recent context")
-    assert "tool: turn_on" in block and "Attic lights are on" in block
+    assert "tool: turn_on ok" in block and "Attic lights are on" in block
+    assert "tool: skill dashboard.set ok" in block
+    assert "layout_json" not in block and "tiles" not in block
+    assert '{"domain"' not in block
     assert other == "" and cleared == 1 and after == []
     assert "Earlier conversations" not in strip_ks_history(KS_SESSION["instructions"])
     assert "Attic area" in strip_ks_history(KS_SESSION["instructions"])
@@ -390,11 +403,16 @@ class FakeHa:
             time_zone="America/New_York",
         )
         self.intents = []
+        self.services = []
         self.ready = True
 
     async def intent(self, name, data, *, device_id="", satellite_id=""):
         self.intents.append((name, data, device_id))
         return {"response_type": "action_done", "speech": {"plain": {"speech": "Turned on the lights"}}, "data": {}}
+
+    async def call_service(self, domain, service, data, **kwargs):
+        self.services.append((domain, service, data))
+        return {"ok": True, "say": f"{service} ok"}
 
 
 async def _fake_xai(ws, seen):
@@ -406,7 +424,9 @@ async def _fake_xai(ws, seen):
             await ws.send(json.dumps({"type": "session.updated", "session": msg["session"]}))
         elif kind == "input_audio_buffer.append" and msg["audio"] in ("bGlnaHQ=", "Ynll", "bXVzaWM="):
             name, args = {"bGlnaHQ=": ("turn_on", "{}"), "Ynll": ("end_conversation", "{}"), "bXVzaWM=": ("media", '{"action":"pause"}')}[msg["audio"]]
+            await ws.send(json.dumps({"type": "input_audio_buffer.speech_started", "item_id": "u1"}))
             await ws.send(json.dumps({"type": "input_audio_buffer.speech_stopped", "item_id": "u1"}))
+            await ws.send(json.dumps({"type": "conversation.item.input_audio_transcription.completed", "transcript": "turn on the lights"}))
             await ws.send(json.dumps({"type": "response.created", "response": {"id": "r1"}}))
             item = {"id": "f1", "type": "function_call", "name": name, "call_id": "c1", "arguments": args}
             await ws.send(json.dumps({"type": "response.output_item.added", "response_id": "r1", "item": item}))
@@ -416,6 +436,7 @@ async def _fake_xai(ws, seen):
         elif kind == "response.create":
             await ws.send(json.dumps({"type": "response.created", "response": {"id": "r2"}}))
             await ws.send(json.dumps({"type": "response.output_audio.delta", "item_id": "a1", "delta": "AAAA"}))
+            await ws.send(json.dumps({"type": "response.output_audio_transcript.done", "transcript": "Done."}))
             usage = {"total_tokens": 30, "input_tokens": 20, "output_tokens": 10,
                      "input_token_details": {"text_tokens": 15, "audio_tokens": 5, "cached_tokens": 4},
                      "output_token_details": {"text_tokens": 2, "audio_tokens": 8}}
@@ -445,7 +466,10 @@ async def _round_trip(audio: str, tmp_path):
                         got.append(json.loads(await asyncio.wait_for(ks.recv(), 1.0)))
                     except asyncio.TimeoutError:
                         break
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.05)
+    pending = [t for t in list(_BACKGROUND) if not t.done()]
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
     return got, seen, ha, context
 
 
@@ -463,6 +487,14 @@ def test_relay_tool_runs_server_side_and_kiosk_only_hears_the_answer(tmp_path):
     assert row["tablet"] == "Attic Dashboard" and row["turns"] == 1 and [t["name"] for t in row["tools"]] == ["turn_on"]
     assert row["usage"]["input_audio_tokens"] == 5 and row["usage"]["output_audio_tokens"] == 8 and row["usage"]["input_tokens"] == 20
     assert row["realtime_cost"] > 0 and row["ready_ms"] is not None
+    kinds_tl = [e["kind"] for e in row["timeline"]]
+    for needed in ("connect", "session.update", "upstream_open", "session.updated", "speech_started", "speech_stopped", "transcript", "first_audio", "tool", "response.done", "session_end"):
+        assert needed in kinds_tl
+    tool_ev = next(e for e in row["timeline"] if e["kind"] == "tool")
+    assert tool_ev["name"] == "turn_on" and tool_ev["ok"] is True
+    assert row["end_reason"] == "client_close"
+    user_t = next(e for e in row["timeline"] if e["kind"] == "transcript" and e.get("role") == "user")
+    assert "turn on the lights" in user_t["text"]
     sent = [m["type"] for m in seen]
     assert sent.index("conversation.item.create") < sent.index("response.create")
     session = seen[0]["session"]
@@ -480,10 +512,13 @@ def test_direct_media_skill_runs_relay_handler(tmp_path):
 
 
 def test_end_conversation_reaches_the_kiosk(tmp_path):
-    got, seen, ha, _ = asyncio.run(_round_trip("Ynll", tmp_path))
+    got, seen, ha, context = asyncio.run(_round_trip("Ynll", tmp_path))
     calls = [m for m in got if m["type"] == "response.function_call_arguments.done"]
     assert [c["name"] for c in calls] == ["end_conversation"]
     assert ha.intents == []
+    row = context.report()["recent"][0]
+    assert row["end_reason"] == "end_conversation"
+    assert any(e["kind"] == "end_conversation" for e in row["timeline"])
 
 
 def test_relay_server_rejects_a_wrong_secret(tmp_path):
@@ -553,6 +588,10 @@ def test_panel_page_is_served_on_relay_path():
     assert b"test/" in root.body
     assert b"Assign to tablet" in root.body
     assert b"Detected IP" in root.body
+    assert b"function sessionDetail(" in root.body
+    assert b"function timelineView(" in root.body
+    assert b"cache_readonly_skills" in root.body
+    assert b"cache_ro" in root.body
 
     class Sock:
         request = Request("/relay/ws", Headers())
@@ -893,3 +932,153 @@ def test_panel_socket_reasons_distinguish_ingress_from_missing_context():
     assert loaded["id"] == 1
     assert loaded["relay"]["secret_set"] is False
     assert "secret_once" not in loaded
+
+
+def test_sanitize_redacts_secret_keys_and_known_values_and_truncates():
+    blob = sanitize(
+        {"api_key": "xai-test-key", "name": "kitchen", "note": "token xai-test-key in text", "body": "n" * 50},
+        secrets=["xai-test-key"],
+        max_chars=20,
+    )
+    assert blob["api_key"] == "[redacted]"
+    assert blob["name"] == "kitchen"
+    assert "[redacted]" in blob["note"] and "xai-test-key" not in blob["note"]
+    assert blob["body"].startswith("n" * 20) and "chars]" in blob["body"]
+    assert sanitize({"input_tokens": 9, "output_tokens": 3}) == {"input_tokens": 9, "output_tokens": 3}
+
+
+def test_compact_tool_lines_drop_args_and_results():
+    assert compact_tool_line("turn_on", '{"domain":"light"}', True) == "turn_on ok"
+    assert compact_tool_line("skill", '{"name":"dashboard","action":"set","args":{"layout_json":"huge"}}', False) == "skill dashboard.set failed"
+    old = 'skill {"name": "dashboard", "action": "catalog"} -> ok: {"tiles": [1, 2]}'
+    assert compact_stored_fact(old) == "skill dashboard.catalog ok"
+    assert compact_stored_fact("turn_on ok") == "turn_on ok"
+    truncated = 'skill {"name":"dashboard","action":"set","args":{"layout_json":"' + "x" * 80
+    assert compact_stored_fact(truncated + '"} -> ok: saved') == "skill dashboard.set ok"
+
+
+def test_readonly_skill_cache_hits_and_invalidates_on_write(tmp_path):
+    skills = load_seed()
+    for skill in skills:
+        if skill["name"] == "dashboard":
+            skill["enabled"] = True
+    ha = FakeHa()
+    tools = RelayTools(ha, skills=skills, cache_readonly=True)
+
+    async def run():
+        first = await tools.execute("skill", {"name": "dashboard", "action": "help"})
+        second = await tools.execute("skill", {"name": "dashboard", "action": "help"})
+        cat1 = await tools.execute("skill", {"name": "dashboard", "action": "catalog"})
+        cat2 = await tools.execute("skill", {"name": "dashboard", "action": "catalog"})
+        await tools.execute("skill", {"name": "dashboard", "action": "set", "args": {"layout": "kitchen", "layout_json": "{}"}})
+        cat3 = await tools.execute("skill", {"name": "dashboard", "action": "catalog"})
+        return first, second, cat1, cat2, cat3
+
+    first, second, cat1, cat2, cat3 = asyncio.run(run())
+    assert first.get("ok") is True and second.get("_cached") is True
+    assert cat1.get("_cached") is not True and cat2.get("_cached") is True
+    assert cat3.get("_cached") is not True
+    catalogs = [c for c in ha.services if c[1] == "dashboard_catalog"]
+    sets = [c for c in ha.services if c[1] == "dashboard_set_layout"]
+    assert len(catalogs) == 2 and len(sets) == 1
+
+
+def test_readonly_skill_cache_can_be_disabled():
+    skills = load_seed()
+    for skill in skills:
+        if skill["name"] == "dashboard":
+            skill["enabled"] = True
+    ha = FakeHa()
+    tools = RelayTools(ha, skills=skills, cache_readonly=False)
+
+    async def run():
+        await tools.execute("skill", {"name": "dashboard", "action": "catalog"})
+        await tools.execute("skill", {"name": "dashboard", "action": "catalog"})
+
+    asyncio.run(run())
+    assert len([c for c in ha.services if c[1] == "dashboard_catalog"]) == 2
+
+
+def test_cache_readonly_skills_defaults_on():
+    merged = validate({})
+    assert merged["cache_readonly_skills"] is True
+    assert validate({"cache_readonly_skills": False})["cache_readonly_skills"] is False
+
+
+def test_stats_stores_timeline_and_migrates_old_schema(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    db = sqlite3.connect(path)
+    db.executescript(
+        """
+        CREATE TABLE sessions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          tablet TEXT, device_id TEXT, started REAL, ended REAL, duration_s REAL,
+          ready_ms INTEGER, turns INTEGER, latencies TEXT, tools TEXT, usage TEXT,
+          realtime_cost REAL, error TEXT
+        );
+        """
+    )
+    now = time.time()
+    db.execute(
+        "INSERT INTO sessions (tablet, device_id, started, ended, duration_s, ready_ms, turns, latencies, tools, usage, realtime_cost, error)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        ("Kitchen", "dev_ks", now - 10, now, 10, 80, 1, "[300]", "[]", "{}", 0.01, ""),
+    )
+    db.commit()
+    db.close()
+    store = StatsStore(path)
+    row = store.report()["recent"][0]
+    assert row["timeline"] == [] and row["end_reason"] == ""
+    store.record_session(
+        {
+            "tablet": "Kitchen",
+            "started": now,
+            "ended": now + 5,
+            "turns": [200],
+            "timeline": [{"t": 0, "kind": "connect"}, {"t": 5000, "kind": "session_end", "reason": "idle"}],
+            "end_reason": "idle",
+        },
+        {"realtime_per_min": 0.08},
+    )
+    latest = store.report()["recent"][0]
+    assert latest["end_reason"] == "idle"
+    assert [e["kind"] for e in latest["timeline"]] == ["connect", "session_end"]
+
+
+def test_empty_summary_is_not_stored_and_old_empty_rows_are_skipped(tmp_path):
+    import httpx
+
+    def reply(request):
+        return httpx.Response(200, json={"choices": [{"message": {"content": "NONE"}}], "usage": {"prompt_tokens": 10, "completion_tokens": 1}})
+
+    async def run():
+        http = httpx.AsyncClient(transport=httpx.MockTransport(reply))
+        memory = RelayMemory(tmp_path / "m.json", "xai-test", http=http)
+        log = SessionLog(tablet="d1", area="Kitchen")
+        log.said("user", "edit the dashboard")
+        log.tool("skill", '{"name":"dashboard","action":"catalog"}', '{"ok": true, "tiles": ["a"]}', True)
+        memory.finish(log, MemorySettings())
+        await memory.drain()
+        memory._items.append({
+            "ts": time.time(), "started": time.time(), "tablet": "d1", "area": "Kitchen",
+            "kind": "raw", "text": "", "facts": ['skill {"name":"dashboard","action":"catalog"} -> ok: {"tiles":["a"]}'],
+        })
+        memory._items.append({
+            "ts": time.time(), "started": time.time(), "tablet": "d1", "area": "Kitchen",
+            "kind": "summary", "text": "Opened the dashboard.",
+            "facts": ['skill {"name":"dashboard","action":"set","args":{"layout":"kitchen","layout_json":"{\\"tiles\\":[1]}"}} -> ok: saved'],
+        })
+        block = memory.context_block("d1", MemorySettings(), "UTC")
+        shown = memory.items()
+        await http.aclose()
+        return block, shown
+
+    block, shown = asyncio.run(run())
+    assert all(i.get("text") for i in shown)
+    assert "Opened the dashboard" in block
+    assert "skill dashboard.set ok" in block
+    assert "layout_json" not in block
+    assert "tiles" not in block
+    assert block.count("tool:") == 1

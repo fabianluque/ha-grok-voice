@@ -31,6 +31,14 @@ pre{white-space:pre-wrap;background:var(--input);border:1px solid var(--line);bo
 .tot{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}.tot div{border:1px solid var(--line);border-radius:8px;padding:10px}.tot b{font-size:20px;display:block}
 tr.click{cursor:pointer}tr.click:hover{background:rgba(3,169,244,.08)}svg text{fill:var(--muted);font-size:10px}
 .pill{display:inline-block;padding:1px 8px;border-radius:10px;border:1px solid var(--line);font-size:11px;margin-left:4px}
+.wf{margin:8px 0 0}.wf-row{display:grid;grid-template-columns:76px 1fr;gap:8px;padding:5px 0;border-bottom:1px solid var(--line);align-items:start}
+.wf-t{color:var(--muted);font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+.wf-bar{display:inline-block;height:7px;background:var(--accent);border-radius:3px;vertical-align:middle;margin:3px 8px 0 0;min-width:4px}
+.wf-meta{color:var(--muted);font-size:12px;margin-top:2px}
+.wf-pay{margin-top:4px;font-size:12px}.wf-pay button{margin:0 0 0 6px;padding:2px 8px}
+.wf-pay pre{display:none;max-height:240px;overflow:auto;margin:6px 0 0}
+.wf-pay.open pre{display:block}
+.pill.ok{border-color:var(--ok);color:var(--ok)}
 </style>
 </head>
 <body>
@@ -101,9 +109,66 @@ function stats(m,x){
  const t=table(["Tablet","Started","Length","Ready","Turns","Median","p90","Tools","Est. cost"],[]);
  x.recent.forEach(s=>{const tr=$(`<tr class="click"><td>${esc(s.tablet)}${s.error?' <span class="err">✗</span>':""}</td><td>${fmtT(s.started)}</td><td>${s.duration_s} s</td><td>${ms(s.ready_ms)}</td><td>${s.turns}</td><td>${ms(s.latency_median)}</td><td>${ms(s.latency_p90)}</td><td>${s.tools.length}</td><td>${usd(s.realtime_cost)}</td></tr>`);
   tr.onclick=()=>{openRow=openRow===s.id?null:s.id;render()};t.tBodies[0].append(tr);
-  if(openRow===s.id){const u=Object.entries(s.usage||{}).map(([k,v])=>`${esc(k)}: ${v}`).join(" · ")||"not reported";
-   t.tBodies[0].append($(`<tr><td colspan="9"><b>Turn latencies:</b> ${s.latencies.map(v=>v+" ms").join(", ")||"–"}<br><b>Tools:</b> ${s.tools.map(o=>`${esc(o.name)}${o.ok?"":" ✗"} ${o.ms} ms`).join(", ")||"none"}<br><b>xAI usage:</b> ${u}<br><b>Ended:</b> ${fmtT(s.ended)}${s.error?`<br><b>Error:</b> ${esc(s.error)}`:""}</td></tr>`))}});
+  if(openRow===s.id){const detail=$(`<tr><td colspan="9"></td></tr>`);const cell=detail.querySelector("td");if(cell)cell.append(sessionDetail(s));t.tBodies[0].append(detail)}});
  r.append(t);m.append(r)}
+function asText(v){if(v==null||v==="")return"";if(typeof v==="object"){try{return JSON.stringify(v,null,2)}catch(e){return String(v)}}return String(v)}
+function payloadBlock(label,value){const full=asText(value);if(!full)return null;const short=full.length>180?full.slice(0,180)+"…":full;
+ const wrap=$(`<div class="wf-pay"><span class="muted">${esc(label)}:</span> <code>${esc(short)}</code></div>`);
+ if(full.length>180){const b=$(`<button class="b s" type="button">full</button>`);const pre=$(`<pre></pre>`);pre.textContent=full;
+  b.onclick=e=>{e.stopPropagation();const on=wrap.classList.toggle("open");b.textContent=on?"hide":"full"};wrap.append(b);wrap.append(pre)}
+ return wrap}
+function kindLabel(e){const k=e.kind||"";
+ if(k==="connect")return "KS connected (auth ok)";
+ if(k==="session.update")return "KS session.update received"+(e.tools!=null?` · ${e.tools} tools`:"");
+ if(k==="upstream_open")return "upstream xAI open";
+ if(k==="session.updated")return "session.updated (ready)"+(e.ready_ms!=null?` · ${e.ready_ms} ms`:"");
+ if(k==="clock_refresh")return "clock refresh (session.update)";
+ if(k==="speech_started")return "speech start (VAD)";
+ if(k==="speech_stopped")return "speech stop (VAD)";
+ if(k==="transcript")return `${e.role==="user"?"user":"assistant"}: ${e.text||""}`;
+ if(k==="first_audio")return "first audio"+(e.e2s_ms!=null?` · end-of-speech → audio ${e.e2s_ms} ms`:"");
+ if(k==="tool"){const n=e.skill?`skill ${e.skill}${e.action?"."+e.action:""}`:(e.name||"tool");
+  return `tool ${n}${e.ok===false?" ✗":""}${e.cached?" · cache hit":""}`}
+ if(k==="response.done")return "response.done";
+ if(k==="memory_summary")return `memory summary (${e.summary_kind||"summary"})`;
+ if(k==="session_end")return `session end · ${e.reason||""}`;
+ if(k==="end_conversation")return "end_conversation";
+ if(k==="error")return `error ${e.code||""} ${e.message||""}`.trim();
+ if(k==="omitted")return e.detail||"further events dropped";
+ return k}
+function eventMeta(e){const bits=[];
+ if(e.kind==="tool"){if(e.call_to_dispatch_ms!=null)bits.push(`call → dispatch ${e.call_to_dispatch_ms} ms`);
+  if(e.ha_ms!=null)bits.push(`HA ${e.ha_ms} ms`);
+  if(e.result_to_audio_ms!=null)bits.push(`result → first audio ${e.result_to_audio_ms} ms`);
+  if(e.cached)bits.push("answered from session cache")}
+ if(e.kind==="response.done"){if(e.e2s_to_first_audio_ms!=null)bits.push(`end-of-speech → first audio ${e.e2s_to_first_audio_ms} ms`);
+  if(e.first_audio_to_done_ms!=null)bits.push(`first audio → done ${e.first_audio_to_done_ms} ms`);
+  if(e.total_ms!=null)bits.push(`total ${e.total_ms} ms`);
+  if(e.audio_s!=null)bits.push(`audio ${e.audio_s} s`);
+  const u=e.usage||{};const tok=["input_tokens","output_tokens","total_tokens","input_audio_tokens","output_audio_tokens","billable_audio_seconds"].filter(k=>u[k]!=null).map(k=>`${k} ${u[k]}`);
+  if(tok.length)bits.push(tok.join(" · "))}
+ if(e.kind==="memory_summary"){if(e.ms!=null)bits.push(`${e.ms} ms`);if(e.model)bits.push(e.model);if(e.input_tokens!=null)bits.push(`in ${e.input_tokens}`);if(e.output_tokens!=null)bits.push(`out ${e.output_tokens}`);if(e.chars!=null)bits.push(`${e.chars} chars`)}
+ return bits.join(" · ")}
+function eventBarWidth(e,span){const dur=e.kind==="tool"?e.ha_ms:e.kind==="response.done"?e.total_ms:e.kind==="session.updated"?e.ready_ms:e.kind==="memory_summary"?e.ms:0;
+ if(!dur||!span)return 8;return Math.max(8,Math.min(100,dur/span*100))}
+function timelineView(s){const ev=s.timeline||[];if(!ev.length)return null;
+ const last=ev[ev.length-1];const span=Math.max((s.duration_s||0)*1000,last.t||1,1);
+ const box=$(`<div class="wf"></div>`);
+ ev.forEach(e=>{const row=$(`<div class="wf-row"><div class="wf-t">${e.t==null?"":e.t+" ms"}</div><div class="wf-body"></div></div>`);
+  const body=row.querySelector(".wf-body");
+  body.append($(`<div><span class="wf-bar" style="width:${eventBarWidth(e,span)}%"></span>${esc(kindLabel(e))}${e.cached?' <span class="pill ok">cache</span>':""}</div>`));
+  const meta=eventMeta(e);if(meta)body.append($(`<div class="wf-meta">${esc(meta)}</div>`));
+  const args=payloadBlock("args",e.args);if(args)body.append(args);
+  const res=payloadBlock("result",e.result);if(res)body.append(res);
+  box.append(row)});
+ return box}
+function sessionDetail(s){const wrap=$(`<div></div>`);
+ const u=Object.entries(s.usage||{}).map(([k,v])=>`${esc(k)}: ${v}`).join(" · ")||"not reported";
+ wrap.append($(`<p><b>End reason:</b> ${esc(s.end_reason||"–")} · <b>Ended:</b> ${fmtT(s.ended)}${s.error?` · <span class="err">${esc(s.error)}</span>`:""}</p>`));
+ wrap.append($(`<p><b>Turn latencies:</b> ${(s.latencies||[]).map(v=>v+" ms").join(", ")||"–"}<br><b>Tools:</b> ${(s.tools||[]).map(o=>`${esc(o.name)}${o.ok?"":" ✗"}${o.cached?" cache":""} ${o.ms} ms`).join(", ")||"none"}<br><b>xAI usage:</b> ${u}</p>`));
+ const tl=timelineView(s);if(tl){wrap.append($(`<h3>Timeline</h3>`));wrap.append(tl)}
+ else wrap.append($(`<p class="muted">No timeline stored for this session (recorded before 0.3.4).</p>`));
+ return wrap}
 function chart(days){const W=760,H=140,P=24,max=Math.max(0.01,...days.map(d=>d.realtime_cost+d.summary_cost)),bw=(W-P)/days.length;
  let g=`<svg viewBox="0 0 ${W} ${H+18}" width="100%" role="img" aria-label="Daily cost"><text x="0" y="10">${usd(max)}</text><line x1="${P}" y1="${H}" x2="${W}" y2="${H}" stroke="var(--line)"/>`;
  days.forEach((d,i)=>{const x=P+i*bw+1,hr=d.realtime_cost/max*(H-14),hs=d.summary_cost/max*(H-14);
@@ -155,6 +220,7 @@ function settings(m){const s=S.settings,mem=s.memory,r=relayInfo();
  ${field("Custom silence ms (custom only)",`<input id="vadms" type="number" min="0" max="3000" value="${s.vad.silence_ms}">`)}
  ${field("Date and time in instructions",`<input id="dt" type="checkbox" ${s.inject_datetime?"checked":""}>`)}
  ${field("Label dates in tool results (today / tomorrow, local time)",`<input id="ann" type="checkbox" ${s.annotate_tool_dates?"checked":""}>`)}
+ ${field("Cache identical read-only skill calls in a session (help / catalog / get / list)",`<input id="cache_ro" type="checkbox" ${s.cache_readonly_skills!==false?"checked":""}>`)}
  </div>${field("Date line (blank = default; fields: {weekday} {month} {day} {year} {time} {tz} {date} {tomorrow_weekday} {tomorrow_month} {tomorrow_day} {tomorrow_date} {yesterday_date})",`<textarea id="dtt" placeholder="${esc(S.date_default||"")}">${esc(s.date_template||"")}</textarea>`)}${field("Extra instructions (added after the tablet's)",`<textarea id="extra">${esc(s.extra_instructions)}</textarea>`)}
  <p class="muted">unset = xAI's default end of speech (fastest); kiosk = keep the tablet's 500 ms; custom = your value.</p></div>`);m.append(c);
  const t=$(`<div class="card"><h2>Built-in tools</h2><p class="muted">Direct tools run in the relay against Home Assistant intents. Media and other skills are on the Skills tab.</p><div class="row">${Object.entries(S.families).map(([k,d])=>field(esc(d),sel("fam_"+k,["direct","off"],s.tools[k]))).join("")}</div></div>`);m.append(t);
@@ -179,7 +245,7 @@ function settings(m){const s=S.settings,mem=s.memory,r=relayInfo();
  </div><p class="muted">Used for the Status tab's estimates. "session" prices the whole connection time; "billable_audio" uses xAI's reported billable audio seconds when present. New prices apply to sessions recorded from now on.</p></div>`);m.append(cc);
  const out=$(`<div><button class="b">Save</button><span class="err" id="serr"></span></div>`);m.append(out);
  out.querySelector("button").onclick=()=>{const v=(i)=>document.getElementById(i),n=(i)=>Number(v(i).value);
-  const next={...S.settings,model:v("model").value.trim(),reasoning_effort:v("reasoning").value,vad:{mode:v("vadmode").value,silence_ms:n("vadms")},inject_datetime:v("dt").checked,annotate_tool_dates:v("ann").checked,date_template:v("dtt").value.trim(),extra_instructions:v("extra").value,
+  const next={...S.settings,model:v("model").value.trim(),reasoning_effort:v("reasoning").value,vad:{mode:v("vadmode").value,silence_ms:n("vadms")},inject_datetime:v("dt").checked,annotate_tool_dates:v("ann").checked,cache_readonly_skills:v("cache_ro").checked,date_template:v("dtt").value.trim(),extra_instructions:v("extra").value,
    costs:{realtime_per_min:n("c_rt"),realtime_basis:v("c_basis").value,summary_input_per_m:n("c_in"),summary_output_per_m:n("c_out"),retention_days:n("c_keep")},ha_sensors:v("c_ha").checked,
    tools:Object.fromEntries(Object.keys(S.families).map(k=>[k,v("fam_"+k).value])),
    memory:{enabled:v("m_en").checked,mode:v("m_mode").value,window_minutes:n("m_win"),max_items:n("m_max"),scope:v("m_scope").value,house_window_minutes:n("m_house"),summary_model:v("m_model").value.trim(),summary_max_chars:n("m_chars"),strip_ks_history:v("m_strip").checked}};

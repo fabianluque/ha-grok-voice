@@ -1,9 +1,10 @@
 """Short-term memory for the KS relay.
 
 Each session records what the user said, what Grok said and the relay's tool
-calls. After the session ends (off the hot path) a fast xAI text model turns it
-into 2-3 lines; the result is stored per tablet in /data. The next session gets a
-compact "Recent context" block in its instructions. If summarizing fails, the
+calls (name and ok/failed only). After the session ends (off the hot path) a
+fast xAI text model turns it into 2-3 lines; the result is stored per tablet
+in /data. The next session gets a compact "Recent context" block in its
+instructions. Empty summaries are not stored. If summarizing fails, the
 trimmed exchanges are stored instead.
 """
 
@@ -66,7 +67,7 @@ class SessionLog:
     area: str = ""
     started: float = field(default_factory=time.time)
     lines: list[tuple[str, str]] = field(default_factory=list)  # (role, text)
-    facts: list[str] = field(default_factory=list)  # tool calls, verbatim
+    facts: list[str] = field(default_factory=list)  # compact tool lines: "turn_on ok"
 
     def said(self, role: str, text: str) -> None:
         text = (text or "").strip()
@@ -74,16 +75,9 @@ class SessionLog:
             self.lines.append((role, text))
 
     def tool(self, name: str, arguments: str, output: str, ok: bool) -> None:
-        try:
-            result = json.loads(output)
-        except (TypeError, json.JSONDecodeError):
-            result = {}
-        detail = ""
-        if isinstance(result, dict):
-            detail = str(result.get("say") or result.get("error") or "")[:80]
-        args = re.sub(r"\s+", " ", arguments or "{}")[:160]
-        self.facts.append(f"{name} {args} -> {'ok' if ok else 'failed'}{': ' + detail if detail else ''}")
-        self.lines.append(("tool", self.facts[-1]))
+        line = compact_tool_line(name, arguments, ok)
+        self.facts.append(line)
+        self.lines.append(("tool", line))
 
     @property
     def empty(self) -> bool:
@@ -102,6 +96,69 @@ class SessionLog:
 
 def strip_ks_history(instructions: str) -> str:
     return KS_HISTORY_RE.sub("", instructions or "").rstrip()
+
+
+_FACT_ARROW_RE = re.compile(r"^(?P<name>\S+)(?:\s+(?P<rest>.*?))?\s*->\s*(?P<status>ok|failed)\b", re.DOTALL)
+_SKILL_NAME_RE = re.compile(r'"name"\s*:\s*"([^"]+)"')
+_SKILL_ACTION_RE = re.compile(r'"action"\s*:\s*"([^"]+)"')
+
+
+def _skill_name_action(arguments: str) -> tuple[str, str]:
+    raw = arguments or ""
+    try:
+        args = json.loads(raw) if raw.strip() else {}
+        if isinstance(args, dict):
+            return str(args.get("name") or "").strip(), str(args.get("action") or "").strip()
+    except (TypeError, json.JSONDecodeError):
+        pass
+    name = _SKILL_NAME_RE.search(raw)
+    action = _SKILL_ACTION_RE.search(raw)
+    return (name.group(1) if name else ""), (action.group(1) if action else "")
+
+
+def tool_label(name: str, arguments: str = "") -> str:
+    """``turn_on`` or ``skill dashboard.set`` (skill gateway includes action)."""
+    name = (name or "").strip() or "?"
+    if name != "skill":
+        return name
+    skill, action = _skill_name_action(arguments)
+    if skill and action:
+        return f"skill {skill}.{action}"
+    if skill:
+        return f"skill {skill}"
+    return "skill"
+
+
+def compact_tool_line(name: str, arguments: str = "", ok: bool = True) -> str:
+    return f"{tool_label(name, arguments)} {'ok' if ok else 'failed'}"
+
+
+def compact_stored_fact(fact: str) -> str:
+    """Trim a stored tool line (old rows included args/results) to name + status."""
+    fact = (fact or "").strip()
+    if not fact:
+        return ""
+    match = _FACT_ARROW_RE.match(fact)
+    if match:
+        name = match.group("name")
+        rest = (match.group("rest") or "").strip()
+        status = match.group("status")
+        if name == "skill":
+            return compact_tool_line("skill", rest, status == "ok")
+        return f"{name} {status}"
+    parts = fact.split()
+    if len(parts) >= 2 and parts[-1] in ("ok", "failed"):
+        return fact
+    return parts[0]
+
+
+def compact_memory_item(item: dict) -> dict | None:
+    """Drop empty summaries and compact tool facts. None = skip this row."""
+    text = str(item.get("text") or "").strip()
+    if not text:
+        return None
+    facts = [compact_stored_fact(f) for f in item.get("facts") or []]
+    return {**item, "text": text, "facts": [f for f in facts if f]}
 
 
 class RelayMemory:
@@ -142,19 +199,30 @@ class RelayMemory:
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
-    async def _store(self, session: SessionLog, settings: MemorySettings) -> None:
-        text, kind = "", "raw"
+    async def complete(self, session: SessionLog, settings: MemorySettings) -> dict | None:
+        """Awaitable store; returns a memory_summary timeline event, or None."""
+        if not settings.active or session.empty:
+            return None
+        return await self._store(session, settings)
+
+    async def _store(self, session: SessionLog, settings: MemorySettings) -> dict | None:
+        text, kind, meta = "", "raw", {}
+        summarized = False
         if settings.mode == "summary":
-            with contextlib.suppress(Exception):
-                text = await self._summarize(session, settings)
+            text, meta, ok = await self._summarize(session, settings)
+            if ok:
+                summarized = True
                 kind = "summary"
+        if summarized:
+            text = "\n".join(
+                line.strip() for line in text.splitlines() if line.strip() and line.strip().upper() != "NONE"
+            )
             if not text:
-                kind = "raw"
-        text = "\n".join(line.strip() for line in text.splitlines() if line.strip() and line.strip().upper() != "NONE")
+                return None
         if kind == "raw":
             text = session.raw(settings.summary_max_chars)
-        if not text and not session.facts:
-            return
+        if not text:
+            return None
         item = {
             "ts": time.time(),
             "started": session.started,
@@ -168,10 +236,20 @@ class RelayMemory:
             self._items.append(item)
             await asyncio.to_thread(self._save)
         log.info("memory stored for %s (%s, %d chars, %d tool facts)", session.tablet, kind, len(item["text"]), len(item["facts"]))
+        return {
+            "kind": "memory_summary",
+            "model": meta.get("model") or settings.summary_model,
+            "summary_kind": kind,
+            "ms": meta.get("ms"),
+            "input_tokens": meta.get("input_tokens"),
+            "output_tokens": meta.get("output_tokens"),
+            "chars": len(item["text"]),
+        }
 
-    async def _summarize(self, session: SessionLog, settings: MemorySettings) -> str:
+    async def _summarize(self, session: SessionLog, settings: MemorySettings) -> tuple[str, dict, bool]:
+        """-> (text, usage meta, ok). ok is False when the call failed (raw fallback)."""
         if not self._key:
-            return ""
+            return "", {}, False
         body = {
             "model": settings.summary_model,
             "messages": [
@@ -189,17 +267,20 @@ class RelayMemory:
             response.raise_for_status()
             data = response.json()
             text = data["choices"][0]["message"]["content"].strip()
+            usage = data.get("usage") or {}
+            inp = int(usage.get("prompt_tokens") or 0)
+            out = int(usage.get("completion_tokens") or 0)
             if self.on_usage is not None:
-                usage = data.get("usage") or {}
                 try:
-                    self.on_usage(session.tablet, settings.summary_model, int(usage.get("prompt_tokens") or 0), int(usage.get("completion_tokens") or 0))
+                    self.on_usage(session.tablet, settings.summary_model, inp, out)
                 except Exception as exc:  # noqa: BLE001 - stats must never break memory
                     log.warning("summary usage not recorded: %s", exc)
-            log.info("memory summary %s %dms", settings.summary_model, (time.monotonic() - started) * 1000)
-            return text
+            ms = int((time.monotonic() - started) * 1000)
+            log.info("memory summary %s %dms", settings.summary_model, ms)
+            return text, {"ms": ms, "input_tokens": inp, "output_tokens": out, "model": settings.summary_model}, True
         except Exception as exc:  # noqa: BLE001 - raw fallback
             log.warning("memory summary failed (%s); keeping raw exchanges", type(exc).__name__)
-            return ""
+            return "", {}, False
         finally:
             if own:
                 await http.aclose()
@@ -224,11 +305,12 @@ class RelayMemory:
             elif not here and house and age <= house:
                 chosen.append(item)
         chosen = chosen[-settings.max_items :]
-        if not chosen:
+        compact = [c for item in chosen if (c := compact_memory_item(item))]
+        if not compact:
             return ""
         zone = ZoneInfo(time_zone or "UTC")
         lines = ["Recent context (earlier conversations; use it only if the user refers back):"]
-        for item in chosen:
+        for item in compact:
             moment = datetime.fromtimestamp(item["started"], zone)
             when = f"{moment.hour % 12 or 12}:{moment.minute:02d} {'AM' if moment.hour < 12 else 'PM'}"
             minutes = int((now - item["ts"]) // 60)
@@ -240,7 +322,7 @@ class RelayMemory:
         return "\n".join(lines)
 
     def items(self) -> list[dict]:
-        return [dict(i) for i in self._items]
+        return [c for item in self._items if (c := compact_memory_item(item))]
 
     async def clear(self, tablet: str | None = None) -> int:
         async with self._lock:

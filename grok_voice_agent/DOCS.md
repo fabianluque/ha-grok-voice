@@ -32,8 +32,9 @@ add-on and the add-on relays each conversation to xAI:
   promoted to one direct tool (media is direct by default).
 - **Short-term memory.** After each session (never while the tablet waits) a fast
   xAI text model writes 2-3 lines; the next session gets a "Recent context"
-  block (latest summaries in the window, tool calls verbatim). If summarizing
-  fails, trimmed exchanges are kept. Stored in `/data`.
+  block (latest summaries in the window, tool calls as name plus ok/failed).
+  Empty summaries are not stored. If summarizing fails, trimmed exchanges are
+  kept. Stored in `/data`.
 - **The xAI key stays in the add-on.** Tablets hold only a shared secret. The xAI
   socket opens only when a tablet connects (no idle billing).
 
@@ -59,11 +60,18 @@ the Settings tab without restarting the add-on.
 
 - **Status:** connected tablets, recent sessions with latency (xAI's
   speech_stopped → first audio sent to the tablet) and tool timings, and the
-  short-term memory per tablet with **Clear** buttons.
+  short-term memory per tablet with **Clear** buttons. Click a recent session
+  for a timeline/waterfall: connect, KS `session.update`, upstream open,
+  ready; per turn VAD start/stop, transcripts, end-of-speech → first audio,
+  first audio → `response.done`, audio seconds; per tool arguments/results
+  (truncated, full view on click) and HA vs dispatch timings; memory-summary
+  tokens; per-response usage; end reason (`end_conversation`, client close,
+  idle).
 - **Usage and cost (estimates):** stored in `/data/stats.db` (SQLite, kept
   90 days by default). Per session: tablet, start and end, duration, ready time,
   turns with end-of-speech → first-audio latency (median and p90), tool calls
-  with names and timings, and xAI's `response.done` usage summed per session
+  with names and timings, the event timeline above (payloads truncated and
+  secret-like keys redacted), and xAI's `response.done` usage summed per session
   (input / output text and audio tokens, `billable_audio_seconds`). Summaries
   add their model's tokens. Totals for today, 7 and 30 days (sessions,
   minutes, realtime vs summary cost), per-tablet cost and latency, a daily
@@ -79,11 +87,15 @@ the Settings tab without restarting the add-on.
   not kept across a Home Assistant restart until the next session.
 - **Settings:** model, reasoning effort (none / high / default), end of speech
   (unset = xAI default, kiosk = KS's 500 ms, custom ms), date/time injection,
-  the date line template, day labels on tool results, extra instructions, which built-in tool families are direct or off, and
+  the date line template, day labels on tool results, extra instructions, cache
+  identical read-only skill calls in a session (help / catalog / get / list;
+  default on), which built-in tool families are direct or off, and
   memory: enabled, mode (summary / raw / off), window minutes (45), max items
   (5), scope (per_tablet / house), other rooms' last-N-minutes window (10, per
   tablet scope), summary model (`grok-4.20-0309-non-reasoning`), summary max
-  chars (400), and dropping KS's own history block.
+  chars (400), and dropping KS's own history block. Memory tool lines are the
+  tool name (or `skill dashboard.set`) plus ok/failed; empty summaries are not
+  stored, and older bloated rows are compacted when injected.
 - **Skills:** toggles, index line, help, actions with backend pickers (HA
   scripts and services), args (required, aliases, coerce), direct vs behind the
   `skill` tool, a live preview of the exact tool JSON with its size, and
