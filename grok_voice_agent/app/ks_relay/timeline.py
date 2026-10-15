@@ -14,8 +14,41 @@ import re
 MAX_EVENTS = 300
 MAX_PAYLOAD = 2000
 MAX_TRANSCRIPT = 500
+MAX_UNKNOWN_UPSTREAM = 12
 READONLY_SKILL_ACTIONS = frozenset({"help", "info", "usage", "?", "catalog", "get", "list"})
 HELP_ACTIONS = frozenset({"help", "info", "usage", "?"})
+# Event types the relay already handles or that are expected noise (not timeline-worthy).
+KNOWN_UPSTREAM = frozenset({
+    "error",
+    "session.created",
+    "session.updated",
+    "rate_limits.updated",
+    "input_audio_buffer.speech_started",
+    "input_audio_buffer.speech_stopped",
+    "input_audio_buffer.committed",
+    "input_audio_buffer.cleared",
+    "input_audio_buffer.append",
+    "conversation.item.created",
+    "conversation.item.added",
+    "conversation.item.done",
+    "conversation.item.truncated",
+    "conversation.item.deleted",
+    "conversation.item.input_audio_transcription.completed",
+    "conversation.item.input_audio_transcription.failed",
+    "response.created",
+    "response.done",
+    "response.output_item.added",
+    "response.output_item.done",
+    "response.content_part.added",
+    "response.content_part.done",
+    "response.output_audio.done",
+    "response.audio.done",
+    "response.output_audio_transcript.done",
+    "response.audio_transcript.done",
+    "response.text.done",
+    "response.output_text.done",
+    "response.function_call_arguments.done",
+})
 
 _SECRET_KEY_RE = re.compile(
     r"(api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|secret|password|passwd|"
@@ -77,6 +110,24 @@ def sanitize(value, secrets: list[str] | tuple[str, ...] = (), max_chars: int = 
     if isinstance(value, (int, float, bool)) or value is None:
         return value
     return sanitize(str(value), secrets, max_chars, _depth)
+
+
+def compact_response_output(output: object) -> list[dict]:
+    """[{type, name, status}] from a response.done output list."""
+    rows: list[dict] = []
+    if not isinstance(output, list):
+        return rows
+    for item in output[:40]:
+        if not isinstance(item, dict):
+            continue
+        row = {}
+        for key in ("type", "name", "status"):
+            value = item.get(key)
+            if value not in (None, ""):
+                row[key] = value
+        if row:
+            rows.append(row)
+    return rows
 
 
 def dumps_payload(value, secrets: list[str] | tuple[str, ...] = (), max_chars: int = MAX_PAYLOAD) -> str:

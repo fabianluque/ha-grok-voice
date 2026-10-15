@@ -4,6 +4,11 @@ Versions match `grok_voice_agent/config.yaml`. GitHub Releases list the
 merged pull requests since the previous tag. Issues closed with `Fixes #N`
 in those pull requests are included below when GitHub reports them.
 
+## [0.3.5] - 2026-10-15
+
+- Timeline records xAI provider tools (`web_search`, `x_keyword_search`, …) that Grok reports as function calls after the spoken answer, plus `response.done` status and a compact output list. Unknown non-delta upstream events are logged once per type per response (bounded). The tablet still sees the same forwarded events as before.
+- Session waterfall bars are positioned on a time axis: left offset is `t / session length`, spans are speech, end-of-speech → first audio, speaking, HA tool, and memory; other events are ticks. Daily cost chart bars show a hover/tap tooltip (date, sessions, minutes, realtime + summary + total).
+
 ## [0.3.4] - 2026-10-15
 
 - Session detail on the Status tab is a per-session timeline/waterfall: connect/auth, KS `session.update`, upstream xAI open, `session.updated` (ready); per turn speech start/stop (VAD), user and assistant transcripts when xAI sends them, end-of-speech → first audio, first audio → `response.done`, total response time, audio seconds; per tool call name, arguments and result (truncated, full payload on click), model `function_call` → relay dispatch, Home Assistant time, tool result → next first audio; memory-summary timing and tokens; token usage per `response.done`; session end reason (`end_conversation`, client close, idle). Stored in `stats.db` next to existing session rows (payloads truncated, retention unchanged, secret-like keys and known secrets redacted).

@@ -47,7 +47,16 @@ from app.ks_relay.settings_store import SettingsStore
 from app.ks_relay.skills import SkillStore, skill_specs
 from app.ks_relay.stats import StatsStore, sensor_states
 from app.ks_relay.status import RelayStatus
-from app.ks_relay.timeline import MAX_EVENTS, MAX_TRANSCRIPT, b64_pcm16_seconds, pcm_rate, sanitize
+from app.ks_relay.timeline import (
+    KNOWN_UPSTREAM,
+    MAX_EVENTS,
+    MAX_TRANSCRIPT,
+    MAX_UNKNOWN_UPSTREAM,
+    b64_pcm16_seconds,
+    compact_response_output,
+    pcm_rate,
+    sanitize,
+)
 from app.ks_relay.tools import END_CONVERSATION, RelayTools, run_tool, tool_specs
 
 log = logging.getLogger("grok_voice.ks_relay")
@@ -251,6 +260,7 @@ class RelaySession:
         self._first_audio_at: float | None = None
         self._turn_e2s: int | None = None
         self._pending_tool_events: list[dict] = []
+        self._unknown_types: set[str] = set()
 
     def ms(self) -> int:
         return int((time.monotonic() - self.t0) * 1000)
@@ -267,6 +277,15 @@ class RelaySession:
 
     def _touch(self) -> None:
         self.last_activity = time.monotonic()
+
+    def _maybe_mark_unknown(self, kind: str, item: dict | None) -> None:
+        if not kind or kind.endswith(".delta") or kind in KNOWN_UPSTREAM:
+            return
+        if kind in self._unknown_types or len(self._unknown_types) >= MAX_UNKNOWN_UPSTREAM:
+            return
+        self._unknown_types.add(kind)
+        item_type = item.get("type") if isinstance(item, dict) else None
+        self.mark("upstream_event", type=kind, item_type=item_type)
 
     def _infer_close_reason(self) -> str:
         if self.end_reason:
@@ -494,7 +513,8 @@ class RelaySession:
             if text.strip():
                 self.mark("transcript", role="assistant", text=sanitize(text, self._secrets(), MAX_TRANSCRIPT))
         if kind == "response.done":
-            usage = (event.get("response") or {}).get("usage")
+            response = event.get("response") or {}
+            usage = response.get("usage")
             self.context.status.usage(self.status_id, usage)
             now_m = time.monotonic()
             first_to_done = int((now_m - self._first_audio_at) * 1000) if self._first_audio_at else None
@@ -507,7 +527,9 @@ class RelaySession:
                 first_audio_to_done_ms=first_to_done,
                 total_ms=e2s_total,
                 audio_s=round(self._audio_s, 3),
-                response_id=(event.get("response") or {}).get("id"),
+                response_id=response.get("id"),
+                status=response.get("status"),
+                output=compact_response_output(response.get("output")),
             )
             self._touch()
         if kind == "input_audio_buffer.speech_started":
@@ -546,6 +568,7 @@ class RelaySession:
             self._first_audio_at = None
             self._audio_s = 0.0
             self._turn_e2s = None
+            self._unknown_types = set()
             if self.held_done is not None:
                 self.held_done = None  # the follow-up answer continues the held one
                 self.pending_create_from_relay = False
@@ -564,14 +587,18 @@ class RelaySession:
         item = event.get("item") if isinstance(event.get("item"), dict) else None
         entry = self.current if self.current is not None else _new_entry()
         self.current = entry
-        if kind == "response.output_item.added" and item and item.get("type") == "function_call":
-            if self._ours(item.get("name")):
-                self.hidden_items.add(str(item.get("id")))
-                return False
-            entry["ks"] = True
-            if item.get("name") == END_CONVERSATION:
-                entry["end"] = True
-            return True
+        if kind == "response.output_item.added" and item:
+            item_type = str(item.get("type") or "")
+            if item_type and item_type != "message" and not (item_type == "function_call" and self._ours(item.get("name"))):
+                self.mark("output_item", item_type=item_type, name=item.get("name") or None)
+            if item_type == "function_call":
+                if self._ours(item.get("name")):
+                    self.hidden_items.add(str(item.get("id")))
+                    return False
+                entry["ks"] = True
+                if item.get("name") == END_CONVERSATION:
+                    entry["end"] = True
+                return True
         if kind == "response.function_call_arguments.delta" and str(event.get("item_id")) in self.hidden_items:
             return False
         if kind == "response.function_call_arguments.done":
@@ -582,6 +609,17 @@ class RelaySession:
                     self.mark("end_conversation")
                 elif event.get("name"):
                     entry["ks"] = True
+                    raw_args = event.get("arguments") or ""
+                    try:
+                        parsed_args = json.loads(raw_args) if raw_args else {}
+                    except json.JSONDecodeError:
+                        parsed_args = raw_args
+                    self.mark(
+                        "provider_tool",
+                        name=str(event.get("name")),
+                        call_id=event.get("call_id"),
+                        arguments=sanitize(parsed_args, self._secrets(), 500),
+                    )
                 return True
             if event.get("item_id"):
                 self.hidden_items.add(str(event["item_id"]))
@@ -615,6 +653,7 @@ class RelaySession:
             self.held_done = cleaned
             self.held_since = time.monotonic()
             return False
+        self._maybe_mark_unknown(kind, item)
         return True
 
     async def _run_tool(self, event: dict) -> dict:

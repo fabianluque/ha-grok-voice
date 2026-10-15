@@ -63,10 +63,13 @@ the Settings tab without restarting the add-on.
   short-term memory per tablet with **Clear** buttons. Click a recent session
   for a timeline/waterfall: connect, KS `session.update`, upstream open,
   ready; per turn VAD start/stop, transcripts, end-of-speech → first audio,
-  first audio → `response.done`, audio seconds; per tool arguments/results
-  (truncated, full view on click) and HA vs dispatch timings; memory-summary
-  tokens; per-response usage; end reason (`end_conversation`, client close,
-  idle).
+  first audio → `response.done`, audio seconds; per HA tool arguments/results
+  (truncated, full view on click) and dispatch timings; xAI provider tools
+  (`web_search` and similar, reported after the answer); memory-summary
+  tokens; per-response usage and output summary; end reason
+  (`end_conversation`, client close, idle). Bars sit on a time axis (offset
+  proportional to session length). The daily cost chart has a hover/tap
+  tooltip per bar.
 - **Usage and cost (estimates):** stored in `/data/stats.db` (SQLite, kept
   90 days by default). Per session: tablet, start and end, duration, ready time,
   turns with end-of-speech → first-audio latency (median and p90), tool calls
