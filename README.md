@@ -36,7 +36,7 @@ flowchart LR
 - **Built-in tools:** on/off, lights, covers and garage doors, locks, climate, fans, timers on the tablet, to-do lists and state lookup, run through Home Assistant intents. Only entities exposed to Assist are reachable; the tablet's device and room are used as defaults.
 - **Skills with progressive disclosure:** one `skill` tool whose description is a one-line index per skill; `action=help` returns the full help and actions. Actions map to Home Assistant scripts, any service, a relay handler (media) or Home Assistant's own `script.skill`. Any skill can be promoted to a direct tool. Import from `script.skill` or from a JSON file.
 - **Short-term memory:** per tablet (or house-wide), summarized by a fast xAI text model after each session, with tool calls kept verbatim and raw exchanges as the fallback.
-- **Settings panel with live reload:** a `relay/` page in the add-on's sidebar panel (Home Assistant ingress only). Changes apply to the next session without a restart; per-tablet overrides.
+- **Settings panel with live reload:** the Home Assistant sidebar opens on the relay panel (Status / Settings / Skills / Tablets). Changes apply to the next session without a restart; per-tablet overrides. The old browser mic UI is the **Test** tab.
 - **Status view:** connected tablets, recent sessions with latency (end of speech to first audio) and tool timings, and each tablet's memory with a clear button.
 - **Usage and cost estimates:** every session is recorded (tablet, start and end, duration, turns, tool calls with timings, latency median and p90 per session, ready time, and the token usage xAI reports), plus the summary model's tokens. The Status tab shows today / 7 days / 30 days totals split into realtime and summaries, cost and latency per tablet, a daily chart, and recent sessions with drill-down. Prices are configurable (default $0.08 per realtime minute); costs are estimates, not your xAI bill. Optional Home Assistant sensors: `sensor.grok_relay_cost_today`, `sensor.grok_relay_sessions_today`, `sensor.grok_relay_minutes_today`, `sensor.grok_relay_latency_median`.
 
@@ -87,11 +87,11 @@ Then **Save & Validate**. `<ha-host>` is the Home Assistant host's LAN address o
 
 ### 4. Tune it
 
-Open **Grok Voice** in the sidebar and follow **Kiosk Satellite relay settings** (or add `relay/` to the panel URL). Details for every setting are in [DOCS.md](grok_voice_agent/DOCS.md#kiosk-satellite-realtime-relay-xai-endpoint).
+Open **Grok Voice** in the sidebar (the relay panel is the landing page). Set or generate the relay secret on the Settings tab if you did not put one in add-on options. Details for every setting are in [DOCS.md](grok_voice_agent/DOCS.md#kiosk-satellite-realtime-relay-xai-endpoint).
 
 ## Security
 
-- The xAI key and relay secret live only in the add-on options and are never shown in the panel or sent to tablets.
+- The xAI key stays in add-on options and is never sent to the panel or tablets. The relay secret can be set in add-on options or generated in the panel (shown once, then masked; never logged).
 - The relay refuses every connection while the secret is empty and checks it on each connection (constant-time compare).
 - Plain `ws://` is meant for your LAN only. Do not forward the relay port to the internet.
 - The settings panel is only reachable through Home Assistant ingress (signed-in users), never on the LAN ports.
@@ -99,7 +99,7 @@ Open **Grok Voice** in the sidebar and follow **Kiosk Satellite relay settings**
 
 ## Legacy: browser and injected duplex mode
 
-The original mode still works: talk from **Open Web UI** in the sidebar, or inject `grok-voice.js` into a Kiosk Satellite dashboard so the tablet runs its own duplex client against port `8080`. It uses Home Assistant's MCP server for tools and the browser-session options in the add-on configuration. See [DOCS.md](grok_voice_agent/DOCS.md) for setup and troubleshooting. New installs should use the relay.
+The original mode still works: open **Grok Voice** in the sidebar and use the **Test** tab, or inject `grok-voice.js` into a Kiosk Satellite dashboard so the tablet runs its own duplex client against port `8080`. It uses Home Assistant's MCP server for tools and the browser-session options in the add-on configuration. See [DOCS.md](grok_voice_agent/DOCS.md) for setup and troubleshooting. New installs should use the relay.
 
 ## Troubleshooting
 
@@ -109,7 +109,7 @@ The original mode still works: talk from **Open Web UI** in the sidebar, or inje
 | KS Save & Validate fails | Check the Endpoint host and port, that the API key field holds the relay secret, and the add-on log (`KS relay rejected a connection` means a wrong secret). |
 | Tools say nothing matches | Expose the entities to Assist in Home Assistant. |
 | Wrong room | Give the tablet's Home Assistant device an area. |
-| Panel does not load | Open it from the Home Assistant sidebar (ingress), not the LAN port. |
+| Panel does not load | Open **Grok Voice** from the Home Assistant sidebar (ingress), not the LAN debug port. The panel shows the websocket close reason if it cannot load. |
 
 Logs: add-on **Log** tab. The panel's **Status** tab shows each session's latency and tool calls.
 

@@ -38,21 +38,46 @@ tr.click{cursor:pointer}tr.click:hover{background:rgba(3,169,244,.08)}svg text{f
 <main id="main"></main>
 <script>
 "use strict";
-const TABS=["Status","Settings","Skills","Tablets"];let tab="Status",S=null,draft=null,selSkill=0,msgId=0,pending={},ws,previewTimer;
+const TABS=["Status","Settings","Skills","Tablets","Test"];let tab="Status",S=null,draft=null,selSkill=0,msgId=0,pending={},ws,previewTimer,retries=0,banner="";
 const $=(h)=>{const t=document.createElement("template");t.innerHTML=h.trim();return t.content.firstChild};
 const esc=(s)=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const fmtT=(t)=>t?new Date(t*1000).toLocaleString([], {hour:"numeric",minute:"2-digit",month:"short",day:"numeric"}):"";
 const med=(a)=>{if(!a||!a.length)return"";const b=[...a].sort((x,y)=>x-y);return b[Math.floor(b.length/2)]};
-function connect(){const u=location.href.replace(/^http/,"ws").replace(/[?#].*$/,"").replace(/\/?(index\.html)?$/,"")+"/ws";
- ws=new WebSocket(u);ws.onopen=()=>{conn("connected");call({op:"load"}).then(d=>{S=d;draft=JSON.parse(JSON.stringify(d.skills));render()})};
- ws.onclose=()=>{conn("disconnected, retrying…");setTimeout(connect,3000)};
- ws.onmessage=(e)=>{const d=JSON.parse(e.data);const p=pending[d.id];if(p){delete pending[d.id];p(d)}}}
-function conn(t){document.getElementById("conn").textContent=t}
-function call(m){return new Promise(r=>{m.id=++msgId;pending[m.id]=r;ws.send(JSON.stringify(m))})}
+function panelBasePath(){let p=location.pathname.replace(/\/index\.html$/,"/");p=p.replace(/\/relay\/?$/, "/");if(!p.endsWith("/"))p+="/";return p}
+function adminWsUrl(){const u=new URL(location.href);u.protocol=u.protocol==="https:"?"wss:":"ws:";u.search="";u.hash="";u.pathname=panelBasePath()+"relay/ws";return u.toString()}
+function testFrameSrc(){return panelBasePath()+"test/"}
+function failPending(why){Object.keys(pending).forEach(id=>{const p=pending[id];delete pending[id];try{p({errors:[why]})}catch(_){}});pending={}}
+function connect(){const u=adminWsUrl();conn("connecting…");
+ try{ws=new WebSocket(u)}catch(e){banner="Could not open panel socket: "+e;conn("failed");render();return}
+ const openTimer=setTimeout(()=>{if(ws&&ws.readyState===0)ws.close(4000,"open timeout")},8000);
+ ws.onopen=()=>{clearTimeout(openTimer);retries=0;conn("connected");call({op:"load"}).then(d=>{if(d.errors){banner=d.errors.join("\n");S=null;render();return}S=d;if(d.relay)S.relay=d.relay;draft=JSON.parse(JSON.stringify(d.skills||[]));banner="";render()}).catch(e=>{banner=String(e.message||e);render()})};
+ ws.onerror=()=>{conn("socket error")};
+ ws.onclose=(e)=>{clearTimeout(openTimer);const why=`closed ${e.code}${e.reason?": "+e.reason:""}`;failPending(why);
+  if(retries<5){retries+=1;conn("disconnected, retrying…");banner=closeExplain(e)+" Retrying…";render();setTimeout(connect,Math.min(1500*retries,8000))}
+  else{conn("disconnected");banner=closeExplain(e)+" Automatic retry stopped.";render()}};
+ ws.onmessage=(e)=>{let d;try{d=JSON.parse(e.data)}catch{return}const p=pending[d.id];if(p){delete pending[d.id];p(d)}}}
+function closeExplain(e){if(e.code===4403)return "Panel websocket needs Home Assistant ingress (open Grok Voice from the sidebar). "+(e.reason||"");
+ if(e.code===1011)return "Panel backend is not running. "+(e.reason||"");
+ if(e.code===4000||e.reason==="open timeout")return "Timed out waiting for the panel websocket.";
+ if(!e.code||e.code===1006)return "Panel websocket closed before load finished"+(e.reason?": "+e.reason:"")+".";
+ return "Panel websocket "+(e.reason||("closed "+e.code))+"."}
+function conn(t){const n=document.getElementById("conn");if(n)n.textContent=t}
+function call(m,ms=10000){return new Promise((resolve,reject)=>{if(!ws||ws.readyState!==1){reject(new Error("not connected"));return}
+  m.id=++msgId;const t=setTimeout(()=>{if(pending[m.id]){delete pending[m.id];reject(new Error("request timed out"))}},ms);
+  pending[m.id]=(d)=>{clearTimeout(t);resolve(d)};
+  try{ws.send(JSON.stringify(m))}catch(e){clearTimeout(t);delete pending[m.id];reject(e)}})}
 function nav(){const n=document.getElementById("tabs");n.innerHTML="";TABS.forEach(t=>{const b=$(`<button class="${t==tab?"on":""}">${t}</button>`);b.onclick=()=>{tab=t;render()};n.append(b)})}
-function render(){nav();const m=document.getElementById("main");m.innerHTML="";if(!S){m.textContent="Loading…";return}({Status:status,Settings:settings,Skills:skills,Tablets:tablets})[tab](m)}
+function render(){nav();const m=document.getElementById("main");m.innerHTML="";
+ if(banner){const b=$(`<div class="card"><p class="err">${esc(banner)}</p><button class="b s" type="button">Retry</button></div>`);b.querySelector("button").onclick=()=>{retries=0;banner="";connect();render()};m.append(b);if(!S&&tab!=="Test")return}
+ if(!S){if(tab==="Test"){testClient(m);return}m.append($(`<p class="muted">Loading…</p>`));return}
+ ({Status:status,Settings:settings,Skills:skills,Tablets:tablets,Test:testClient})[tab](m)}
+function relayInfo(){return (S&&S.relay)||(S&&S.status&&S.status.relay)||{}}
 // ---------- status
-function status(m){const st=S.status,ses=st.sessions;
+function status(m){const r=relayInfo();
+ m.append($(r.listening
+  ? `<div class="card"><h2>Relay <span class="pill">on :${esc(r.port)}</span></h2><p class="muted">Tablets: Endpoint <code>ws://&lt;ha-host&gt;:${esc(r.port)}/v1/realtime?model=grok-voice-latest</code>, API key = the relay secret, Tools = None.</p></div>`
+  : `<div class="card"><h2>Relay <span class="pill">off</span></h2><p class="err">The tablet listener is off: ${esc(r.reason||"no relay secret set")}. Set or generate a secret on the Settings tab — it applies without restarting the add-on. This panel still works.</p></div>`));
+ const st=S.status,ses=st.sessions;
  const c=$(`<div class="card"><h2>Live sessions <span class="pill">${st.ha_ready?"HA connected":"HA not connected"}</span></h2></div>`);
  c.append(ses.live.length?table(["Tablet","Since","Ready","Speech stopped → first audio"],ses.live.map(s=>[esc(s.tablet),fmtT(s.started),s.ready_ms??"",s.turns.join(", ")])):$(`<p class="muted">No tablet connected.</p>`));m.append(c);
  if(st.stats)stats(m,st.stats);else{
@@ -86,11 +111,29 @@ function chart(days){const W=760,H=140,P=24,max=Math.max(0.01,...days.map(d=>d.r
   if(i%5==4||i==days.length-1)g+=`<text x="${x}" y="${H+13}">${d.date.slice(5)}</text>`});
  return $(`<div>${g}</svg><span class="muted"><span style="color:var(--accent)">■</span> realtime <span style="color:var(--ok)">■</span> summaries</span></div>`)}
 function table(h,rows){const t=$(`<table><thead><tr>${h.map(x=>`<th>${x}</th>`).join("")}</tr></thead><tbody></tbody></table>`);rows.forEach(r=>t.tBodies[0].append($(`<tr>${r.map(x=>`<td>${String(x).replace(/\n/g,"<br>")}</td>`).join("")}</tr>`)));return t}
-setInterval(()=>{if(S&&tab=="Status"&&ws&&ws.readyState==1)call({op:"status"}).then(d=>{S.status=d.status;if(tab=="Status")render()})},5000);
+setInterval(()=>{if(S&&tab=="Status"&&ws&&ws.readyState==1)call({op:"status"}).then(d=>{if(d.errors)return;S.status=d.status;if(d.status&&d.status.relay)S.relay=d.status.relay;if(tab=="Status")render()}).catch(()=>{})},5000);
 // ---------- settings
 function field(lbl,html){return `<div><label>${lbl}</label>${html}</div>`}
 function sel(id,opts,v){return `<select id="${id}">${opts.map(o=>`<option ${o==v?"selected":""}>${o}</option>`).join("")}</select>`}
-function settings(m){const s=S.settings,mem=s.memory;
+function settings(m){const s=S.settings,mem=s.memory,r=relayInfo();
+ const sec=$(`<div class="card"><h2>Relay secret</h2>
+  <p class="muted">${r.secret_set?"A secret is set and is never shown again. Generating a new one replaces it and is shown once so you can paste it into Kiosk Satellite.":"No secret yet — the tablet listener on port "+esc(r.port||8766)+" stays off until you set one. This panel does not need a secret."}</p>
+  <div class="row">${field("New secret (leave blank to keep current)", `<input id="newsec" type="password" autocomplete="new-password" placeholder="${r.secret_set?"unchanged":"at least 12 characters"}">`)}</div>
+  <div id="seconce"></div>
+  <button class="b" type="button" id="savesec">Save secret</button>
+  <button class="b s" type="button" id="gensec">Generate</button>
+  <span class="err" id="secerr"></span>
+  <p class="muted">Hot-applied: the 8766 listener starts or restarts immediately. The xAI key stays in add-on options and is never sent here.</p></div>`);
+ m.append(sec);
+ const showOnce=(d)=>{const box=document.getElementById("seconce");const err=document.getElementById("secerr");
+  if(d.errors){err.textContent=" "+d.errors.join("\n");return}
+  S.relay=d.relay||S.relay;if(S.status)S.status.relay=S.relay;err.innerHTML=' <span class="ok">Saved. Listener '+(S.relay&&S.relay.listening?"on":"off")+'.</span>';
+  if(d.secret_once){box.innerHTML=`<p><b>Copy this now</b> into Kiosk Satellite's API key field. It will not be shown again.</p><input id="onceval" readonly value="${esc(d.secret_once)}"><button class="b s" type="button">Copy</button>`;
+   box.querySelector("button").onclick=()=>{navigator.clipboard.writeText(d.secret_once).catch(()=>{});box.querySelector("button").textContent="Copied"}};
+  else box.innerHTML=""};
+ sec.querySelector("#savesec").onclick=()=>{const v=document.getElementById("newsec").value;if(!v.trim()){document.getElementById("secerr").textContent=" Enter a secret or click Generate.";return}
+  call({op:"set_secret",secret:v}).then(showOnce).catch(e=>{document.getElementById("secerr").textContent=" "+e.message})};
+ sec.querySelector("#gensec").onclick=()=>call({op:"generate_secret"}).then(showOnce).catch(e=>{document.getElementById("secerr").textContent=" "+e.message});
  const c=$(`<div class="card"><h2>Session</h2><div class="row">
  ${field("Model (empty = what the tablet asks, grok-voice-latest)",`<input id="model" value="${esc(s.model)}">`)}
  ${field("Reasoning effort",sel("reasoning",["none","high","default"],s.reasoning_effort))}
@@ -175,6 +218,8 @@ function actionEditor(s,a,j){const dl="dl_"+j;const c=$(`<div class="act"><div c
  c.querySelector('[data-x="addarg"]').onclick=()=>{a.args.push({name:"arg",required:false,aliases:[]});render()};
  c.querySelector('[data-x="del"]').onclick=()=>{s.actions.splice(j,1);render()};return c}
 // ---------- tablets
+function testClient(m){m.append($(`<div class="card"><h2>Browser test client</h2><p class="muted">Legacy duplex mic UI (Open Web UI). Kiosk Satellite tablets use the relay on port 8766, not this page. The test client opens its own voice websocket; the panel uses <code>/relay/ws</code>.</p>
+  <iframe title="Grok Voice test client" src="${esc(testFrameSrc())}" allow="microphone; autoplay" style="width:100%;height:70vh;border:1px solid var(--line);border-radius:8px;background:#111"></iframe></div>`))}
 function tablets(m){const c=$(`<div class="card"><h2>Tablets</h2><p class="muted">Per-tablet overrides (JSON). Allowed keys: ${S.tablet_keys.join(", ")}. Example: {"reasoning_effort":"high","tools":{"locks":"off"}}. Empty = house settings.</p></div>`);
  S.tablets.forEach(t=>{const cur=S.settings.tablets[t.device_id];c.append($(`<div><h3>${esc(t.name)} <span class="muted">${esc(t.area)} · ${esc(t.device_id)}</span></h3><textarea data-id="${esc(t.device_id)}">${cur?esc(JSON.stringify(cur,null,1)):""}</textarea></div>`))});
  const b=$(`<div><button class="b">Save overrides</button><span class="err" id="terr"></span></div>`);c.append(b);m.append(c);

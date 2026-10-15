@@ -196,17 +196,34 @@ def kiosk_config_response(duplex_lan_host: str = "") -> Response:
 
 
 RELAY_PANEL = Path(__file__).resolve().parent / "ks_relay" / "www" / "index.html"
+ADMIN_WS_SUFFIX = "/relay/ws"
 
 
 def is_relay_panel_path(url_path: str) -> bool:
     path = unquote(urlparse(url_path).path)
-    return path.rstrip("/") == "/relay" or path == "/relay/index.html"
+    if path.rstrip("/") == "/relay" or path == "/relay/index.html":
+        return True
+    return path in ("/", "/index.html")
+
+
+def is_test_client_path(url_path: str) -> bool:
+    path = unquote(urlparse(url_path).path)
+    return path == "/test" or path.startswith("/test/")
 
 
 def relay_panel_response() -> Response:
     """The KS relay settings page. It holds no data; its websocket only works through ingress."""
     body = RELAY_PANEL.read_bytes()
     return build_response(200, body, "text/html; charset=utf-8", [("ETag", etag_for(body))])
+
+
+def test_client_url_path(url_path: str) -> str:
+    """Map ``/test/`` onto the packaged mic UI in ``www/``."""
+    path = unquote(urlparse(url_path).path)
+    rest = path[len("/test") :].lstrip("/")
+    if not rest or rest.endswith("/"):
+        return "/index.html"
+    return "/" + rest
 
 
 def process_http_request(
@@ -218,6 +235,13 @@ def process_http_request(
         return None
     if is_relay_panel_path(request.path):
         return relay_panel_response()
+    if is_test_client_path(request.path):
+        return http_file_response(
+            test_client_url_path(request.path),
+            www_root,
+            request.headers,
+            duplex_lan_host,
+        )
     if is_kiosk_config_path(request.path):
         return kiosk_config_response(duplex_lan_host)
     return http_file_response(request.path, www_root, request.headers, duplex_lan_host)

@@ -33,24 +33,35 @@ def _request(path: str, upgrade: str | None = None) -> Request:
 def test_websocket_upgrade_is_left_to_the_voice_handler():
     assert process_http_request(_request("/", "websocket")) is None
     assert process_http_request(_request("/api/hassio_ingress/token/", "WebSocket")) is None
+    assert process_http_request(_request("/relay/ws", "websocket")) is None
+    assert process_http_request(_request("/test/", "websocket")) is None
 
 
-def test_root_serves_packaged_html(tmp_path: Path):
+def test_root_serves_relay_panel_and_test_serves_mic_ui(tmp_path: Path):
     (tmp_path / "index.html").write_text("<!DOCTYPE html><title>Grok Voice</title><h1>Start talking</h1>", encoding="utf-8")
     (tmp_path / "ui.js").write_text("window.GrokVoiceUI = true;", encoding="utf-8")
 
     root = process_http_request(_request("/"), tmp_path)
-    indexed = http_file_response("/index.html", tmp_path)
-    script = http_file_response("/ui.js", tmp_path)
+    relay = process_http_request(_request("/relay/"), tmp_path)
+    indexed = process_http_request(_request("/index.html"), tmp_path)
+    test_page = process_http_request(_request("/test/"), tmp_path)
+    test_index = process_http_request(_request("/test/index.html"), tmp_path)
+    script = process_http_request(_request("/test/ui.js"), tmp_path)
+    root_script = http_file_response("/ui.js", tmp_path)
 
     assert root is not None
     assert root.status_code == 200
     assert "text/html" in root.headers["Content-Type"]
-    assert b"Start talking" in root.body
+    assert b"Kiosk Satellite relay" in root.body
+    assert b"relay/ws" in root.body
+    assert relay.body == root.body
     assert indexed.body == root.body
+    assert b"Start talking" in test_page.body
+    assert test_index.body == test_page.body
     assert script.status_code == 200
     assert "javascript" in script.headers["Content-Type"]
     assert b"GrokVoiceUI" in script.body
+    assert root_script.body == script.body
     assert script.headers["Cache-Control"] == "no-cache"
     assert script.headers["Access-Control-Allow-Origin"] == "*"
     assert script.headers.get("ETag")
@@ -125,7 +136,7 @@ def test_live_get_returns_html_on_the_voice_port(tmp_path: Path):
     status, content_type, text = asyncio.run(run())
     assert status == 200
     assert content_type is not None and "html" in content_type
-    assert "Start talking" in text
+    assert "Kiosk Satellite relay" in text
     assert "Grok Voice agent" not in text
 
 
@@ -149,7 +160,7 @@ def test_nonzero_content_length_is_left_intact():
     assert drop_empty_content_length(raw) == raw
 
 
-def test_ingress_get_with_content_length_zero_returns_the_mic_page(tmp_path: Path):
+def test_ingress_get_with_content_length_zero_returns_the_panel(tmp_path: Path):
     """Supervisor's aiohttp proxy sends Content-Length: 0 on the iframe GET."""
     (tmp_path / "index.html").write_text(
         "<!DOCTYPE html><title>Grok Voice</title><button>Start talking</button>",
@@ -185,7 +196,15 @@ def test_ingress_get_with_content_length_zero_returns_the_mic_page(tmp_path: Pat
                     page_type = page.headers.get("Content-Type")
                     frame_options = page.headers.get("X-Frame-Options")
                 async with session.get(
-                    f"http://127.0.0.1:{port}/ui.js",
+                    f"http://127.0.0.1:{port}/test/",
+                    allow_redirects=False,
+                    data=b"",
+                    skip_auto_headers={"Content-Type"},
+                ) as test_page:
+                    test_body = await test_page.read()
+                    test_status = test_page.status
+                async with session.get(
+                    f"http://127.0.0.1:{port}/test/ui.js",
                     allow_redirects=False,
                     data=b"",
                     skip_auto_headers={"Content-Type"},
@@ -211,6 +230,8 @@ def test_ingress_get_with_content_length_zero_returns_the_mic_page(tmp_path: Pat
                 page_type,
                 page_body,
                 frame_options,
+                test_status,
+                test_body,
                 script_status,
                 script_type,
                 script_body,
@@ -222,13 +243,15 @@ def test_ingress_get_with_content_length_zero_returns_the_mic_page(tmp_path: Pat
                 echoed,
             )
 
-    status, content_type, body, frame_options, script_status, script_type, script_body, kiosk_status, kiosk_type, kiosk_cors, kiosk_cache, kiosk_body, echoed = (
+    status, content_type, body, frame_options, test_status, test_body, script_status, script_type, script_body, kiosk_status, kiosk_type, kiosk_cors, kiosk_cache, kiosk_body, echoed = (
         asyncio.run(run())
     )
     assert status == 200
     assert content_type is not None and content_type.startswith("text/html")
     assert b"<!DOCTYPE html>" in body
-    assert b"Start talking" in body
+    assert b"Kiosk Satellite relay" in body
+    assert test_status == 200
+    assert b"Start talking" in test_body
     assert frame_options is None
     assert script_status == 200
     assert script_type is not None and "javascript" in script_type
@@ -247,6 +270,7 @@ def test_packaged_www_is_the_mic_ui():
     assert "Grok Voice" in html
     assert "Start talking" in html
     assert "ui.js" in html
+    assert 'href="../"' in html
     assert "grok-voice.js" not in html
     assert (root / "ui.js").is_file()
 

@@ -1,7 +1,8 @@
 """Relay panel backend: one websocket of JSON commands behind HA ingress.
 
 Commands (``op``): load, save_settings, save_skills, preview, import_skills,
-clear_memory, status. Secrets (xAI key, relay secret) are never sent.
+clear_memory, status, set_secret, generate_secret. The xAI key is never sent.
+The relay secret is never returned in full except once on generate.
 """
 
 from __future__ import annotations
@@ -9,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import secrets
 from http import HTTPStatus
 from pathlib import Path
 
@@ -52,6 +54,13 @@ def _scripts(context) -> list[dict]:
     return out
 
 
+def _relay_info(context) -> dict:
+    listener = getattr(context, "listener", None)
+    if listener is not None and hasattr(listener, "public_status"):
+        return listener.public_status()
+    return {"listening": False, "port": 8766, "secret_set": False, "reason": "no relay secret set"}
+
+
 def _status(context) -> dict:
     memory = context.memory.items() if context.memory else []
     names = {t.device_id: t.name for t in context.ha.cache.tablets}
@@ -62,7 +71,26 @@ def _status(context) -> dict:
     except Exception as exc:  # noqa: BLE001 - the panel still shows live status
         log.warning("stats report failed: %s", exc)
         stats = None
-    return {"sessions": context.status.snapshot(), "memory": memory, "ha_ready": context.ha.ready, "stats": stats}
+    return {
+        "sessions": context.status.snapshot(),
+        "memory": memory,
+        "ha_ready": context.ha.ready,
+        "stats": stats,
+        "relay": _relay_info(context),
+    }
+
+
+async def _apply_secret(context, secret: str) -> dict:
+    from app.ks_relay.addon import MIN_SECRET_LEN
+
+    cleaned = (secret or "").strip()
+    if len(cleaned) < MIN_SECRET_LEN:
+        return {"errors": [f"relay secret must be at least {MIN_SECRET_LEN} characters"]}
+    listener = getattr(context, "listener", None)
+    if listener is None or not hasattr(listener, "apply_secret"):
+        return {"errors": ["tablet listener is not available"]}
+    status = await listener.apply_secret(cleaned)
+    return {"relay": status, "secret_set": True}
 
 
 async def _ha_skill_help(context) -> dict:
@@ -101,6 +129,7 @@ async def handle(context, message: dict) -> dict:
             "services": context.ha.cache.services,
             "ha_skill_description": context.ha.cache.skill_description,
             "status": _status(context),
+            "relay": _relay_info(context),
         }
     if op == "status":
         return {"status": _status(context)}
@@ -134,6 +163,15 @@ async def handle(context, message: dict) -> dict:
         tablet = message.get("tablet")
         cleared = await context.memory.clear(str(tablet) if tablet else None)
         return {"cleared": cleared, "status": _status(context)}
+    if op == "set_secret":
+        return await _apply_secret(context, str(message.get("secret") or ""))
+    if op == "generate_secret":
+        generated = secrets.token_urlsafe(32)
+        result = await _apply_secret(context, generated)
+        if result.get("errors"):
+            return result
+        result["secret_once"] = generated
+        return result
     return {"errors": [f"unknown op {op}"]}
 
 

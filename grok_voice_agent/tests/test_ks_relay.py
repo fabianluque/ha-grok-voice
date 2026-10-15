@@ -341,7 +341,12 @@ def test_panel_ops_validate_and_never_send_secrets(tmp_path):
         return loaded, bad, good, bad_skill
 
     loaded, bad, good, bad_skill = asyncio.run(run())
-    assert "xai-secret-key" not in json.dumps(loaded, default=str)
+    dumped = json.dumps(loaded, default=str)
+    assert "xai-secret-key" not in dumped
+    assert loaded["relay"]["secret_set"] is False
+    assert loaded["relay"]["listening"] is False
+    assert "no relay secret set" in loaded["relay"]["reason"]
+    assert loaded["status"]["relay"]["reason"] == loaded["relay"]["reason"]
     assert bad["errors"] and good["settings"]["reasoning_effort"] == "high"
     assert any("relay handler" in e for e in bad_skill["errors"])
 
@@ -355,11 +360,28 @@ def test_panel_page_is_served_on_relay_path():
 
     response = process_http_request(Request("/relay/", Headers()))
     assert response.status_code == 200 and b"Kiosk Satellite relay" in response.body
+    root = process_http_request(Request("/", Headers()))
+    assert root.status_code == 200 and b"Kiosk Satellite relay" in root.body
+    assert b"relay/ws" in root.body
+    assert "Loading…".encode() in root.body
+    assert b"generate_secret" in root.body
+    assert b"request timed out" in root.body
+    assert b"Automatic retry stopped" in root.body
+    assert b'allow="microphone; autoplay"' in root.body
+    assert b"test/" in root.body
 
     class Sock:
         request = Request("/relay/ws", Headers())
 
+    class IngressSock:
+        request = Request("/api/hassio_ingress/token/relay/ws", Headers())
+
+    class VoiceSock:
+        request = Request("/test/", Headers())
+
     assert is_relay_panel_socket(Sock())
+    assert is_relay_panel_socket(IngressSock())
+    assert not is_relay_panel_socket(VoiceSock())
 
 
 # dates ---------------------------------------------------------------------
@@ -488,3 +510,202 @@ def test_realtime_basis_billable_audio(tmp_path):
     entry = {"tablet": "a", "started": 0.0 + time.time() - 120, "ended": time.time(), "usage": {"billable_audio_seconds": 30}}
     assert store.record_session(entry, {"realtime_per_min": 0.08})["realtime_cost"] == 0.16
     assert store.record_session(entry, {"realtime_per_min": 0.08, "realtime_basis": "billable_audio"})["realtime_cost"] == 0.04
+
+
+class FakeListener:
+    def __init__(self) -> None:
+        self.secret = ""
+        self.applied: list[str] = []
+
+    def public_status(self) -> dict:
+        on = bool(self.secret)
+        return {
+            "listening": on,
+            "port": 8766,
+            "secret_set": on,
+            "reason": "" if on else "no relay secret set",
+        }
+
+    async def apply_secret(self, secret: str) -> dict:
+        self.secret = secret
+        self.applied.append(secret)
+        return self.public_status()
+
+
+def test_generate_secret_is_shown_once_never_on_load(tmp_path):
+    context = RelayContext(ha=FakeHa(), settings=SettingsStore(tmp_path / "s.json"), skills=SkillStore(tmp_path / "k.json"))
+    context.listener = FakeListener()
+
+    async def run():
+        generated = await admin.handle(context, {"op": "generate_secret"})
+        loaded = await admin.handle(context, {"op": "load"})
+        short = await admin.handle(context, {"op": "set_secret", "secret": "short"})
+        return generated, loaded, short
+
+    generated, loaded, short = asyncio.run(run())
+    once = generated["secret_once"]
+    assert len(once) >= 12
+    assert generated["secret_set"] is True
+    assert generated["relay"]["listening"] is True
+    dumped = json.dumps(loaded, default=str)
+    assert once not in dumped
+    assert "secret_once" not in dumped
+    assert loaded["relay"]["secret_set"] is True
+    assert short["errors"]
+
+    async def set_existing():
+        return await admin.handle(context, {"op": "set_secret", "secret": "another-long-secret"})
+
+    saved = asyncio.run(set_existing())
+    assert "secret_once" not in saved
+    assert "another-long-secret" not in json.dumps(saved, default=str)
+    assert saved["relay"]["secret_set"] is True
+
+
+def test_persist_relay_secret_writes_options_and_does_not_log_it(tmp_path, caplog):
+    import logging
+
+    from app.ks_relay.addon import SUPERVISOR_OPTIONS_URL, persist_relay_secret
+
+    options = tmp_path / "options.json"
+    options.write_text('{"xai_api_key": "", "ks_relay_secret": ""}\n', encoding="utf-8")
+
+    class FakeHttp:
+        def __init__(self):
+            self.posts = []
+
+        def post(self, url, json=None, headers=None):
+            self.posts.append((url, json, headers))
+            return type("R", (), {"status_code": 200})()
+
+    http = FakeHttp()
+    with caplog.at_level(logging.DEBUG):
+        persist_relay_secret("panel-generated-secret", options, token="addon-token", http=http)
+    saved = json.loads(options.read_text(encoding="utf-8"))
+    assert saved["ks_relay_secret"] == "panel-generated-secret"
+    assert saved["xai_api_key"] == ""
+    assert http.posts[0][0] == SUPERVISOR_OPTIONS_URL
+    assert http.posts[0][1]["options"]["ks_relay_secret"] == "panel-generated-secret"
+    assert "panel-generated-secret" not in caplog.text
+    assert "addon-token" not in caplog.text
+
+    partial = tmp_path / "partial.json"
+    partial.write_text("{}\n", encoding="utf-8")
+    skipped = FakeHttp()
+    persist_relay_secret("panel-generated-secret", partial, token="addon-token", http=skipped)
+    assert skipped.posts == []
+    assert json.loads(partial.read_text(encoding="utf-8"))["ks_relay_secret"] == "panel-generated-secret"
+
+
+def test_listener_stays_off_without_secret_and_starts_on_apply(tmp_path):
+    from app.ks_relay.addon import RelayListener
+
+    class _Settings:
+        xai_api_key = "x"
+        ks_relay_secret = ""
+        ks_relay_port = 0
+        mcp_token = ""
+
+    context = RelayContext(ha=FakeHa(), settings=SettingsStore(tmp_path / "s.json"), skills=SkillStore(tmp_path / "k.json"))
+    listener = RelayListener(_Settings(), context, options_path=str(tmp_path / "options.json"), host="127.0.0.1")
+    assert listener.public_status()["listening"] is False
+    assert listener.public_status()["reason"] == "no relay secret set"
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        chosen = probe.getsockname()[1]
+    listener.port = chosen
+
+    async def apply_and_probe():
+        status = await listener.apply_secret("long-enough-secret")
+        await asyncio.sleep(0.2)
+        code = None
+        try:
+            async with connect(
+                f"ws://127.0.0.1:{chosen}/v1/realtime",
+                additional_headers={"Authorization": "Bearer wrong"},
+            ):
+                pass
+        except InvalidStatus as exc:
+            code = exc.response.status_code
+        await listener._stop_server()
+        return status, code
+
+    status, code = asyncio.run(apply_and_probe())
+    assert status["listening"] is True and status["secret_set"] is True
+    assert code == 401
+    saved = json.loads((tmp_path / "options.json").read_text(encoding="utf-8"))
+    assert saved["ks_relay_secret"] == "long-enough-secret"
+
+
+class _PanelSock:
+    def __init__(self, path, headers, remote, local_port, messages=()):
+        self.request = type("Request", (), {"path": path, "headers": headers})()
+        self.remote_address = remote
+        self.local_address = ("0.0.0.0", local_port)
+        self.sent = []
+        self.closed = None
+        self._messages = list(messages)
+
+    async def close(self, code=1000, reason=""):
+        self.closed = (code, reason)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self._messages:
+            raise StopAsyncIteration
+        return self._messages.pop(0)
+
+    async def send(self, data):
+        self.sent.append(data)
+
+
+def test_panel_socket_reasons_distinguish_ingress_from_missing_context():
+    from app.config import HOME_ASSISTANT_API_URL, Settings
+    from app.server import handle_incoming, relay_panel_close_reason
+
+    settings = Settings(
+        xai_api_key="secret-key",
+        instructions="speak briefly",
+        voice="eve",
+        model="grok-voice-think-fast-2.0",
+        reasoning_effort="none",
+        enable_web_search=True,
+        enable_x_search=False,
+        ha_mcp_url="http://supervisor/core/api/mcp",
+        mcp_token="supervisor-token",
+        allowlist=frozenset({"HassTurnOn"}),
+        idle_timeout_seconds=20,
+        ha_api_url=HOME_ASSISTANT_API_URL,
+        ingress_port=8099,
+    )
+    headers = {"X-Hass-Source": "core.ingress", "X-Remote-User-Id": "user-1"}
+    ingress = _PanelSock("/relay/ws", headers, ("172.30.32.2", 1), 8099)
+    lan = _PanelSock("/relay/ws", headers, ("192.168.1.20", 1), 8099)
+    debug = _PanelSock("/relay/ws", headers, ("172.30.32.2", 1), 8080)
+    context = RelayContext(ha=FakeHa())
+
+    assert relay_panel_close_reason(ingress, settings, context) is None
+    assert relay_panel_close_reason(ingress, settings, None) == "relay panel is not running"
+    assert relay_panel_close_reason(lan, settings, context) == "relay panel needs Home Assistant ingress"
+    assert relay_panel_close_reason(debug, settings, context) == "relay panel needs Home Assistant ingress"
+
+    async def run():
+        missing = _PanelSock("/relay/ws", headers, ("172.30.32.2", 1), 8099)
+        await handle_incoming(missing, settings, None, None, None)
+        blocked = _PanelSock("/relay/ws", headers, ("192.168.1.20", 1), 8099)
+        await handle_incoming(blocked, settings, None, None, context)
+        ok = _PanelSock("/relay/ws", headers, ("172.30.32.2", 1), 8099, [json.dumps({"op": "load", "id": 1})])
+        await handle_incoming(ok, settings, None, None, context)
+        return missing.closed, blocked.closed, ok.sent, ok.closed
+
+    missing_closed, blocked_closed, sent, ok_closed = asyncio.run(run())
+    assert missing_closed == (1011, "relay panel is not running")
+    assert blocked_closed == (4403, "relay panel needs Home Assistant ingress")
+    assert ok_closed is None
+    loaded = json.loads(sent[0])
+    assert loaded["id"] == 1
+    assert loaded["relay"]["secret_set"] is False
+    assert "secret_once" not in loaded

@@ -95,6 +95,7 @@ class RelayContext:
     memory: RelayMemory | None = None
     status: RelayStatus = field(default_factory=RelayStatus)
     stats: StatsStore | None = None
+    listener: object | None = None
 
     def __post_init__(self) -> None:
         if self.memory is not None and self.stats is not None:

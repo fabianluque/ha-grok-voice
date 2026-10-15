@@ -49,7 +49,7 @@ configuration:
     description: Seconds to keep recent turns after a session ends so a new wake on the same device can follow up. Default 480 (8 minutes). Idle hang-up keeps the turns; goodbye clears them. Keyed by a stable per-tablet id, not the room name.
   ks_relay_secret:
     name: Kiosk Satellite relay secret
-    description: Turns on the Kiosk Satellite realtime relay. Tablets put this secret in KS's xAI API key field; the xAI key above stays here. Leave empty to keep the relay off. Everything else is set in the Grok Voice panel (Relay settings) without a restart.
+    description: Shared secret tablets put in Kiosk Satellite's xAI API key field. Leave empty to keep the tablet listener off; the Grok Voice sidebar panel still works. You can also set or generate this secret on the panel Settings tab without restarting.
   ks_relay_port:
     name: Kiosk Satellite relay port
     description: Plain ws:// port the tablets connect to (Endpoint ws://<HA IP>:<port>/v1/realtime).

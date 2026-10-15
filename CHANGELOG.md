@@ -4,6 +4,13 @@ Versions match `grok_voice_agent/config.yaml`. GitHub Releases list the
 merged pull requests since the previous tag. Issues closed with `Fixes #N`
 in those pull requests are included below when GitHub reports them.
 
+## [0.3.1] - 2026-10-15
+
+- The Grok Voice sidebar opens on the relay panel (Status / Settings / Skills / Tablets). The old browser duplex client is a **Test** tab (also at `/test/`). The panel websocket stays at `/relay/ws`, distinct from the voice socket.
+- The panel always runs through Home Assistant ingress, even when **Kiosk Satellite relay secret** is empty. Only the tablet listener on port 8766 waits for a secret. Status says when the relay is off and why.
+- Set or generate the relay secret on the Settings tab; it applies without an add-on restart. The value is masked, never logged, and never returned in full except once after Generate so you can paste it into Kiosk Satellite.
+- Panel load no longer sits on “Loading…”: socket errors and close reasons are shown, pending calls time out, and silent retry stops after a few attempts with a Retry button.
+
 ## [0.3.0] - 2026-10-15
 
 - The add-on is now a realtime voice relay for Grok Voice in front of Kiosk Satellite. Set the new **Kiosk Satellite relay secret** option (the xAI key stays in the add-on), then on each tablet set the xAI **Endpoint** to `ws://<ha-host>:8766/v1/realtime?model=grok-voice-latest`, the API key to the secret, **Tools** to None and history to its minimum.
