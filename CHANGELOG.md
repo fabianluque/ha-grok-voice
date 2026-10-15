@@ -4,6 +4,11 @@ Versions match `grok_voice_agent/config.yaml`. GitHub Releases list the
 merged pull requests since the previous tag. Issues closed with `Fixes #N`
 in those pull requests are included below when GitHub reports them.
 
+## [0.3.2] - 2026-10-15
+
+- Fix the relay panel inline script so the Status / Settings / Skills / Tablets / Test tabs render. A stray semicolon after the Settings “copy secret” handler left a bare `else` (`Unexpected token else`) and Chrome stopped the script before `nav()` ran.
+- Guard: CI and pytest extract every inline `<script>` from served HTML and run `node --check`. Client tests load the panel in jsdom and assert the tab buttons render.
+
 ## [0.3.1] - 2026-10-15
 
 - The Grok Voice sidebar opens on the relay panel (Status / Settings / Skills / Tablets). The old browser duplex client is a **Test** tab (also at `/test/`). The panel websocket stays at `/relay/ws`, distinct from the voice socket.

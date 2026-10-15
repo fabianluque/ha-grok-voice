@@ -125,12 +125,26 @@ function settings(m){const s=S.settings,mem=s.memory,r=relayInfo();
   <span class="err" id="secerr"></span>
   <p class="muted">Hot-applied: the 8766 listener starts or restarts immediately. The xAI key stays in add-on options and is never sent here.</p></div>`);
  m.append(sec);
- const showOnce=(d)=>{const box=document.getElementById("seconce");const err=document.getElementById("secerr");
-  if(d.errors){err.textContent=" "+d.errors.join("\n");return}
-  S.relay=d.relay||S.relay;if(S.status)S.status.relay=S.relay;err.innerHTML=' <span class="ok">Saved. Listener '+(S.relay&&S.relay.listening?"on":"off")+'.</span>';
-  if(d.secret_once){box.innerHTML=`<p><b>Copy this now</b> into Kiosk Satellite's API key field. It will not be shown again.</p><input id="onceval" readonly value="${esc(d.secret_once)}"><button class="b s" type="button">Copy</button>`;
-   box.querySelector("button").onclick=()=>{navigator.clipboard.writeText(d.secret_once).catch(()=>{});box.querySelector("button").textContent="Copied"}};
-  else box.innerHTML=""};
+ const showOnce=(d)=>{
+  const box=document.getElementById("seconce");
+  const err=document.getElementById("secerr");
+  if(d.errors){
+    err.textContent=" "+d.errors.join("\n");
+    return;
+  }
+  S.relay=d.relay||S.relay;
+  if(S.status)S.status.relay=S.relay;
+  err.innerHTML=' <span class="ok">Saved. Listener '+(S.relay&&S.relay.listening?"on":"off")+'.</span>';
+  if(d.secret_once){
+    box.innerHTML=`<p><b>Copy this now</b> into Kiosk Satellite's API key field. It will not be shown again.</p><input id="onceval" readonly value="${esc(d.secret_once)}"><button class="b s" type="button">Copy</button>`;
+    box.querySelector("button").onclick=()=>{
+      navigator.clipboard.writeText(d.secret_once).catch(()=>{});
+      box.querySelector("button").textContent="Copied";
+    };
+  } else {
+    box.innerHTML="";
+  }
+ };
  sec.querySelector("#savesec").onclick=()=>{const v=document.getElementById("newsec").value;if(!v.trim()){document.getElementById("secerr").textContent=" Enter a secret or click Generate.";return}
   call({op:"set_secret",secret:v}).then(showOnce).catch(e=>{document.getElementById("secerr").textContent=" "+e.message})};
  sec.querySelector("#gensec").onclick=()=>call({op:"generate_secret"}).then(showOnce).catch(e=>{document.getElementById("secerr").textContent=" "+e.message});
