@@ -449,20 +449,43 @@ def is_relay_panel_socket(websocket) -> bool:
     return path.endswith("/relay/ws")
 
 
+def relay_panel_close_reason(websocket, settings, relay_context) -> str | None:
+    """Why the panel socket should be closed, or None to accept it.
+
+    Ingress is required. A missing relay context is a separate failure so the
+    close reason is not the misleading 'needs Home Assistant ingress' when the
+    request already came through Supervisor.
+    """
+    if not is_relay_panel_socket(websocket):
+        return None
+    if not ingress_user_from_socket(websocket, settings.ingress_port):
+        return "relay panel needs Home Assistant ingress"
+    if relay_context is None:
+        return "relay panel is not running"
+    return None
+
+
+async def handle_incoming(websocket, settings, http, memory, relay_context=None) -> None:
+    reason = relay_panel_close_reason(websocket, settings, relay_context)
+    if reason == "relay panel needs Home Assistant ingress":
+        await websocket.close(code=4403, reason=reason)
+        return
+    if reason == "relay panel is not running":
+        await websocket.close(code=1011, reason=reason)
+        return
+    if is_relay_panel_socket(websocket):
+        from app.ks_relay.admin import admin_socket
+
+        await admin_socket(websocket, relay_context)
+        return
+    await handle_socket(websocket, settings, http, memory=memory)
+
+
 async def serve_voice(settings, http, relay_context=None) -> None:
     memory = ConversationMemory(settings.conversation_memory_ttl_seconds)
 
     async def handler(websocket):
-        if is_relay_panel_socket(websocket):
-            # Relay settings: only through HA ingress (signed-in HA user), never the LAN debug port.
-            if relay_context is None or not ingress_user_from_socket(websocket, settings.ingress_port):
-                await websocket.close(code=4403, reason="relay panel needs Home Assistant ingress")
-                return
-            from app.ks_relay.admin import admin_socket
-
-            await admin_socket(websocket, relay_context)
-            return
-        await handle_socket(websocket, settings, http, memory=memory)
+        await handle_incoming(websocket, settings, http, memory, relay_context)
 
     async def process_request(_connection, request):
         return process_http_request(request, duplex_lan_host=settings.duplex_lan_host)

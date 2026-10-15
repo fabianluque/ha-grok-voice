@@ -69,6 +69,11 @@ describe("voice socket URLs", () => {
     expect(pageVoiceSocketUrl("https:", "homeassistant.local:8123", "/api/hassio_ingress/abc/")).toBe(
       "wss://homeassistant.local:8123/api/hassio_ingress/abc/",
     );
+    expect(pageVoiceSocketUrl("https:", "homeassistant.local:8123", "/api/hassio_ingress/abc/test/")).toBe(
+      "wss://homeassistant.local:8123/api/hassio_ingress/abc/test/",
+    );
+    expect(pageVoiceSocketUrl("http:", "127.0.0.1:8080", "/test/")).toBe("ws://127.0.0.1:8080/test/");
+    expect(pageVoiceSocketUrl("http:", "127.0.0.1:8080", "/test/")).not.toContain("/relay/ws");
   });
 
   it("replaces a loopback, 127.0.0.1, or Kiosk Satellite proxy host with the Home Assistant host", () => {

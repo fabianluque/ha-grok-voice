@@ -42,17 +42,20 @@ add-on and the add-on relays each conversation to xAI:
 | Option | |
 | --- | --- |
 | `xai_api_key` | used by the relay too |
-| `ks_relay_secret` | turns the relay on; tablets put it in KS's xAI API key field |
+| `ks_relay_secret` | tablet listener secret (KS API key field). Empty keeps port 8766 off; the sidebar panel still works. Can also be set or generated in the panel. |
 | `ks_relay_port` | default 8766 |
 
-Restart the add-on once after setting them.
+Restart the add-on once after setting the xAI key. The relay secret can also
+be set or generated later on the panel Settings tab without a restart.
 
 ### Relay panel (no restart)
 
-Open the **Grok Voice** sidebar panel and go to `relay/` (for example
-`…/api/hassio_ingress/<token>/relay/`, or add `relay/` to the panel URL).
+Open **Grok Voice** in the Home Assistant sidebar (ingress root). The relay
+panel is the landing page; the old browser duplex client is the **Test** tab
+(also at `…/test/`). The panel websocket is `…/relay/ws`, not the voice socket.
 Changes are saved to `/data/settings.json` and `/data/skills.json` and apply
-to the next session.
+to the next session. The tablet listener secret can be set or generated on
+the Settings tab without restarting the add-on.
 
 - **Status:** connected tablets, recent sessions with latency (xAI's
   speech_stopped → first audio sent to the tablet) and tool timings, and the
@@ -136,7 +139,12 @@ answers tools without touching Home Assistant).
 
 ## Legacy: browser and injected duplex mode
 
-The original mode: talk from **Open Web UI** in the sidebar, or inject `grok-voice.js` into a Kiosk Satellite dashboard so the tablet runs its own duplex client. It uses Home Assistant's MCP server for tools and the add-on options below (instructions, voice, model, MCP allowlist, home location, areas, idle timeout, memory TTL). New installs should use the relay above.
+The original mode: open **Grok Voice** in the sidebar and use the **Test** tab
+(or `…/test/`), or inject `grok-voice.js` into a Kiosk Satellite dashboard so
+the tablet runs its own duplex client. It uses Home Assistant's MCP server for
+tools and the add-on options below (instructions, voice, model, MCP allowlist,
+home location, areas, idle timeout, memory TTL). New installs should use the
+relay above.
 
 ### Install from the Add-on store
 
@@ -155,7 +163,13 @@ A blank tool allowlist is lights (`HassTurnOn`, `HassTurnOff`, `HassLightSet`), 
 
 After a client UI or kiosk-client change, run `npm run build` in `client/` so `grok_voice_agent/www` is current (`index.html` / `ui.js` plus `grok-voice.js` / `kiosk-boot.js`), then update/rebuild the add-on so `/app/www` is in the image.
 
-The add-on serves the mic UI on dashboard ingress (port 8099, **Open Web UI**) and on the debug port (`8080/tcp`). Open Web UI uses the signed-in Home Assistant ingress session, so it does not ask for a token. The debug port still sends an optional long-lived access token on the first WebSocket message. The same debug port also serves the kiosk IIFE at `http://<HA-LAN>:8080/grok-voice.js` (see [Kiosk Satellite](#kiosk-satellite)).
+The add-on serves the relay panel on dashboard ingress (port 8099, sidebar /
+**Open Web UI**). The legacy mic UI is the **Test** tab and `…/test/` (same
+ingress session, so it does not ask for a token). Port `8080/tcp` still serves
+that mic UI at `/test/` and asks for a long-lived token on the first WebSocket
+message. The same debug port also serves the kiosk IIFE at
+`http://<HA-LAN>:8080/grok-voice.js` (see [Kiosk Satellite](#kiosk-satellite)).
+Kiosk duplex still uses `ws://<HA-LAN>:8080/`, which is not the panel socket.
 
 ### Local `/addons` (optional, for development)
 
@@ -168,7 +182,7 @@ The UI needs a **secure context** for `getUserMedia` (HTTPS, or `localhost`). `h
 #### Home Assistant Open Web UI / ingress
 
 1. Start **Grok Voice Agent**.
-2. Stay signed in to Home Assistant and choose **Open Web UI**, or open **Grok Voice** in the sidebar. That panel creates the ingress session, then loads the add-on. Do not paste a token.
+2. Stay signed in to Home Assistant and choose **Open Web UI**, or open **Grok Voice** in the sidebar. That creates the ingress session and loads the relay panel. Open the **Test** tab (or `…/test/`) for the mic UI. Do not paste a token.
 3. Click **Start talking** and allow the microphone.
 4. If the page says the session was rejected, a long-lived token field appears. Paste a token there, or open **Open Web UI** again.
 5. If the sidebar iframe blocks the mic, use **Open Web UI** so Home Assistant opens the panel itself.
@@ -185,7 +199,7 @@ Prefer this path when Home Assistant itself is HTTPS (Nabu Casa or a local certi
 
    - **SSH tunnel (simplest on a Mac):**
      `ssh -L 8080:127.0.0.1:8080 homeassistant.local`
-     then visit `http://127.0.0.1:8080` (secure as localhost).
+     then visit `http://127.0.0.1:8080/test/` (secure as localhost).
    - **HTTPS:** open the UI through a TLS reverse proxy to `:8080`.
    - **Chrome HTTP exception (last resort):**
      `chrome://flags/#unsafely-treat-insecure-origin-as-secure`
@@ -193,7 +207,10 @@ Prefer this path when Home Assistant itself is HTTPS (Nabu Casa or a local certi
 
 4. Click **Start talking**, allow the microphone, and speak. Status should move from connecting to **Listening**. Stop or wait for the idle timeout to end the session.
 
-The debug page talks to `ws://<that-host>:8080/` with the same `{ "type": "auth", "token": "..." }` message the kiosk client sends.
+The debug mic page talks to `ws://<that-host>:8080/test/` with the same
+`{ "type": "auth", "token": "..." }` message the kiosk client sends. Kiosk
+duplex still uses `ws://<that-host>:8080/`. The panel admin socket is
+`/relay/ws` and is ingress-only.
 
 ### Kiosk Satellite
 
