@@ -47,6 +47,7 @@ from app.ks_relay.settings_store import SettingsStore
 from app.ks_relay.skills import SkillStore, skill_specs
 from app.ks_relay.stats import StatsStore, sensor_states
 from app.ks_relay.status import RelayStatus
+from app.ks_relay.timeline import MAX_EVENTS, MAX_TRANSCRIPT, b64_pcm16_seconds, pcm_rate, sanitize
 from app.ks_relay.tools import END_CONVERSATION, RelayTools, run_tool, tool_specs
 
 log = logging.getLogger("grok_voice.ks_relay")
@@ -137,6 +138,24 @@ async def record_session(context: RelayContext, entry: dict | None) -> None:
     await publish_sensors(context)
 
 
+async def persist_session(session: "RelaySession", entry: dict | None) -> None:
+    """Attach the memory-summary event (if any) then write stats. Off the hot path."""
+    if session.memory is not None and session.record is not None:
+        try:
+            info = await asyncio.wait_for(
+                session.memory.complete(session.record, MemorySettings.from_dict(session.cfg.get("memory"))),
+                25,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("memory complete failed: %s", type(exc).__name__)
+            info = None
+        if info and entry is not None:
+            timeline = entry.setdefault("timeline", [])
+            if len(timeline) < MAX_EVENTS:
+                timeline.append({"t": session.ms(), **{k: v for k, v in info.items() if v is not None}})
+    await record_session(session.context, entry)
+
+
 async def publish_sensors(context: RelayContext) -> None:
     """Optional sensor.grok_relay_* states in HA (settings: ha_sensors)."""
     if context.stats is None or not context.settings.get().get("ha_sensors"):
@@ -223,9 +242,41 @@ class RelaySession:
         self.clock_at = 0.0
         self.clock_day = None
         self.hide_session_updated = 0
+        self.end_reason = ""
+        self.idle_timeout_ms: int | None = None
+        self.last_activity = time.monotonic()
+        self._pcm_rate = 24000
+        self._audio_s = 0.0
+        self._response_at: float | None = None
+        self._first_audio_at: float | None = None
+        self._turn_e2s: int | None = None
+        self._pending_tool_events: list[dict] = []
 
     def ms(self) -> int:
         return int((time.monotonic() - self.t0) * 1000)
+
+    def _secrets(self) -> list[str]:
+        return [self.settings.xai_api_key, self.settings.secret]
+
+    def mark(self, kind: str, *, force: bool = False, **fields) -> dict | None:
+        event = {"t": self.ms(), "kind": kind}
+        for key, value in fields.items():
+            if value is not None:
+                event[key] = value
+        return self.context.status.mark(self.status_id, event, force=force or kind == "session_end")
+
+    def _touch(self) -> None:
+        self.last_activity = time.monotonic()
+
+    def _infer_close_reason(self) -> str:
+        if self.end_reason:
+            return self.end_reason
+        idle_ms = self.idle_timeout_ms
+        if idle_ms:
+            since = (time.monotonic() - self.last_activity) * 1000
+            if since >= idle_ms * 0.9:
+                return "idle"
+        return "client_close"
 
     def _model(self) -> str:
         if self.cfg.get("model"):
@@ -243,16 +294,21 @@ class RelaySession:
             open_timeout=10,
         )
         log.info("[%s] upstream open %dms", self.label, self.ms())
+        self.mark("upstream_open")
         return socket
 
     async def run(self) -> None:
+        self.mark("connect")
         upstream_task = asyncio.create_task(self._open_upstream())
+        ks_task = None
         try:
             ks_task = asyncio.create_task(self._pump_ks(upstream_task))
             try:
                 self.upstream = await upstream_task
             except Exception as exc:  # noqa: BLE001
                 log.error("upstream connect failed: %s", type(exc).__name__)
+                self.end_reason = "error"
+                self.mark("error", code="relay_upstream", message="relay could not reach xAI")
                 ks_task.cancel()
                 await self._ks_send({"type": "error", "error": {"code": "relay_upstream", "message": "relay could not reach xAI"}})
                 return
@@ -265,6 +321,13 @@ class RelaySession:
             for task in done:
                 if task.exception() and not isinstance(task.exception(), ConnectionClosed):
                     log.warning("[%s] pump ended: %r", self.label, task.exception())
+                    if not self.end_reason:
+                        self.end_reason = "error"
+            if not self.end_reason:
+                if ks_task in done:
+                    self.end_reason = self._infer_close_reason()
+                elif up_task in done:
+                    self.end_reason = "upstream_close"
         finally:
             if self.upstream is not None:
                 with contextlib.suppress(Exception):
@@ -272,11 +335,12 @@ class RelaySession:
             elif not upstream_task.done():
                 upstream_task.cancel()
             log.info("[%s] session closed after %dms", self.label, self.ms())
-            finished = self.context.status.close(self.status_id)
+            reason = self.end_reason or "client_close"
+            self.mark("session_end", reason=reason, force=True)
+            err = "upstream or relay error" if reason == "error" else ""
+            finished = self.context.status.close(self.status_id, error=err, end_reason=reason)
             if finished is not None:
-                background(record_session(self.context, finished))
-            if self.memory is not None and self.record is not None:
-                self.memory.finish(self.record, MemorySettings.from_dict(self.cfg.get("memory")))
+                background(persist_session(self, finished))
 
     # KS -> xAI ------------------------------------------------------------
     async def _pump_ks(self, upstream_task: asyncio.Task) -> None:
@@ -289,9 +353,17 @@ class RelaySession:
                 continue
             kind = message.get("type")
             if kind == "session.update":
-                message = {**message, "session": self._session_for_xai(message.get("session") or {})}
+                original = message.get("session") or {}
+                detection = original.get("turn_detection") or {}
+                if isinstance(detection, dict) and detection.get("idle_timeout_ms"):
+                    with contextlib.suppress(TypeError, ValueError):
+                        self.idle_timeout_ms = int(detection["idle_timeout_ms"])
+                self._pcm_rate = pcm_rate(original, self._pcm_rate)
+                message = {**message, "session": self._session_for_xai(original)}
                 raw = json.dumps(message)
                 log.info("[%s] session.update from KS %dms, %d tools", self.label, self.ms(), len(message["session"]["tools"]))
+                self.mark("session.update", tools=len(message["session"]["tools"]))
+                self._touch()
             upstream = self.upstream or await upstream_task
             await upstream.send(raw)
 
@@ -324,7 +396,8 @@ class RelaySession:
         self.cfg = self.context.settings.for_tablet(tablet.device_id if tablet else "")
         skills = self.context.skills.get()
         self.tools = RelayTools(
-            self.ha, tablet, skills=skills, dry_run=self.settings.dry_run, dry_run_delay=self.settings.dry_run_delay
+            self.ha, tablet, skills=skills, dry_run=self.settings.dry_run, dry_run_delay=self.settings.dry_run_delay,
+            cache_readonly=bool(self.cfg.get("cache_readonly_skills", True)),
         )
         memory_key = tablet.device_id if tablet else self.label
         self.context.status.update(self.status_id, tablet=self.label, device_id=tablet.device_id if tablet else "")
@@ -371,6 +444,7 @@ class RelaySession:
             instructions = f"{self.instructions_base}\n{self.clock_text}"
             await self.upstream.send(json.dumps({"type": "session.update", "session": {"instructions": instructions}}))
             log.info("[%s] clock refreshed in instructions", self.label)
+            self.mark("clock_refresh")
 
     # xAI -> KS ------------------------------------------------------------
     async def _ks_send(self, event: dict | str) -> None:
@@ -405,34 +479,81 @@ class RelaySession:
                 return False
             log.info("[%s] session.updated %dms", self.label, self.ms())
             self.context.status.update(self.status_id, ready_ms=self.ms())
+            self.mark("session.updated", ready_ms=self.ms())
             return True
-        if self.record is not None:
-            if kind == "conversation.item.input_audio_transcription.completed":
-                self.record.said("user", str(event.get("transcript") or ""))
-            elif kind in ("response.output_audio_transcript.done", "response.audio_transcript.done"):
-                self.record.said("assistant", str(event.get("transcript") or ""))
+        if kind == "conversation.item.input_audio_transcription.completed":
+            text = str(event.get("transcript") or "")
+            if self.record is not None:
+                self.record.said("user", text)
+            if text.strip():
+                self.mark("transcript", role="user", text=sanitize(text, self._secrets(), MAX_TRANSCRIPT))
+        elif kind in ("response.output_audio_transcript.done", "response.audio_transcript.done"):
+            text = str(event.get("transcript") or "")
+            if self.record is not None:
+                self.record.said("assistant", text)
+            if text.strip():
+                self.mark("transcript", role="assistant", text=sanitize(text, self._secrets(), MAX_TRANSCRIPT))
         if kind == "response.done":
-            self.context.status.usage(self.status_id, (event.get("response") or {}).get("usage"))
+            usage = (event.get("response") or {}).get("usage")
+            self.context.status.usage(self.status_id, usage)
+            now_m = time.monotonic()
+            first_to_done = int((now_m - self._first_audio_at) * 1000) if self._first_audio_at else None
+            created_to_done = int((now_m - self._response_at) * 1000) if self._response_at else None
+            e2s_total = int((now_m - self.speech_stopped_at) * 1000) if self.speech_stopped_at else created_to_done
+            self.mark(
+                "response.done",
+                usage=usage if isinstance(usage, dict) else {},
+                e2s_to_first_audio_ms=self._turn_e2s,
+                first_audio_to_done_ms=first_to_done,
+                total_ms=e2s_total,
+                audio_s=round(self._audio_s, 3),
+                response_id=(event.get("response") or {}).get("id"),
+            )
+            self._touch()
+        if kind == "input_audio_buffer.speech_started":
+            self._touch()
+            self.mark("speech_started")
+            return True
         if kind == "input_audio_buffer.speech_stopped":
             self.speech_stopped_at = time.monotonic()
             self.first_audio_logged = False
+            self._touch()
+            self.mark("speech_stopped")
             return True
-        if kind in ("response.output_audio.delta", "response.audio.delta") and not self.first_audio_logged:
-            self.first_audio_logged = True
-            if self.speech_stopped_at:
-                latency = int((time.monotonic() - self.speech_stopped_at) * 1000)
-                log.info("[%s] speech_stopped -> first audio %dms", self.label, latency)
-                self.context.status.turn(self.status_id, latency)
+        if kind in ("response.output_audio.delta", "response.audio.delta"):
+            self._audio_s += b64_pcm16_seconds(str(event.get("delta") or ""), self._pcm_rate)
+            if not self.first_audio_logged:
+                self.first_audio_logged = True
+                self._first_audio_at = time.monotonic()
+                e2s = None
+                if self.speech_stopped_at:
+                    e2s = int((self._first_audio_at - self.speech_stopped_at) * 1000)
+                    log.info("[%s] speech_stopped -> first audio %dms", self.label, e2s)
+                    self.context.status.turn(self.status_id, e2s)
+                self._turn_e2s = e2s
+                now = self.ms()
+                for ev in self._pending_tool_events:
+                    if ev.get("result_t") is not None and ev.get("result_to_audio_ms") is None:
+                        ev["result_to_audio_ms"] = max(0, now - ev["result_t"])
+                self._pending_tool_events.clear()
+                self.mark("first_audio", e2s_ms=e2s)
+                self._touch()
             return True
         if kind == "response.created":
             self.active_response = True
             self.current = _new_entry()
+            self._response_at = time.monotonic()
+            self._first_audio_at = None
+            self._audio_s = 0.0
+            self._turn_e2s = None
             if self.held_done is not None:
                 self.held_done = None  # the follow-up answer continues the held one
                 self.pending_create_from_relay = False
             return True
         if kind == "error":
-            code = str((event.get("error") or {}).get("code") or "")
+            err = event.get("error") or {}
+            code = str(err.get("code") or "")
+            self.mark("error", code=code, message=sanitize(str(err.get("message") or "")[:300], self._secrets(), 300))
             if self.pending_create_from_relay and "active_response" in code:
                 self.pending_create_from_relay = False
                 return False
@@ -457,6 +578,8 @@ class RelaySession:
             if not self._ours(event.get("name")):
                 if event.get("name") == END_CONVERSATION:
                     entry["ks"] = entry["end"] = True
+                    self.end_reason = "end_conversation"
+                    self.mark("end_conversation")
                 elif event.get("name"):
                     entry["ks"] = True
                 return True
@@ -497,32 +620,77 @@ class RelaySession:
     async def _run_tool(self, event: dict) -> dict:
         assert self.tools is not None
         name = str(event.get("name"))
+        arguments = str(event.get("arguments") or "")
         self.our_call_ids.add(str(event.get("call_id")))
-        started = time.monotonic()
-        output, ok = await run_tool(self.tools, name, str(event.get("arguments") or ""), self.settings.tool_timeout)
+        t_call = self.ms()
+        t_dispatch = self.ms()
+        output, ok, cached = await run_tool(self.tools, name, arguments, self.settings.tool_timeout)
+        ha_ms = 0 if cached else max(0, self.ms() - t_dispatch)
         if self.record is not None:
-            self.record.tool(name, str(event.get("arguments") or ""), output, ok)
+            self.record.tool(name, arguments, output, ok)
         if self.cfg.get("annotate_tool_dates", True):
             output = annotate_dates(output, self.ha.cache.time_zone)
-        self.context.status.tool(self.status_id, name, ok, int((time.monotonic() - started) * 1000))
+        self.context.status.tool(self.status_id, name, ok, ha_ms, cached=cached)
+        parsed_args: object = {}
+        try:
+            parsed_args = json.loads(arguments) if arguments else {}
+        except json.JSONDecodeError:
+            parsed_args = {"_raw": arguments[:400]}
+        skill_name, skill_action, args_shown = "", "", parsed_args
+        if name == "skill" and isinstance(parsed_args, dict):
+            skill_name = str(parsed_args.get("name") or "")
+            skill_action = str(parsed_args.get("action") or "")
+            args_shown = parsed_args.get("args") if isinstance(parsed_args.get("args"), dict) else parsed_args
+        elif self.tools and name in self.tools.direct_skills and isinstance(parsed_args, dict):
+            skill_name = name
+            skill_action = str(parsed_args.get("action") or "")
+            args_shown = {k: v for k, v in parsed_args.items() if k != "action"}
+        try:
+            result_obj: object = json.loads(output)
+        except json.JSONDecodeError:
+            result_obj = output
+        ev = self.mark(
+            "tool",
+            name=name,
+            skill=skill_name or None,
+            action=skill_action or None,
+            args=sanitize(args_shown, self._secrets()),
+            result=sanitize(result_obj, self._secrets()),
+            ok=ok,
+            cached=cached or None,
+            call_to_dispatch_ms=max(0, t_dispatch - t_call),
+            ha_ms=ha_ms,
+        )
+        if ev is not None:
+            self._pending_tool_events.append(ev)
         log.info(
-            "[%s] tool %s %s %dms args=%s",
+            "[%s] tool %s %s %s%dms args=%s",
             self.label,
             name,
             "ok" if ok else "failed",
-            (time.monotonic() - started) * 1000,
-            str(event.get("arguments") or "")[:200],
+            "cache " if cached else "",
+            ha_ms,
+            arguments[:200],
         )
         return {
-            "type": "conversation.item.create",
-            "item": {"type": "function_call_output", "call_id": event.get("call_id"), "output": output},
+            "message": {
+                "type": "conversation.item.create",
+                "item": {"type": "function_call_output", "call_id": event.get("call_id"), "output": output},
+            },
+            "event": ev,
         }
 
     async def _answer(self, entry: dict) -> None:
         results = await asyncio.gather(*entry["ours"], return_exceptions=True)
         for result in results:
-            if isinstance(result, dict):
-                await self.upstream.send(json.dumps(result))
+            if not isinstance(result, dict):
+                continue
+            message = result["message"] if "message" in result else result
+            ev = result.get("event")
+            await self.upstream.send(json.dumps(message))
+            if ev is not None:
+                ev["result_t"] = self.ms()
+            self._touch()
         if entry["end"]:
             return  # KS ends the conversation; no spoken follow-up
         if entry["ks"]:

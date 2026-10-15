@@ -17,6 +17,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from app.ks_relay.timeline import MAX_EVENTS
+
 log = logging.getLogger(__name__)
 
 SCHEMA = """
@@ -24,7 +26,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   tablet TEXT, device_id TEXT, started REAL, ended REAL, duration_s REAL,
   ready_ms INTEGER, turns INTEGER, latencies TEXT, tools TEXT, usage TEXT,
-  realtime_cost REAL, error TEXT
+  realtime_cost REAL, error TEXT, timeline TEXT, end_reason TEXT
 );
 CREATE INDEX IF NOT EXISTS sessions_started ON sessions(started);
 CREATE TABLE IF NOT EXISTS summaries (
@@ -73,6 +75,15 @@ class StatsStore:
         self._db = sqlite3.connect(self.path, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        cols = {row[1] for row in self._db.execute("PRAGMA table_info(sessions)")}
+        if "timeline" not in cols:
+            self._db.execute("ALTER TABLE sessions ADD COLUMN timeline TEXT")
+        if "end_reason" not in cols:
+            self._db.execute("ALTER TABLE sessions ADD COLUMN end_reason TEXT")
+        self._db.commit()
 
     def close(self) -> None:
         with self._lock:
@@ -87,15 +98,21 @@ class StatsStore:
         if costs.get("realtime_basis") == "billable_audio" and (entry.get("usage") or {}).get("billable_audio_seconds") is not None:
             billable = float(entry["usage"]["billable_audio_seconds"])
         realtime = round(billable / 60 * float(costs.get("realtime_per_min", 0.08)), 6)
+        timeline = list(entry.get("timeline") or [])
+        if len(timeline) > MAX_EVENTS:
+            ending = [e for e in timeline if isinstance(e, dict) and e.get("kind") == "session_end"]
+            keep = MAX_EVENTS - (1 if ending else 0)
+            timeline = timeline[: max(0, keep)] + ending[-1:]
         row = (
             entry.get("tablet") or "?", entry.get("device_id") or "", started, ended, duration,
             entry.get("ready_ms"), len(entry.get("turns") or []), json.dumps(entry.get("turns") or []),
             json.dumps(entry.get("tools") or []), json.dumps(entry.get("usage") or {}), realtime, entry.get("error") or "",
+            json.dumps(timeline, ensure_ascii=False, default=str), entry.get("end_reason") or "",
         )
         with self._lock:
             self._db.execute(
-                "INSERT INTO sessions (tablet, device_id, started, ended, duration_s, ready_ms, turns, latencies, tools, usage, realtime_cost, error)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO sessions (tablet, device_id, started, ended, duration_s, ready_ms, turns, latencies, tools, usage, realtime_cost, error, timeline, end_reason)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 row,
             )
             self._prune(costs)
@@ -189,13 +206,16 @@ class StatsStore:
         rows = self._rows("SELECT * FROM sessions ORDER BY started DESC LIMIT ?", (recent,))
         recent_rows = []
         for r in rows:
-            lat = json.loads(r["latencies"])
+            lat = json.loads(r["latencies"] or "[]")
+            keys = r.keys()
             recent_rows.append({
                 "id": r["id"], "tablet": label(r), "started": r["started"], "ended": r["ended"],
                 "duration_s": round(r["duration_s"], 1), "ready_ms": r["ready_ms"], "turns": r["turns"],
                 "latencies": lat, "latency_median": median(lat), "latency_p90": percentile(lat, 90),
-                "tools": json.loads(r["tools"]), "usage": json.loads(r["usage"]),
+                "tools": json.loads(r["tools"] or "[]"), "usage": json.loads(r["usage"] or "{}"),
                 "realtime_cost": r["realtime_cost"], "error": r["error"],
+                "timeline": json.loads(r["timeline"] or "[]") if "timeline" in keys else [],
+                "end_reason": (r["end_reason"] if "end_reason" in keys else "") or "",
             })
         return {"totals": totals, "tablets": per_tablet, "daily": daily, "recent": recent_rows, "estimate": True}
 
