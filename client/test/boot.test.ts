@@ -86,9 +86,9 @@ describe("kiosk bootstrap", () => {
   });
 
   it("loads grok-voice.js from GROK_VOICE_DUPLEX_LAN_HOST when hass is loopback", () => {
-    const { page, scripts } = fakeHost({ lanHost: "192.168.86.38" });
-    expect(bootKioskClient(page)).toBe("http://192.168.86.38:8080/grok-voice.js");
-    expect(scripts[0]?.src).toBe("http://192.168.86.38:8080/grok-voice.js");
+    const { page, scripts } = fakeHost({ lanHost: "192.168.1.50" });
+    expect(bootKioskClient(page)).toBe("http://192.168.1.50:8080/grok-voice.js");
+    expect(scripts[0]?.src).toBe("http://192.168.1.50:8080/grok-voice.js");
   });
 
   it("does not inject twice when a client script tag is already on the page", () => {

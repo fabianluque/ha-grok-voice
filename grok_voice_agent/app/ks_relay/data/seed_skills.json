@@ -1,0 +1,73 @@
+{
+ "source": "Generic examples shipped with the add-on. Your own skills live in /data/skills.json (edit them in the relay panel, or import from Home Assistant's script.skill).",
+ "skills": [
+  {
+   "name": "media",
+   "enabled": true,
+   "direct": true,
+   "index": "media (play, pause, resume, next, previous, volume)",
+   "help": "Media on this room's speaker unless a room or player name is given. play {query, media_class: track|album|artist|playlist|radio, name, area}; pause, resume, next, previous {name, area}; volume {volume 0-100, name, area}.",
+   "aliases": ["music", "player", "speaker"],
+   "actions": [
+    {"name": "play", "aliases": ["search", "search_and_play"], "backend": {"type": "relay", "target": "media.play", "fixed": {}},
+     "args": [{"name": "query", "required": true, "aliases": ["song", "artist", "album"]}, {"name": "media_class", "required": false, "aliases": ["type"]},
+              {"name": "name", "required": false, "aliases": ["player"]}, {"name": "area", "required": false, "aliases": ["room"]}]},
+    {"name": "pause", "aliases": ["stop"], "backend": {"type": "relay", "target": "media.pause", "fixed": {}},
+     "args": [{"name": "name", "required": false, "aliases": ["player"]}, {"name": "area", "required": false, "aliases": ["room"]}]},
+    {"name": "resume", "aliases": ["unpause", "continue"], "backend": {"type": "relay", "target": "media.resume", "fixed": {}},
+     "args": [{"name": "name", "required": false, "aliases": ["player"]}, {"name": "area", "required": false, "aliases": ["room"]}]},
+    {"name": "next", "aliases": ["skip"], "backend": {"type": "relay", "target": "media.next", "fixed": {}},
+     "args": [{"name": "name", "required": false, "aliases": ["player"]}, {"name": "area", "required": false, "aliases": ["room"]}]},
+    {"name": "previous", "aliases": ["back"], "backend": {"type": "relay", "target": "media.previous", "fixed": {}},
+     "args": [{"name": "name", "required": false, "aliases": ["player"]}, {"name": "area", "required": false, "aliases": ["room"]}]},
+    {"name": "volume", "aliases": ["set_volume"], "backend": {"type": "relay", "target": "media.volume", "fixed": {}},
+     "args": [{"name": "volume", "required": true, "aliases": ["level"], "coerce": "integer"}, {"name": "name", "required": false, "aliases": ["player"]}, {"name": "area", "required": false, "aliases": ["room"]}]}
+   ]
+  },
+  {
+   "name": "routine",
+   "enabled": false,
+   "direct": false,
+   "index": "routine (run a named home routine: goodnight, leaving)",
+   "help": "Example skill backed by Home Assistant scripts. goodnight: lock up and turn off the lights. leaving: away mode. Point each action at your own script.",
+   "aliases": ["routines", "scene"],
+   "actions": [
+    {"name": "goodnight", "aliases": ["bedtime"], "backend": {"type": "script", "target": "script.goodnight", "fixed": {}}, "args": []},
+    {"name": "leaving", "aliases": ["away"], "backend": {"type": "script", "target": "script.leaving_home", "fixed": {}}, "args": []}
+   ]
+  },
+  {
+   "name": "page",
+   "enabled": false,
+   "direct": false,
+   "index": "page = show or close a view on the tablet screen: camera {camera}, calendar, close",
+   "help": "Skeleton: show a view on this tablet through a Home Assistant script that drives the dashboard. camera {camera: name}, calendar, close. room only for another room's tablet. Speak the returned say.",
+   "aliases": ["screen", "show", "view"],
+   "actions": [
+    {"name": "camera", "aliases": ["camera_open"], "backend": {"type": "script", "target": "script.dashboard_page_action", "fixed": {"action": "camera_open"}},
+     "args": [{"name": "camera", "required": false, "aliases": []}, {"name": "room", "required": false, "aliases": ["tablet"]}]},
+    {"name": "calendar", "aliases": [], "backend": {"type": "script", "target": "script.dashboard_page_action", "fixed": {"action": "calendar_open"}},
+     "args": [{"name": "room", "required": false, "aliases": ["tablet"]}]},
+    {"name": "close", "aliases": ["dismiss", "hide"], "backend": {"type": "script", "target": "script.dashboard_page_action", "fixed": {"action": "close"}},
+     "args": [{"name": "room", "required": false, "aliases": ["tablet"]}]}
+   ]
+  },
+  {
+   "name": "dashboard",
+   "enabled": false,
+   "direct": false,
+   "index": "dashboard (edit tiles)",
+   "help": "Skeleton: edit a tablet's tile layout through Home Assistant scripts. catalog, get {layout}, set {layout, layout_json} with the COMPLETE edited layout, undo {layout}. Never invent entity ids.",
+   "aliases": ["layout", "tiles"],
+   "actions": [
+    {"name": "catalog", "aliases": ["components"], "backend": {"type": "script", "target": "script.dashboard_catalog", "fixed": {}}, "args": []},
+    {"name": "get", "aliases": ["get_layout"], "backend": {"type": "script", "target": "script.dashboard_get_layout", "fixed": {}},
+     "args": [{"name": "layout", "required": true, "aliases": ["room", "dashboard"]}]},
+    {"name": "set", "aliases": ["set_layout", "save"], "backend": {"type": "script", "target": "script.dashboard_set_layout", "fixed": {}},
+     "args": [{"name": "layout", "required": true, "aliases": ["room", "dashboard"]}, {"name": "layout_json", "required": true, "aliases": ["json"], "coerce": "json_string"}]},
+    {"name": "undo", "aliases": [], "backend": {"type": "script", "target": "script.dashboard_undo", "fixed": {}},
+     "args": [{"name": "layout", "required": true, "aliases": ["room", "dashboard"]}]}
+   ]
+  }
+ ]
+}

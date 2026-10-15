@@ -443,10 +443,25 @@ def voice_serve(handler, host: str, port: int, process_request):
     )
 
 
-async def serve_voice(settings, http) -> None:
+def is_relay_panel_socket(websocket) -> bool:
+    request = getattr(websocket, "request", None)
+    path = str(getattr(request, "path", "") or "").split("?", 1)[0].rstrip("/")
+    return path.endswith("/relay/ws")
+
+
+async def serve_voice(settings, http, relay_context=None) -> None:
     memory = ConversationMemory(settings.conversation_memory_ttl_seconds)
 
     async def handler(websocket):
+        if is_relay_panel_socket(websocket):
+            # Relay settings: only through HA ingress (signed-in HA user), never the LAN debug port.
+            if relay_context is None or not ingress_user_from_socket(websocket, settings.ingress_port):
+                await websocket.close(code=4403, reason="relay panel needs Home Assistant ingress")
+                return
+            from app.ks_relay.admin import admin_socket
+
+            await admin_socket(websocket, relay_context)
+            return
         await handle_socket(websocket, settings, http, memory=memory)
 
     async def process_request(_connection, request):
