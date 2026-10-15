@@ -31,14 +31,27 @@ pre{white-space:pre-wrap;background:var(--input);border:1px solid var(--line);bo
 .tot{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}.tot div{border:1px solid var(--line);border-radius:8px;padding:10px}.tot b{font-size:20px;display:block}
 tr.click{cursor:pointer}tr.click:hover{background:rgba(3,169,244,.08)}svg text{fill:var(--muted);font-size:10px}
 .pill{display:inline-block;padding:1px 8px;border-radius:10px;border:1px solid var(--line);font-size:11px;margin-left:4px}
-.wf{margin:8px 0 0}.wf-row{display:grid;grid-template-columns:76px 1fr;gap:8px;padding:5px 0;border-bottom:1px solid var(--line);align-items:start}
-.wf-t{color:var(--muted);font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
-.wf-bar{display:inline-block;height:7px;background:var(--accent);border-radius:3px;vertical-align:middle;margin:3px 8px 0 0;min-width:4px}
+.wf{margin:8px 0 0;min-width:0}.wf-row{display:grid;grid-template-columns:minmax(44px,64px) minmax(0,1fr);gap:8px;padding:5px 0;border-bottom:1px solid var(--line);align-items:start}
+@media(max-width:600px){.wf-row{grid-template-columns:44px minmax(0,1fr);gap:6px}.wf-t{font-size:11px}.wf-leg{font-size:10px;gap:6px 8px}.wf-axis{font-size:9px}}
+.wf-t{color:var(--muted);font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap;font-size:12px}
+.wf-track{position:relative;height:10px;background:rgba(127,127,127,.12);border-radius:4px;margin:0 0 4px}
+.wf-bar{position:absolute;top:1px;height:8px;border-radius:3px;min-width:2px}
+.wf-tick{position:absolute;top:0;width:3px;height:10px;border-radius:1px;background:var(--muted);transform:translateX(-50%)}
+.wf-bar.speech{background:#7e57c2}.wf-bar.latency{background:#fb8c00}.wf-bar.speak{background:var(--ok)}
+.wf-bar.ha{background:var(--accent)}.wf-bar.mem{background:#00897b}
+.wf-axis{position:relative;height:16px;font-size:10px;color:var(--muted);margin:0 0 6px}
+.wf-axis span{position:absolute;top:0;white-space:nowrap}
+.wf-leg{display:flex;flex-wrap:wrap;gap:8px 12px;font-size:11px;color:var(--muted);margin:0 0 8px}
+.wf-leg i{display:inline-block;width:10px;height:8px;border-radius:2px;margin-right:4px;vertical-align:middle}
+.wf-leg i.speech{background:#7e57c2}.wf-leg i.latency{background:#fb8c00}.wf-leg i.speak{background:var(--ok)}
+.wf-leg i.ha{background:var(--accent)}.wf-leg i.mem{background:#00897b}.wf-leg i.tick{width:3px;height:10px;background:var(--muted)}
 .wf-meta{color:var(--muted);font-size:12px;margin-top:2px}
 .wf-pay{margin-top:4px;font-size:12px}.wf-pay button{margin:0 0 0 6px;padding:2px 8px}
 .wf-pay pre{display:none;max-height:240px;overflow:auto;margin:6px 0 0}
 .wf-pay.open pre{display:block}
 .pill.ok{border-color:var(--ok);color:var(--ok)}
+.chart{position:relative}.chart-tip{position:absolute;z-index:3;background:var(--card);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:12px;box-shadow:0 2px 8px rgba(0,0,0,.25);pointer-events:none;max-width:240px;line-height:1.4}
+.chart-tip[hidden]{display:none!important}
 </style>
 </head>
 <body>
@@ -129,52 +142,89 @@ function kindLabel(e){const k=e.kind||"";
  if(k==="first_audio")return "first audio"+(e.e2s_ms!=null?` · end-of-speech → audio ${e.e2s_ms} ms`:"");
  if(k==="tool"){const n=e.skill?`skill ${e.skill}${e.action?"."+e.action:""}`:(e.name||"tool");
   return `tool ${n}${e.ok===false?" ✗":""}${e.cached?" · cache hit":""}`}
- if(k==="response.done")return "response.done";
+ if(k==="provider_tool"){const pretty=(e.name||"search").replace(/_/g," ");const q=providerQuery(e.arguments);
+  return `${pretty} (xAI)${q?" · "+q:""}`}
+ if(k==="output_item")return `${(e.item_type||"item").replace(/_/g," ")}${e.name?" · "+e.name:""} (xAI)`;
+ if(k==="upstream_event")return `upstream ${e.type||"event"}${e.item_type?" · "+e.item_type:""}`;
+ if(k==="response.done")return "response.done"+(e.status?" · "+e.status:"");
  if(k==="memory_summary")return `memory summary (${e.summary_kind||"summary"})`;
  if(k==="session_end")return `session end · ${e.reason||""}`;
  if(k==="end_conversation")return "end_conversation";
  if(k==="error")return `error ${e.code||""} ${e.message||""}`.trim();
  if(k==="omitted")return e.detail||"further events dropped";
  return k}
+function providerQuery(args){if(!args)return"";let o=args;if(typeof args==="string"){try{o=JSON.parse(args)}catch(e){return""}}
+ if(o&&typeof o==="object")return String(o.query||o.q||o.keyword||o.search_query||"").slice(0,120);return""}
+function providerToolSummary(s){const counts={};(s.timeline||[]).forEach(e=>{if(e.kind==="provider_tool"&&e.name)counts[e.name]=(counts[e.name]||0)+1});
+ return Object.entries(counts).map(([n,c])=>c>1?`${n} ×${c}`:n).join(", ")}
 function eventMeta(e){const bits=[];
  if(e.kind==="tool"){if(e.call_to_dispatch_ms!=null)bits.push(`call → dispatch ${e.call_to_dispatch_ms} ms`);
   if(e.ha_ms!=null)bits.push(`HA ${e.ha_ms} ms`);
   if(e.result_to_audio_ms!=null)bits.push(`result → first audio ${e.result_to_audio_ms} ms`);
   if(e.cached)bits.push("answered from session cache")}
+ if(e.kind==="provider_tool")bits.push("xAI reports this after the spoken answer");
  if(e.kind==="response.done"){if(e.e2s_to_first_audio_ms!=null)bits.push(`end-of-speech → first audio ${e.e2s_to_first_audio_ms} ms`);
   if(e.first_audio_to_done_ms!=null)bits.push(`first audio → done ${e.first_audio_to_done_ms} ms`);
   if(e.total_ms!=null)bits.push(`total ${e.total_ms} ms`);
   if(e.audio_s!=null)bits.push(`audio ${e.audio_s} s`);
   const u=e.usage||{};const tok=["input_tokens","output_tokens","total_tokens","input_audio_tokens","output_audio_tokens","billable_audio_seconds"].filter(k=>u[k]!=null).map(k=>`${k} ${u[k]}`);
-  if(tok.length)bits.push(tok.join(" · "))}
+  if(tok.length)bits.push(tok.join(" · "));
+  if(e.output&&e.output.length)bits.push(e.output.map(o=>[o.type,o.name,o.status].filter(Boolean).join(" ")).join("; "))}
  if(e.kind==="memory_summary"){if(e.ms!=null)bits.push(`${e.ms} ms`);if(e.model)bits.push(e.model);if(e.input_tokens!=null)bits.push(`in ${e.input_tokens}`);if(e.output_tokens!=null)bits.push(`out ${e.output_tokens}`);if(e.chars!=null)bits.push(`${e.chars} chars`)}
  return bits.join(" · ")}
-function eventBarWidth(e,span){const dur=e.kind==="tool"?e.ha_ms:e.kind==="response.done"?e.total_ms:e.kind==="session.updated"?e.ready_ms:e.kind==="memory_summary"?e.ms:0;
- if(!dur||!span)return 8;return Math.max(8,Math.min(100,dur/span*100))}
+function pct(ms,span){if(!span)return 0;return Math.round(Math.max(0,Math.min(100,(ms||0)/span*100))*100)/100}
+function eventMark(e,i,ev,span){if(e.kind==="speech_started"){const stop=ev.slice(i+1).find(x=>x.kind==="speech_stopped");
+  if(stop&&stop.t>e.t)return {cls:"speech",left:pct(e.t,span),width:pct(stop.t-e.t,span)}}
+ if(e.kind==="first_audio"&&e.e2s_ms>0)return {cls:"latency",left:pct(e.t-e.e2s_ms,span),width:pct(e.e2s_ms,span)};
+ if(e.kind==="response.done"&&e.first_audio_to_done_ms>0)return {cls:"speak",left:pct(e.t-e.first_audio_to_done_ms,span),width:pct(e.first_audio_to_done_ms,span)};
+ if(e.kind==="tool"&&e.ha_ms>0)return {cls:"ha",left:pct(e.t-e.ha_ms,span),width:pct(e.ha_ms,span)};
+ if(e.kind==="memory_summary"&&e.ms>0)return {cls:"mem",left:pct(e.t-e.ms,span),width:pct(e.ms,span)};
+ return {tick:true,left:pct(e.t,span)}}
 function timelineView(s){const ev=s.timeline||[];if(!ev.length)return null;
  const last=ev[ev.length-1];const span=Math.max((s.duration_s||0)*1000,last.t||1,1);
  const box=$(`<div class="wf"></div>`);
- ev.forEach(e=>{const row=$(`<div class="wf-row"><div class="wf-t">${e.t==null?"":e.t+" ms"}</div><div class="wf-body"></div></div>`);
+ const axis=$(`<div class="wf-row"><div></div><div class="wf-axis"><span style="left:0">0</span><span style="left:50%;transform:translateX(-50%)">${Math.round(span/2)} ms</span><span style="left:100%;transform:translateX(-100%)">${Math.round(span)} ms</span></div></div>`);
+ box.append(axis);
+ const leg=$(`<div class="wf-row"><div></div><div class="wf-leg"><span><i class="speech"></i>speech</span><span><i class="latency"></i>end-of-speech → audio</span><span><i class="speak"></i>speaking</span><span><i class="ha"></i>HA tool</span><span><i class="mem"></i>memory</span><span><i class="tick"></i>instant</span></div></div>`);
+ box.append(leg);
+ ev.forEach((e,i)=>{const row=$(`<div class="wf-row"><div class="wf-t">${e.t==null?"":e.t+" ms"}</div><div class="wf-body"></div></div>`);
   const body=row.querySelector(".wf-body");
-  body.append($(`<div><span class="wf-bar" style="width:${eventBarWidth(e,span)}%"></span>${esc(kindLabel(e))}${e.cached?' <span class="pill ok">cache</span>':""}</div>`));
+  const mark=eventMark(e,i,ev,span);
+  const track=$(`<div class="wf-track"></div>`);
+  if(mark.tick)track.append($(`<span class="wf-tick" data-kind="tick" style="left:${mark.left}%"></span>`));
+  else track.append($(`<span class="wf-bar ${mark.cls}" data-kind="${mark.cls}" style="left:${mark.left}%;width:${Math.max(mark.width,0.15)}%"></span>`));
+  body.append(track);
+  body.append($(`<div>${esc(kindLabel(e))}${e.cached?' <span class="pill ok">cache</span>':""}</div>`));
   const meta=eventMeta(e);if(meta)body.append($(`<div class="wf-meta">${esc(meta)}</div>`));
-  const args=payloadBlock("args",e.args);if(args)body.append(args);
+  const args=payloadBlock("args",e.args||e.arguments);if(args)body.append(args);
   const res=payloadBlock("result",e.result);if(res)body.append(res);
   box.append(row)});
  return box}
 function sessionDetail(s){const wrap=$(`<div></div>`);
  const u=Object.entries(s.usage||{}).map(([k,v])=>`${esc(k)}: ${v}`).join(" · ")||"not reported";
+ const xai=providerToolSummary(s);
  wrap.append($(`<p><b>End reason:</b> ${esc(s.end_reason||"–")} · <b>Ended:</b> ${fmtT(s.ended)}${s.error?` · <span class="err">${esc(s.error)}</span>`:""}</p>`));
- wrap.append($(`<p><b>Turn latencies:</b> ${(s.latencies||[]).map(v=>v+" ms").join(", ")||"–"}<br><b>Tools:</b> ${(s.tools||[]).map(o=>`${esc(o.name)}${o.ok?"":" ✗"}${o.cached?" cache":""} ${o.ms} ms`).join(", ")||"none"}<br><b>xAI usage:</b> ${u}</p>`));
+ wrap.append($(`<p><b>Turn latencies:</b> ${(s.latencies||[]).map(v=>v+" ms").join(", ")||"–"}<br><b>Tools:</b> ${(s.tools||[]).map(o=>`${esc(o.name)}${o.ok?"":" ✗"}${o.cached?" cache":""} ${o.ms} ms`).join(", ")||"none"}<br><b>xAI tools:</b> ${xai?esc(xai):"none"}<br><b>xAI usage:</b> ${u}</p>`));
  const tl=timelineView(s);if(tl){wrap.append($(`<h3>Timeline</h3>`));wrap.append(tl)}
  else wrap.append($(`<p class="muted">No timeline stored for this session (recorded before 0.3.4).</p>`));
  return wrap}
+function chartTipHtml(d){const total=(d.realtime_cost||0)+(d.summary_cost||0);
+ return `<b>${esc(d.date)}</b><br>${d.sessions} sessions · ${d.minutes} min<br>realtime ${usd(d.realtime_cost)} · summaries ${usd(d.summary_cost)}<br>total ${usd(total)}`}
+function placeTip(wrap,tip,ev){const r=wrap.getBoundingClientRect();let x=(ev.clientX||0)-r.left+8,y=(ev.clientY||0)-r.top+8;
+ tip.style.left=Math.min(Math.max(0,x),Math.max(0,r.width-160))+"px";tip.style.top=Math.min(Math.max(0,y),Math.max(0,r.height-40))+"px"}
 function chart(days){const W=760,H=140,P=24,max=Math.max(0.01,...days.map(d=>d.realtime_cost+d.summary_cost)),bw=(W-P)/days.length;
  let g=`<svg viewBox="0 0 ${W} ${H+18}" width="100%" role="img" aria-label="Daily cost"><text x="0" y="10">${usd(max)}</text><line x1="${P}" y1="${H}" x2="${W}" y2="${H}" stroke="var(--line)"/>`;
  days.forEach((d,i)=>{const x=P+i*bw+1,hr=d.realtime_cost/max*(H-14),hs=d.summary_cost/max*(H-14);
-  g+=`<g><title>${d.date}: ${usd(d.realtime_cost+d.summary_cost)} (${d.sessions} sessions, ${d.minutes} min)</title><rect x="${x}" y="${H-hr}" width="${bw-2}" height="${hr}" fill="var(--accent)"/><rect x="${x}" y="${H-hr-hs}" width="${bw-2}" height="${hs}" fill="var(--ok)"/></g>`;
+  g+=`<g data-i="${i}"><rect data-i="${i}" x="${x}" y="${H-hr}" width="${bw-2}" height="${Math.max(hr,1)}" fill="var(--accent)"/><rect data-i="${i}" x="${x}" y="${H-hr-hs}" width="${bw-2}" height="${Math.max(hs,0)}" fill="var(--ok)"/></g>`;
   if(i%5==4||i==days.length-1)g+=`<text x="${x}" y="${H+13}">${d.date.slice(5)}</text>`});
- return $(`<div>${g}</svg><span class="muted"><span style="color:var(--accent)">■</span> realtime <span style="color:var(--ok)">■</span> summaries</span></div>`)}
+ const wrap=$(`<div class="chart">${g}</svg><div class="chart-tip" hidden></div><span class="muted"><span style="color:var(--accent)">■</span> realtime <span style="color:var(--ok)">■</span> summaries</span></div>`);
+ const tip=wrap.querySelector(".chart-tip");
+ const hide=()=>{tip.hidden=true};
+ const show=(i,ev)=>{const d=days[i];if(!d)return;tip.hidden=false;tip.innerHTML=chartTipHtml(d);placeTip(wrap,tip,ev)};
+ wrap.addEventListener("mousemove",e=>{const g=e.target.closest("[data-i]");if(!g){hide();return}show(+g.getAttribute("data-i"),e)});
+ wrap.addEventListener("mouseleave",hide);
+ wrap.addEventListener("click",e=>{const g=e.target.closest("[data-i]");if(!g){hide();return}e.preventDefault();show(+g.getAttribute("data-i"),e)});
+ return wrap}
 function table(h,rows){const t=$(`<table><thead><tr>${h.map(x=>`<th>${x}</th>`).join("")}</tr></thead><tbody></tbody></table>`);rows.forEach(r=>t.tBodies[0].append($(`<tr>${r.map(x=>`<td>${String(x).replace(/\n/g,"<br>")}</td>`).join("")}</tr>`)));return t}
 setInterval(()=>{if(S&&tab=="Status"&&ws&&ws.readyState==1)call({op:"status"}).then(d=>{if(d.errors)return;S.status=d.status;if(d.status&&d.status.relay)S.relay=d.status.relay;if(tab=="Status")render()}).catch(()=>{})},5000);
 // ---------- settings

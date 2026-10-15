@@ -35,7 +35,7 @@ from app.ks_relay.relay import (
 )
 from app.ks_relay.settings_store import DEFAULTS, SettingsError, SettingsStore, effective, validate
 from app.ks_relay.stats import StatsStore, add_usage, percentile, sensor_states
-from app.ks_relay.timeline import sanitize
+from app.ks_relay.timeline import MAX_UNKNOWN_UPSTREAM, compact_response_output, sanitize
 from app.ks_relay.skills import SkillStore, load_seed, merge_import, preview, resolve, skill_specs, validate_skills
 from app.ks_relay.tools import RelayTools, tool_specs
 
@@ -590,6 +590,9 @@ def test_panel_page_is_served_on_relay_path():
     assert b"Detected IP" in root.body
     assert b"function sessionDetail(" in root.body
     assert b"function timelineView(" in root.body
+    assert b"function eventMark(" in root.body
+    assert b"chart-tip" in root.body
+    assert b"provider_tool" in root.body
     assert b"cache_readonly_skills" in root.body
     assert b"cache_ro" in root.body
 
@@ -1082,3 +1085,99 @@ def test_empty_summary_is_not_stored_and_old_empty_rows_are_skipped(tmp_path):
     assert "layout_json" not in block
     assert "tiles" not in block
     assert block.count("tool:") == 1
+
+
+def test_compact_response_output_keeps_type_name_status():
+    assert compact_response_output(None) == []
+    assert compact_response_output([
+        {"type": "message", "status": "completed", "content": [{"type": "audio"}]},
+        {"type": "function_call", "name": "web_search", "status": "completed", "arguments": "{}"},
+        "skip",
+    ]) == [
+        {"type": "message", "status": "completed"},
+        {"type": "function_call", "name": "web_search", "status": "completed"},
+    ]
+
+
+def test_provider_tool_output_summary_and_unknown_event_bound(tmp_path):
+    context = RelayContext(
+        ha=FakeHa(),
+        settings=SettingsStore(tmp_path / "s.json"),
+        skills=SkillStore(tmp_path / "k.json"),
+    )
+
+    class Ks:
+        remote_address = ("192.168.1.20", 9)
+
+    session = RelaySession(
+        Ks(), RelaySettings(xai_api_key="xai-test", secret="relay-secret"), context, query={}
+    )
+    session.tool_names = frozenset({"turn_on"})
+
+    async def run():
+        assert await session._on_upstream({"type": "response.created", "response": {"id": "r1"}}) is True
+        ours = await session._on_upstream({
+            "type": "response.output_item.added",
+            "item": {"id": "f2", "type": "function_call", "name": "turn_on"},
+        })
+        assert ours is False
+        fwd_item = await session._on_upstream({
+            "type": "response.output_item.added",
+            "item": {"id": "i1", "type": "function_call", "name": "web_search"},
+        })
+        fwd_args = await session._on_upstream({
+            "type": "response.function_call_arguments.done",
+            "name": "web_search",
+            "call_id": "c9",
+            "arguments": '{"query":"weather this weekend"}',
+        })
+        fwd_done = await session._on_upstream({
+            "type": "response.done",
+            "response": {
+                "id": "r1",
+                "status": "completed",
+                "usage": {},
+                "output": [
+                    {"type": "message", "status": "completed"},
+                    {"type": "function_call", "name": "web_search", "status": "completed"},
+                ],
+            },
+        })
+        assert fwd_item is True and fwd_args is True and fwd_done is True
+        await session._on_upstream({
+            "type": "response.function_call_arguments.done",
+            "name": "end_conversation",
+            "call_id": "c3",
+            "arguments": "{}",
+        })
+        await session._on_upstream({
+            "type": "response.output_item.added",
+            "item": {"id": "m1", "type": "message"},
+        })
+        await session._on_upstream({"type": "response.web_search.delta"})
+        await session._on_upstream({"type": "response.mystery_alpha", "item": {"type": "foo"}})
+        await session._on_upstream({"type": "response.mystery_alpha"})
+        for i in range(20):
+            await session._on_upstream({"type": f"response.mystery_{i}"})
+
+    asyncio.run(run())
+    tl = context.status.live[session.status_id]["timeline"]
+    provider = [e for e in tl if e["kind"] == "provider_tool"]
+    assert len(provider) == 1
+    assert provider[0]["name"] == "web_search" and provider[0]["call_id"] == "c9"
+    assert provider[0]["arguments"]["query"] == "weather this weekend"
+    assert not any(e.get("name") == "turn_on" and e["kind"] in ("provider_tool", "output_item") for e in tl)
+    assert any(e["kind"] == "end_conversation" for e in tl)
+    assert not any(e.get("name") == "end_conversation" and e["kind"] == "provider_tool" for e in tl)
+    added = [e for e in tl if e["kind"] == "output_item"]
+    assert len(added) == 1
+    assert added[0]["item_type"] == "function_call" and added[0]["name"] == "web_search"
+    assert not any(e.get("type", "").endswith(".delta") for e in tl if e["kind"] == "upstream_event")
+    done = next(e for e in tl if e["kind"] == "response.done")
+    assert done["status"] == "completed"
+    assert {"type": "function_call", "name": "web_search", "status": "completed"} in done["output"]
+    unknowns = [e for e in tl if e["kind"] == "upstream_event"]
+    types = [e["type"] for e in unknowns]
+    assert types.count("response.mystery_alpha") == 1
+    assert unknowns[0]["item_type"] == "foo"
+    assert len(unknowns) <= MAX_UNKNOWN_UPSTREAM

@@ -1,5 +1,5 @@
 name: Grok Voice Agent
-version: "0.3.4"
+version: "0.3.5"
 slug: grok_voice_agent
 description: Realtime voice relay for Grok Voice in front of Kiosk Satellite tablets (session rewrite, tools and skills next to Home Assistant, short-term memory). Includes the legacy browser duplex client.
 url: https://github.com/fabianluque/ha-grok-voice
