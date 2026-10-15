@@ -35,8 +35,8 @@ from app.ks_relay.relay import (
 )
 from app.ks_relay.settings_store import DEFAULTS, SettingsError, SettingsStore, effective, validate
 from app.ks_relay.stats import StatsStore, add_usage, percentile, sensor_states
-from app.ks_relay.timeline import MAX_UNKNOWN_UPSTREAM, compact_response_output, sanitize
-from app.ks_relay.skills import SkillStore, load_seed, merge_import, preview, resolve, skill_specs, validate_skills
+from app.ks_relay.timeline import KNOWN_UPSTREAM, MAX_UNKNOWN_UPSTREAM, compact_response_output, sanitize
+from app.ks_relay.skills import SkillStore, load_seed, merge_import, parse_help_args, preview, resolve, skill_specs, validate_skills
 from app.ks_relay.tools import RelayTools, tool_specs
 
 KS_SESSION = {
@@ -367,6 +367,81 @@ def test_import_from_ha_and_json(tmp_path):
     assert notes == ["added notes"] and combined[-1]["name"] == "notes"
 
 
+def test_ha_skill_empty_spec_passes_args_through():
+    skills = validate_skills([{
+        "name": "helper",
+        "index": "helper",
+        "help": "ask {request}",
+        "actions": [{"name": "ask", "backend": {"type": "ha_skill", "target": "", "fixed": {}}, "args": []}],
+    }])
+    _, action, data = resolve(skills, "helper", "ask", {"request": "what is the weather", "extra": 2, "skip": None})
+    assert action["name"] == "ask" and data == {"request": "what is the weather", "extra": 2}
+    _, action, data = resolve(skills, "helper", "", {"action": "ask", "request": "hi"})
+    assert action["name"] == "ask" and data == {"request": "hi"}
+
+
+def test_ha_skill_declared_spec_still_validates():
+    skills = validate_skills([{
+        "name": "pantry",
+        "actions": [{
+            "name": "lookup",
+            "backend": {"type": "ha_skill", "target": "", "fixed": {}},
+            "args": [{"name": "food", "required": True}, {"name": "grams"}],
+        }],
+    }])
+    _, action, data = resolve(skills, "pantry", "lookup", {"food": "oats", "grams": 40})
+    assert action["name"] == "lookup" and data == {"food": "oats", "grams": 40}
+    _, action, reply = resolve(skills, "pantry", "lookup", {"food": "oats", "bogus": 1})
+    assert action is None and "unknown args: bogus" in reply["error"]
+    _, action, reply = resolve(skills, "pantry", "lookup", {})
+    assert action is None and "missing: food" in reply["error"]
+
+
+def test_script_service_relay_empty_spec_still_rejects_unknown_args():
+    skills = validate_skills([
+        GUARDED,
+        {
+            "name": "theme",
+            "actions": [{"name": "set", "backend": {"type": "script", "target": "script.theme_set", "fixed": {}}, "args": []}],
+        },
+        {
+            "name": "speaker",
+            "actions": [{"name": "pause", "backend": {"type": "relay", "target": "media.pause", "fixed": {}}, "args": []}],
+        },
+    ])
+    _, action, reply = resolve(skills, "notes", "save", {"text": "milk", "bogus": 1})
+    assert action is None and "unknown args: bogus" in reply["error"]
+    _, action, reply = resolve(skills, "notes", "find", {"query": "milk", "extra": True})
+    assert action is None and "unknown args: extra" in reply["error"]
+    _, action, reply = resolve(skills, "theme", "set", {"color": "blue"})
+    assert action is None and "unknown args: color" in reply["error"]
+    _, action, reply = resolve(skills, "speaker", "pause", {"room": "kitchen"})
+    assert action is None and "unknown args: room" in reply["error"]
+
+
+def test_import_parses_simple_help_args_and_skips_complex():
+    assert [a["name"] for a in parse_help_args("ask {request}; lookup {food, grams}.", "ask")] == ["request"]
+    assert [a["name"] for a in parse_help_args("lookup {food, grams}", "lookup")] == ["food", "grams"]
+    assert parse_help_args("play {query, media_class: track|album, name, area}", "play") == []
+    merged, notes = merge_import([], {
+        "helper": {"actions": ["ask", "lookup"], "help": "ask {request}; lookup {food, grams}."},
+        "mixer": {"actions": ["play"], "help": "play {query, media_class: track|album, name, area}."},
+    }, "Skills: weather = forecast {day}. action=help")
+    helper = next(s for s in merged if s["name"] == "helper")
+    ask = next(a for a in helper["actions"] if a["name"] == "ask")
+    lookup = next(a for a in helper["actions"] if a["name"] == "lookup")
+    assert [x["name"] for x in ask["args"]] == ["request"]
+    assert [x["name"] for x in lookup["args"]] == ["food", "grams"]
+    play = next(a for a in next(s for s in merged if s["name"] == "mixer")["actions"] if a["name"] == "play")
+    assert play["backend"]["type"] == "ha_skill" and play["args"] == []
+    assert any("pass-through" in n for n in notes)
+    empty, _ = merge_import([], {"helper": {"actions": ["ask"], "help": "plain help"}})
+    filled, fill_notes = merge_import(empty, {"helper": {"actions": ["ask"], "help": "ask {request}"}})
+    ask_filled = next(a for s in filled if s["name"] == "helper" for a in s["actions"] if a["name"] == "ask")
+    assert [x["name"] for x in ask_filled["args"]] == ["request"]
+    assert any("args from HA help" in n for n in fill_notes)
+
+
 # memory -----------------------------------------------------------------------
 def test_memory_raw_fallback_and_context_block(tmp_path):
     async def run():
@@ -593,6 +668,7 @@ def test_panel_page_is_served_on_relay_path():
     assert b"function eventMark(" in root.body
     assert b"chart-tip" in root.body
     assert b"provider_tool" in root.body
+    assert b"pass-through (any args)" in root.body
     assert b"cache_readonly_skills" in root.body
     assert b"cache_ro" in root.body
 
@@ -1155,6 +1231,9 @@ def test_provider_tool_output_summary_and_unknown_event_bound(tmp_path):
             "item": {"id": "m1", "type": "message"},
         })
         await session._on_upstream({"type": "response.web_search.delta"})
+        await session._on_upstream({"type": "ping"})
+        await session._on_upstream({"type": "conversation.created", "conversation": {"id": "c1"}})
+        await session._on_upstream({"type": "conversation.item.input_audio_transcription.updated"})
         await session._on_upstream({"type": "response.mystery_alpha", "item": {"type": "foo"}})
         await session._on_upstream({"type": "response.mystery_alpha"})
         for i in range(20):
@@ -1178,6 +1257,9 @@ def test_provider_tool_output_summary_and_unknown_event_bound(tmp_path):
     assert {"type": "function_call", "name": "web_search", "status": "completed"} in done["output"]
     unknowns = [e for e in tl if e["kind"] == "upstream_event"]
     types = [e["type"] for e in unknowns]
+    assert "ping" in KNOWN_UPSTREAM and "conversation.created" in KNOWN_UPSTREAM
+    assert "conversation.item.input_audio_transcription.updated" in KNOWN_UPSTREAM
+    assert not any(t in types for t in ("ping", "conversation.created", "conversation.item.input_audio_transcription.updated"))
     assert types.count("response.mystery_alpha") == 1
     assert unknowns[0]["item_type"] == "foo"
     assert len(unknowns) <= MAX_UNKNOWN_UPSTREAM

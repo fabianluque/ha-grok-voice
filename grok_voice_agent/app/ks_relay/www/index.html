@@ -336,6 +336,7 @@ function actionEditor(s,a,j){const dl="dl_"+j;const c=$(`<div class="act"><div c
  ${field("Backend",sel("bt_"+j,S.backends,a.backend.type))}
  ${field("Target",`<input data-b="target" list="${dl}" value="${esc(a.backend.target)}" placeholder="script.x / domain.service / media.play"><datalist id="${dl}">${targets(a.backend.type).map(([v,n])=>`<option value="${esc(v)}">${esc(n)}</option>`).join("")}</datalist>`)}
  </div>${field("Fixed data (JSON, merged under the args)",`<textarea data-b="fixed" style="min-height:40px">${esc(JSON.stringify(a.backend.fixed||{}))}</textarea>`)}
+ ${a.backend.type==="ha_skill"&&!(a.args&&a.args.length)?'<p class="muted">pass-through (any args)</p>':""}
  <table><thead><tr><th>Arg</th><th>Required</th><th>Aliases</th><th>Coerce</th><th></th></tr></thead><tbody></tbody></table>
  <button class="b s" data-x="addarg">Add arg</button> <button class="b d" data-x="del">Remove action</button>${a.guard?`<p class="muted">Guard on ${esc(a.guard.arg)}: refuses /${esc(a.guard.pattern)}/</p>`:""}</div>`);
  c.querySelectorAll("[data-a]").forEach(i=>i.oninput=()=>{a[i.dataset.a]=i.dataset.a=="aliases"?uncsv(i.value):i.value;queuePreview()});

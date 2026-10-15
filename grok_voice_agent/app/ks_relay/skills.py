@@ -9,7 +9,8 @@ maps to a backend:
 * ``service`` -- any Home Assistant service ``domain.service``;
 * ``relay``   -- a handler built into the relay (``media.play``, ``media.pause``...);
 * ``ha_skill``-- pass through to HA's ``script.skill`` (what an import keeps
-  for actions the relay has no mapping for).
+  for actions the relay has no mapping for). An empty args spec forwards every
+  argument; a declared spec still validates.
 
 A skill can be promoted to a direct tool: one function named after the skill
 with an ``action`` enum and the union of its args. Stored in /data/skills.json,
@@ -282,8 +283,14 @@ def resolve(skills: list[dict], name: object, action: object, args: object) -> t
     if chosen is None:
         return skill, None, _help(skill, f"unknown action '{str(action)[:40]}' for {skill['name']}" if wanted_action else f"action is required for {skill['name']}")
     spec = {a["name"]: a for a in chosen["args"]}
+    passthrough = (chosen.get("backend") or {}).get("type") == "ha_skill" and not spec
     data, bad = {}, []
     for raw_key, value in args.items():
+        if passthrough:
+            if value is None:
+                continue
+            data[str(raw_key)] = value
+            continue
         k = key(raw_key)
         if k not in spec:
             k = next((a["name"] for a in chosen["args"] if k in a["aliases"] or k.replace("_", "") == a["name"].replace("_", "")), k)
@@ -362,6 +369,39 @@ class SkillStore:
         return copy.deepcopy(clean)
 
 
+_HELP_BRACE_RE = re.compile(
+    r"([a-z][a-z0-9_]{0,31}(?:\s*,\s*[a-z][a-z0-9_]{0,31})*)\s*\{([^{}\n]{0,200})\}",
+    re.I,
+)
+
+
+def parse_help_args(text: str, action: str) -> list[dict]:
+    """Simple ``ask {request}`` / ``lookup {food, grams}`` lists from HA help or index.
+
+    Every token inside the braces must be a plain name (``[a-z][a-z0-9_]{0,31}``).
+    Anything with a colon, space, or other punctuation is skipped so a partial
+    spec cannot reject real arguments; empty means pass-through.
+    """
+    wanted = key(action)
+    if not text or not wanted:
+        return []
+    for match in _HELP_BRACE_RE.finditer(text):
+        names = [key(part) for part in match.group(1).split(",") if key(part)]
+        if wanted not in names:
+            continue
+        tokens = [part.strip() for part in match.group(2).split(",") if part.strip()]
+        if not tokens:
+            return []
+        simple: list[str] = []
+        for token in tokens:
+            if not _NAME_RE.match(token):
+                return []
+            if token not in simple:
+                simple.append(token)
+        return [{"name": name, "required": False, "aliases": []} for name in simple]
+    return []
+
+
 def index_entries(description: str) -> dict[str, str]:
     """'Skills (name, action, args): page = ...; memory; game (watch). action=help ...' -> {name: entry}."""
     body = description.split(":", 1)[-1] if description.lower().startswith("skills") else description
@@ -418,11 +458,16 @@ def merge_import(current: list[dict], ha_help: dict[str, dict], description: str
             if skill["help"] != info["help"]:
                 notes.append(f"{name}: help updated from HA")
             skill["help"] = str(info["help"])
-        have = {a["name"] for a in skill["actions"]}
+        have = {a["name"]: a for a in skill["actions"]}
         for action in actions:
-            if action not in have:
+            parsed = parse_help_args(str(info.get("help") or ""), action) or parse_help_args(entries.get(name, ""), action)
+            existing = have.get(action)
+            if existing is None:
                 skill["actions"].append(
-                    {"name": action, "aliases": [], "args": [], "backend": {"type": "ha_skill", "target": "", "fixed": {}}}
+                    {"name": action, "aliases": [], "args": parsed, "backend": {"type": "ha_skill", "target": "", "fixed": {}}}
                 )
                 notes.append(f"{name}.{action}: added as pass-through to script.skill")
+            elif existing["backend"]["type"] == "ha_skill" and not existing["args"] and parsed:
+                existing["args"] = parsed
+                notes.append(f"{name}.{action}: args from HA help")
     return validate_skills(skills), notes

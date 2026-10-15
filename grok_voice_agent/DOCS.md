@@ -28,7 +28,8 @@ add-on and the add-on relays each conversation to xAI:
   Assistant script, any service, a relay handler (media) or a pass-through to
   HA's `script.skill`. The seed is generic (media, plus disabled samples for
   routines and dashboard pages). On first run, if Home Assistant has a
-  `script.skill`, its skills are imported as pass-throughs. A skill can be
+  `script.skill`, its skills are imported as pass-throughs (any args unless the
+  action declares a spec). A skill can be
   promoted to one direct tool (media is direct by default).
 - **Short-term memory.** After each session (never while the tablet waits) a fast
   xAI text model writes 2-3 lines; the next session gets a "Recent context"
@@ -103,7 +104,9 @@ the Settings tab without restarting the add-on.
   scripts and services), args (required, aliases, coerce), direct vs behind the
   `skill` tool, a live preview of the exact tool JSON with its size, and
   **Import from HA script.skill** (adds anything HA has that the relay lacks as a
-  pass-through; nothing is removed), and **Import / Export skills JSON** (same-named
+  pass-through; empty-arg `ha_skill` actions accept any args and are labeled
+  **pass-through (any args)**; simple `{arg}` lists in HA help may be imported;
+  nothing is removed), and **Import / Export skills JSON** (same-named
   skills are replaced). Imports are previewed; nothing is saved until **Save**.
 - **Tablets:** detected IP(s) per satellite, unmatched session IPs with
   **Assign to tablet**, and per-tablet overrides (reasoning effort, VAD, date/time, day labels, extra
