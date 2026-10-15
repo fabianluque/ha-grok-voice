@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kiosk Satellite relay</title>
+<style>
+:root{--bg:#fafafa;--card:#fff;--text:#212121;--muted:#727272;--line:#e0e0e0;--accent:#03a9f4;--err:#db4437;--ok:#43a047;--input:#fff}
+@media (prefers-color-scheme:dark){:root{--bg:#111;--card:#1c1c1c;--text:#e1e1e1;--muted:#9b9b9b;--line:#2f2f2f;--accent:#2196f3;--input:#262626}}
+*{box-sizing:border-box}body{margin:0;font:14px/1.45 Roboto,"Segoe UI",system-ui,sans-serif;background:var(--bg);color:var(--text)}
+header{background:var(--accent);color:#fff;padding:12px 16px;font-size:20px;display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+nav button{background:none;border:0;color:#fff;opacity:.75;font-size:14px;padding:6px 10px;cursor:pointer;border-bottom:2px solid transparent}
+nav button.on{opacity:1;border-color:#fff}
+main{max-width:1100px;margin:0 auto;padding:16px}
+.card{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.15);padding:16px;margin-bottom:16px}
+h2{font-size:16px;margin:0 0 12px}h3{font-size:14px;margin:12px 0 6px}
+label{display:block;margin:8px 0 2px;color:var(--muted);font-size:12px}
+input,select,textarea{width:100%;padding:7px 8px;border:1px solid var(--line);border-radius:6px;background:var(--input);color:var(--text);font:inherit}
+textarea{min-height:70px;font-family:ui-monospace,Menlo,monospace;font-size:12px}
+input[type=checkbox]{width:auto}
+.row{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}
+button.b{background:var(--accent);color:#fff;border:0;border-radius:6px;padding:7px 14px;cursor:pointer;margin:8px 8px 0 0;font:inherit}
+button.s{background:none;color:var(--accent);border:1px solid var(--line)}
+button.d{background:none;color:var(--err);border:1px solid var(--line)}
+table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:6px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+.muted{color:var(--muted)}.err{color:var(--err);white-space:pre-wrap}.ok{color:var(--ok)}
+.skills{display:grid;grid-template-columns:240px 1fr;gap:16px}@media(max-width:800px){.skills{grid-template-columns:1fr}}
+.sk{padding:8px;border-radius:8px;cursor:pointer;display:flex;gap:8px;align-items:center}.sk.on{background:rgba(3,169,244,.15)}
+.act{border:1px solid var(--line);border-radius:8px;padding:10px;margin:8px 0}
+pre{white-space:pre-wrap;background:var(--input);border:1px solid var(--line);border-radius:6px;padding:8px;font-size:12px}
+.tot{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}.tot div{border:1px solid var(--line);border-radius:8px;padding:10px}.tot b{font-size:20px;display:block}
+tr.click{cursor:pointer}tr.click:hover{background:rgba(3,169,244,.08)}svg text{fill:var(--muted);font-size:10px}
+.pill{display:inline-block;padding:1px 8px;border-radius:10px;border:1px solid var(--line);font-size:11px;margin-left:4px}
+</style>
+</head>
+<body>
+<header>Kiosk Satellite relay <nav id="tabs"></nav><span id="conn" class="muted" style="color:#fff;margin-left:auto;font-size:12px"></span></header>
+<main id="main"></main>
+<script>
+"use strict";
+const TABS=["Status","Settings","Skills","Tablets"];let tab="Status",S=null,draft=null,selSkill=0,msgId=0,pending={},ws,previewTimer;
+const $=(h)=>{const t=document.createElement("template");t.innerHTML=h.trim();return t.content.firstChild};
+const esc=(s)=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmtT=(t)=>t?new Date(t*1000).toLocaleString([], {hour:"numeric",minute:"2-digit",month:"short",day:"numeric"}):"";
+const med=(a)=>{if(!a||!a.length)return"";const b=[...a].sort((x,y)=>x-y);return b[Math.floor(b.length/2)]};
+function connect(){const u=location.href.replace(/^http/,"ws").replace(/[?#].*$/,"").replace(/\/?(index\.html)?$/,"")+"/ws";
+ ws=new WebSocket(u);ws.onopen=()=>{conn("connected");call({op:"load"}).then(d=>{S=d;draft=JSON.parse(JSON.stringify(d.skills));render()})};
+ ws.onclose=()=>{conn("disconnected, retrying…");setTimeout(connect,3000)};
+ ws.onmessage=(e)=>{const d=JSON.parse(e.data);const p=pending[d.id];if(p){delete pending[d.id];p(d)}}}
+function conn(t){document.getElementById("conn").textContent=t}
+function call(m){return new Promise(r=>{m.id=++msgId;pending[m.id]=r;ws.send(JSON.stringify(m))})}
+function nav(){const n=document.getElementById("tabs");n.innerHTML="";TABS.forEach(t=>{const b=$(`<button class="${t==tab?"on":""}">${t}</button>`);b.onclick=()=>{tab=t;render()};n.append(b)})}
+function render(){nav();const m=document.getElementById("main");m.innerHTML="";if(!S){m.textContent="Loading…";return}({Status:status,Settings:settings,Skills:skills,Tablets:tablets})[tab](m)}
+// ---------- status
+function status(m){const st=S.status,ses=st.sessions;
+ const c=$(`<div class="card"><h2>Live sessions <span class="pill">${st.ha_ready?"HA connected":"HA not connected"}</span></h2></div>`);
+ c.append(ses.live.length?table(["Tablet","Since","Ready","Speech stopped → first audio"],ses.live.map(s=>[esc(s.tablet),fmtT(s.started),s.ready_ms??"",s.turns.join(", ")])):$(`<p class="muted">No tablet connected.</p>`));m.append(c);
+ if(st.stats)stats(m,st.stats);else{
+ const r=$(`<div class="card"><h2>Recent sessions</h2><p class="muted">Latency is measured from xAI's speech_stopped to the first audio sent to the tablet.</p></div>`);
+ r.append(ses.recent.length?table(["Tablet","Started","Length","Ready ms","Turns (ms)","Median","Tools"],ses.recent.map(s=>[esc(s.tablet),fmtT(s.started),Math.round((s.ended-s.started))+" s",s.ready_ms??"",s.turns.join(", "),med(s.turns),esc(s.tools.map(t=>`${t.name}${t.ok?"":" ✗"} ${t.ms}ms`).join(", "))])):$(`<p class="muted">None yet.</p>`));m.append(r)}
+ const mm=$(`<div class="card"><h2>Short-term memory</h2></div>`);const by={};st.memory.forEach(i=>{(by[i.tablet]=by[i.tablet]||[]).push(i)});
+ if(!st.memory.length)mm.append($(`<p class="muted">Empty.</p>`));
+ Object.entries(by).forEach(([id,items])=>{mm.append($(`<h3>${esc(items[0].tablet_name)}</h3>`));mm.append(table(["When","Kind","Text","Tool facts"],items.map(i=>[fmtT(i.started),i.kind,esc(i.text),esc((i.facts||[]).join("\n"))])));
+  const b=$(`<button class="b d">Clear ${esc(items[0].tablet_name)}</button>`);b.onclick=()=>call({op:"clear_memory",tablet:id}).then(d=>{S.status=d.status;render()});mm.append(b)});
+ if(st.memory.length){const b=$(`<button class="b d">Clear all</button>`);b.onclick=()=>{if(confirm("Clear all short-term memory?"))call({op:"clear_memory"}).then(d=>{S.status=d.status;render()})};mm.append(b)}
+ m.append(mm)}
+const usd=x=>x==null?"":"$"+(x>0&&x<1?x.toFixed(4):x.toFixed(2)),ms=x=>x==null?"–":Math.round(x)+" ms";let openRow=null;
+function stats(m,x){
+ const c=$(`<div class="card"><h2>Usage and cost <span class="pill">estimates</span></h2><p class="muted">Realtime is priced per minute of session time, summaries per token, at the prices in Settings. Latency: speech stopped → first audio.</p><div class="tot"></div></div>`);
+ [["Today","today"],["7 days","7d"],["30 days","30d"]].forEach(([n,k])=>{const t=x.totals[k];c.querySelector(".tot").append($(`<div><span class="muted">${n}</span><b>${usd(t.cost)}</b>${t.sessions} sessions · ${t.minutes} min<br><span class="muted">realtime ${usd(t.realtime_cost)} · summaries ${usd(t.summary_cost)}<br>median ${ms(t.latency_median)} · p90 ${ms(t.latency_p90)}</span></div>`))});
+ c.append($(`<h3>Daily cost, last 30 days</h3>`));c.append(chart(x.daily));m.append(c);
+ const tb=$(`<div class="card"><h2>Per tablet (30 days)</h2></div>`);
+ tb.append(x.tablets.length?table(["Tablet","Sessions","Minutes","Realtime","Summaries","Total","Median","p90"],x.tablets.map(t=>[esc(t.tablet),t.sessions,t.minutes,usd(t.realtime_cost),usd(t.summary_cost),usd(t.cost),ms(t.latency_median),ms(t.latency_p90)])):$(`<p class="muted">No sessions yet.</p>`));m.append(tb);
+ const r=$(`<div class="card"><h2>Recent sessions</h2><p class="muted">Click a row for details.</p></div>`);
+ if(!x.recent.length){r.append($(`<p class="muted">None yet.</p>`));m.append(r);return}
+ const t=table(["Tablet","Started","Length","Ready","Turns","Median","p90","Tools","Est. cost"],[]);
+ x.recent.forEach(s=>{const tr=$(`<tr class="click"><td>${esc(s.tablet)}${s.error?' <span class="err">✗</span>':""}</td><td>${fmtT(s.started)}</td><td>${s.duration_s} s</td><td>${ms(s.ready_ms)}</td><td>${s.turns}</td><td>${ms(s.latency_median)}</td><td>${ms(s.latency_p90)}</td><td>${s.tools.length}</td><td>${usd(s.realtime_cost)}</td></tr>`);
+  tr.onclick=()=>{openRow=openRow===s.id?null:s.id;render()};t.tBodies[0].append(tr);
+  if(openRow===s.id){const u=Object.entries(s.usage||{}).map(([k,v])=>`${esc(k)}: ${v}`).join(" · ")||"not reported";
+   t.tBodies[0].append($(`<tr><td colspan="9"><b>Turn latencies:</b> ${s.latencies.map(v=>v+" ms").join(", ")||"–"}<br><b>Tools:</b> ${s.tools.map(o=>`${esc(o.name)}${o.ok?"":" ✗"} ${o.ms} ms`).join(", ")||"none"}<br><b>xAI usage:</b> ${u}<br><b>Ended:</b> ${fmtT(s.ended)}${s.error?`<br><b>Error:</b> ${esc(s.error)}`:""}</td></tr>`))}});
+ r.append(t);m.append(r)}
+function chart(days){const W=760,H=140,P=24,max=Math.max(0.01,...days.map(d=>d.realtime_cost+d.summary_cost)),bw=(W-P)/days.length;
+ let g=`<svg viewBox="0 0 ${W} ${H+18}" width="100%" role="img" aria-label="Daily cost"><text x="0" y="10">${usd(max)}</text><line x1="${P}" y1="${H}" x2="${W}" y2="${H}" stroke="var(--line)"/>`;
+ days.forEach((d,i)=>{const x=P+i*bw+1,hr=d.realtime_cost/max*(H-14),hs=d.summary_cost/max*(H-14);
+  g+=`<g><title>${d.date}: ${usd(d.realtime_cost+d.summary_cost)} (${d.sessions} sessions, ${d.minutes} min)</title><rect x="${x}" y="${H-hr}" width="${bw-2}" height="${hr}" fill="var(--accent)"/><rect x="${x}" y="${H-hr-hs}" width="${bw-2}" height="${hs}" fill="var(--ok)"/></g>`;
+  if(i%5==4||i==days.length-1)g+=`<text x="${x}" y="${H+13}">${d.date.slice(5)}</text>`});
+ return $(`<div>${g}</svg><span class="muted"><span style="color:var(--accent)">■</span> realtime <span style="color:var(--ok)">■</span> summaries</span></div>`)}
+function table(h,rows){const t=$(`<table><thead><tr>${h.map(x=>`<th>${x}</th>`).join("")}</tr></thead><tbody></tbody></table>`);rows.forEach(r=>t.tBodies[0].append($(`<tr>${r.map(x=>`<td>${String(x).replace(/\n/g,"<br>")}</td>`).join("")}</tr>`)));return t}
+setInterval(()=>{if(S&&tab=="Status"&&ws&&ws.readyState==1)call({op:"status"}).then(d=>{S.status=d.status;if(tab=="Status")render()})},5000);
+// ---------- settings
+function field(lbl,html){return `<div><label>${lbl}</label>${html}</div>`}
+function sel(id,opts,v){return `<select id="${id}">${opts.map(o=>`<option ${o==v?"selected":""}>${o}</option>`).join("")}</select>`}
+function settings(m){const s=S.settings,mem=s.memory;
+ const c=$(`<div class="card"><h2>Session</h2><div class="row">
+ ${field("Model (empty = what the tablet asks, grok-voice-latest)",`<input id="model" value="${esc(s.model)}">`)}
+ ${field("Reasoning effort",sel("reasoning",["none","high","default"],s.reasoning_effort))}
+ ${field("End of speech (VAD)",sel("vadmode",["unset","kiosk","custom"],s.vad.mode))}
+ ${field("Custom silence ms (custom only)",`<input id="vadms" type="number" min="0" max="3000" value="${s.vad.silence_ms}">`)}
+ ${field("Date and time in instructions",`<input id="dt" type="checkbox" ${s.inject_datetime?"checked":""}>`)}
+ ${field("Label dates in tool results (today / tomorrow, local time)",`<input id="ann" type="checkbox" ${s.annotate_tool_dates?"checked":""}>`)}
+ </div>${field("Date line (blank = default; fields: {weekday} {month} {day} {year} {time} {tz} {date} {tomorrow_weekday} {tomorrow_month} {tomorrow_day} {tomorrow_date} {yesterday_date})",`<textarea id="dtt" placeholder="${esc(S.date_default||"")}">${esc(s.date_template||"")}</textarea>`)}${field("Extra instructions (added after the tablet's)",`<textarea id="extra">${esc(s.extra_instructions)}</textarea>`)}
+ <p class="muted">unset = xAI's default end of speech (fastest); kiosk = keep the tablet's 500 ms; custom = your value.</p></div>`);m.append(c);
+ const t=$(`<div class="card"><h2>Built-in tools</h2><p class="muted">Direct tools run in the relay against Home Assistant intents. Media and other skills are on the Skills tab.</p><div class="row">${Object.entries(S.families).map(([k,d])=>field(esc(d),sel("fam_"+k,["direct","off"],s.tools[k]))).join("")}</div></div>`);m.append(t);
+ const mm=$(`<div class="card"><h2>Short-term memory</h2><div class="row">
+ ${field("Enabled",`<input id="m_en" type="checkbox" ${mem.enabled?"checked":""}>`)}
+ ${field("Mode",sel("m_mode",["summary","raw","off"],mem.mode))}
+ ${field("Window (minutes)",`<input id="m_win" type="number" min="1" max="1440" value="${mem.window_minutes}">`)}
+ ${field("Max items",`<input id="m_max" type="number" min="1" max="20" value="${mem.max_items}">`)}
+ ${field("Scope",sel("m_scope",["per_tablet","house"],mem.scope))}
+ ${field("Other rooms, last N minutes (per_tablet; 0 = off)",`<input id="m_house" type="number" min="0" max="240" value="${mem.house_window_minutes}">`)}
+ ${field("Summary model (xAI text)",`<input id="m_model" value="${esc(mem.summary_model)}">`)}
+ ${field("Summary max chars",`<input id="m_chars" type="number" min="80" max="2000" value="${mem.summary_max_chars}">`)}
+ ${field("Drop KS's own history block",`<input id="m_strip" type="checkbox" ${mem.strip_ks_history?"checked":""}>`)}
+ </div><p class="muted">With relay memory on, set Kiosk Satellite's realtime history to its minimum; the relay also drops KS's history block if the box above is on.</p></div>`);m.append(mm);
+ const co=s.costs||{};const cc=$(`<div class="card"><h2>Cost estimates</h2><div class="row">
+ ${field("Realtime $ per minute",`<input id="c_rt" type="number" step="0.001" min="0" max="10" value="${co.realtime_per_min}">`)}
+ ${field("Realtime minutes from",sel("c_basis",["session","billable_audio"],co.realtime_basis))}
+ ${field("Summary input $ per 1M tokens",`<input id="c_in" type="number" step="0.01" min="0" max="100" value="${co.summary_input_per_m}">`)}
+ ${field("Summary output $ per 1M tokens",`<input id="c_out" type="number" step="0.01" min="0" max="100" value="${co.summary_output_per_m}">`)}
+ ${field("Keep stats (days)",`<input id="c_keep" type="number" min="1" max="3650" value="${co.retention_days}">`)}
+ ${field("Publish HA sensors (sensor.grok_relay_*)",`<input id="c_ha" type="checkbox" ${s.ha_sensors?"checked":""}>`)}
+ </div><p class="muted">Used for the Status tab's estimates. "session" prices the whole connection time; "billable_audio" uses xAI's reported billable audio seconds when present. New prices apply to sessions recorded from now on.</p></div>`);m.append(cc);
+ const out=$(`<div><button class="b">Save</button><span class="err" id="serr"></span></div>`);m.append(out);
+ out.querySelector("button").onclick=()=>{const v=(i)=>document.getElementById(i),n=(i)=>Number(v(i).value);
+  const next={...S.settings,model:v("model").value.trim(),reasoning_effort:v("reasoning").value,vad:{mode:v("vadmode").value,silence_ms:n("vadms")},inject_datetime:v("dt").checked,annotate_tool_dates:v("ann").checked,date_template:v("dtt").value.trim(),extra_instructions:v("extra").value,
+   costs:{realtime_per_min:n("c_rt"),realtime_basis:v("c_basis").value,summary_input_per_m:n("c_in"),summary_output_per_m:n("c_out"),retention_days:n("c_keep")},ha_sensors:v("c_ha").checked,
+   tools:Object.fromEntries(Object.keys(S.families).map(k=>[k,v("fam_"+k).value])),
+   memory:{enabled:v("m_en").checked,mode:v("m_mode").value,window_minutes:n("m_win"),max_items:n("m_max"),scope:v("m_scope").value,house_window_minutes:n("m_house"),summary_model:v("m_model").value.trim(),summary_max_chars:n("m_chars"),strip_ks_history:v("m_strip").checked}};
+  call({op:"save_settings",settings:next}).then(d=>{if(d.errors){v("serr").textContent=" "+d.errors.join("\n")}else{S.settings=d.settings;v("serr").innerHTML=' <span class="ok">Saved. Applies to the next session.</span>'}})}}
+// ---------- skills
+function skills(m){const wrap=$(`<div class="skills"><div class="card" id="sklist"></div><div id="sked"></div></div>`);m.append(wrap);
+ const l=wrap.querySelector("#sklist");l.append($(`<h2>Skills</h2>`));
+ draft.forEach((s,i)=>{const r=$(`<div class="sk ${i==selSkill?"on":""}"><input type="checkbox" ${s.enabled?"checked":""} title="enabled"><span style="flex:1">${esc(s.name)}</span>${s.direct?'<span class="pill">direct</span>':""}</div>`);
+  r.onclick=(e)=>{if(e.target.type=="checkbox")return;selSkill=i;render()};r.querySelector("input").onchange=(e)=>{s.enabled=e.target.checked;queuePreview()};l.append(r)});
+ const add=$(`<button class="b s">Add skill</button>`);add.onclick=()=>{draft.push({name:"new_skill",enabled:false,direct:false,index:"new_skill",help:"",aliases:[],actions:[{name:"run",aliases:[],backend:{type:"script",target:"",fixed:{}},args:[]}]});selSkill=draft.length-1;render()};l.append(add);
+ const fj=$(`<label class="b s" style="display:inline-block;color:var(--accent);cursor:pointer;margin-top:8px">Import skills JSON<input type="file" accept=".json,application/json" hidden></label>`);
+ fj.querySelector("input").onchange=(e)=>{const f=e.target.files[0];if(!f)return;f.text().then(t=>{let data;try{data=JSON.parse(t)}catch{return alert("Not JSON")}
+  call({op:"import_json",current:draft,skills:data.skills||data}).then(d=>{if(d.errors)return alert(d.errors.join("\n"));draft=d.skills;S.preview=d.preview;alert("Imported (not saved yet):\n"+d.notes.join("\n"));render()})})};l.append(fj);
+ const exp=$(`<button class="b s">Export skills JSON</button>`);exp.onclick=()=>{const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([JSON.stringify({skills:draft},null,1)],{type:"application/json"}));a.download="skills.json";a.click()};l.append(exp);
+ const imp=$(`<button class="b s">Import from HA script.skill</button>`);imp.onclick=()=>call({op:"import_skills"}).then(d=>{if(d.errors)return alert(d.errors.join("\n"));draft=d.skills;S.preview=d.preview;alert("Import (not saved yet):\n"+d.notes.join("\n"));render()});l.append(imp);
+ const ed=wrap.querySelector("#sked");const s=draft[selSkill];if(s)ed.append(skillEditor(s));
+ const pv=$(`<div class="card"><h2>Preview <span class="muted" id="pvsize"></span></h2><pre id="pv"></pre><span class="err" id="pverr"></span>
+  <div><button class="b">Save skills</button><button class="b s">Revert</button></div></div>`);ed.append(pv);showPreview(S.preview);
+ pv.querySelectorAll("button")[0].onclick=()=>call({op:"save_skills",skills:draft}).then(d=>{if(d.errors){pv.querySelector("#pverr").textContent=d.errors.join("\n")}else{S.skills=d.skills;draft=JSON.parse(JSON.stringify(d.skills));S.preview=d.preview;render();document.getElementById("pverr").innerHTML='<span class="ok">Saved. Applies to the next session.</span>'}});
+ pv.querySelectorAll("button")[1].onclick=()=>{draft=JSON.parse(JSON.stringify(S.skills));render()}}
+function showPreview(p){const e=document.getElementById("pv");if(!e||!p)return;e.textContent=JSON.stringify(p.tools,null,1);document.getElementById("pvsize").textContent=` ${p.bytes} bytes ≈ ${p.tokens_estimate} tokens`}
+function queuePreview(){clearTimeout(previewTimer);previewTimer=setTimeout(()=>call({op:"preview",skills:draft}).then(d=>{const er=document.getElementById("pverr");if(d.errors){if(er)er.textContent=d.errors.join("\n")}else{if(er)er.textContent="";S.preview=d.preview;showPreview(d.preview)}}),300)}
+const csv=(a)=>(a||[]).join(", "),uncsv=(t)=>t.split(",").map(x=>x.trim()).filter(Boolean);
+function skillEditor(s){const c=$(`<div class="card"><h2>${esc(s.name)}</h2><div class="row">
+ ${field("Name",`<input data-k="name" value="${esc(s.name)}">`)}${field("Aliases (comma)",`<input data-k="aliases" value="${esc(csv(s.aliases))}">`)}
+ ${field("Enabled",`<input type="checkbox" data-k="enabled" ${s.enabled?"checked":""}>`)}${field("Direct tool (instead of behind the skill tool)",`<input type="checkbox" data-k="direct" ${s.direct?"checked":""}>`)}</div>
+ ${field("Index line (goes into the skill tool description)",`<input data-k="index" value="${esc(s.index)}">`)}
+ ${field("Help (markdown, returned on action=help)",`<textarea data-k="help" style="min-height:120px">${esc(s.help)}</textarea>`)}
+ <h3>Actions</h3><div id="acts"></div><button class="b s" id="addact">Add action</button> <button class="b d" id="delsk">Delete skill</button></div>`);
+ c.querySelectorAll("[data-k]").forEach(i=>i.oninput=i.onchange=()=>{const k=i.dataset.k;s[k]=i.type=="checkbox"?i.checked:k=="aliases"?uncsv(i.value):i.value;queuePreview()});
+ const acts=c.querySelector("#acts");s.actions.forEach((a,j)=>acts.append(actionEditor(s,a,j)));
+ c.querySelector("#addact").onclick=()=>{s.actions.push({name:"action",aliases:[],backend:{type:"script",target:"",fixed:{}},args:[]});render()};
+ c.querySelector("#delsk").onclick=()=>{if(confirm(`Delete ${s.name}? (Save to apply)`)){draft.splice(selSkill,1);selSkill=0;render()}};return c}
+function targets(type){if(type=="script")return S.scripts.map(x=>[x.id,x.name]);if(type=="relay")return S.relay_handlers.map(x=>[x,""]);
+ if(type=="service"){const o=[];Object.entries(S.services).forEach(([d,l])=>l.forEach(x=>o.push([d+"."+x,""])));return o}return[]}
+function actionEditor(s,a,j){const dl="dl_"+j;const c=$(`<div class="act"><div class="row">
+ ${field("Action",`<input data-a="name" value="${esc(a.name)}">`)}${field("Aliases (comma)",`<input data-a="aliases" value="${esc(csv(a.aliases))}">`)}
+ ${field("Backend",sel("bt_"+j,S.backends,a.backend.type))}
+ ${field("Target",`<input data-b="target" list="${dl}" value="${esc(a.backend.target)}" placeholder="script.x / domain.service / media.play"><datalist id="${dl}">${targets(a.backend.type).map(([v,n])=>`<option value="${esc(v)}">${esc(n)}</option>`).join("")}</datalist>`)}
+ </div>${field("Fixed data (JSON, merged under the args)",`<textarea data-b="fixed" style="min-height:40px">${esc(JSON.stringify(a.backend.fixed||{}))}</textarea>`)}
+ <table><thead><tr><th>Arg</th><th>Required</th><th>Aliases</th><th>Coerce</th><th></th></tr></thead><tbody></tbody></table>
+ <button class="b s" data-x="addarg">Add arg</button> <button class="b d" data-x="del">Remove action</button>${a.guard?`<p class="muted">Guard on ${esc(a.guard.arg)}: refuses /${esc(a.guard.pattern)}/</p>`:""}</div>`);
+ c.querySelectorAll("[data-a]").forEach(i=>i.oninput=()=>{a[i.dataset.a]=i.dataset.a=="aliases"?uncsv(i.value):i.value;queuePreview()});
+ c.querySelector("#bt_"+j).onchange=(e)=>{a.backend.type=e.target.value;render()};
+ c.querySelector('[data-b="target"]').oninput=(e)=>{a.backend.target=e.target.value.trim();queuePreview()};
+ c.querySelector('[data-b="fixed"]').oninput=(e)=>{try{a.backend.fixed=JSON.parse(e.target.value||"{}");e.target.style.borderColor=""}catch{e.target.style.borderColor="var(--err)"}queuePreview()};
+ const tb=c.querySelector("tbody");a.args.forEach((g,k)=>{const r=$(`<tr><td><input value="${esc(g.name)}"></td><td><input type="checkbox" ${g.required?"checked":""}></td><td><input value="${esc(csv(g.aliases))}"></td><td>${sel("cz",S.coerce,g.coerce||"")}</td><td><button class="b d">×</button></td></tr>`);
+  const [n,req,al]=r.querySelectorAll("input");n.oninput=()=>{g.name=n.value;queuePreview()};req.onchange=()=>{g.required=req.checked;queuePreview()};al.oninput=()=>{g.aliases=uncsv(al.value)};
+  r.querySelector("select").onchange=(e)=>{g.coerce=e.target.value;if(!g.coerce)delete g.coerce;queuePreview()};r.querySelector("button").onclick=()=>{a.args.splice(k,1);render()};tb.append(r)});
+ c.querySelector('[data-x="addarg"]').onclick=()=>{a.args.push({name:"arg",required:false,aliases:[]});render()};
+ c.querySelector('[data-x="del"]').onclick=()=>{s.actions.splice(j,1);render()};return c}
+// ---------- tablets
+function tablets(m){const c=$(`<div class="card"><h2>Tablets</h2><p class="muted">Per-tablet overrides (JSON). Allowed keys: ${S.tablet_keys.join(", ")}. Example: {"reasoning_effort":"high","tools":{"locks":"off"}}. Empty = house settings.</p></div>`);
+ S.tablets.forEach(t=>{const cur=S.settings.tablets[t.device_id];c.append($(`<div><h3>${esc(t.name)} <span class="muted">${esc(t.area)} · ${esc(t.device_id)}</span></h3><textarea data-id="${esc(t.device_id)}">${cur?esc(JSON.stringify(cur,null,1)):""}</textarea></div>`))});
+ const b=$(`<div><button class="b">Save overrides</button><span class="err" id="terr"></span></div>`);c.append(b);m.append(c);
+ b.querySelector("button").onclick=()=>{const t={};let bad="";c.querySelectorAll("textarea").forEach(x=>{if(!x.value.trim())return;try{t[x.dataset.id]=JSON.parse(x.value)}catch{bad+=`${x.dataset.id}: not JSON\n`}});
+  if(bad)return document.getElementById("terr").textContent=bad;
+  call({op:"save_settings",settings:{...S.settings,tablets:t}}).then(d=>{const e=document.getElementById("terr");if(d.errors)e.textContent=" "+d.errors.join("\n");else{S.settings=d.settings;e.innerHTML=' <span class="ok">Saved.</span>'}})}}
+connect();render();
+</script>
+</body>
+</html>

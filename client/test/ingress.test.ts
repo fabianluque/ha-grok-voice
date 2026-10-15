@@ -251,9 +251,9 @@ describe("voice socket URLs", () => {
       auth: { data: { hassUrl: "http://127.0.0.1:2325" } },
       config: { internal_url: "http://homeassistant.local:8123" },
     };
-    expect(resolveVoiceSocketAuthority("http:", "127.0.0.1:2325", hass, "192.168.86.38")).toEqual({
+    expect(resolveVoiceSocketAuthority("http:", "127.0.0.1:2325", hass, "192.168.1.50")).toEqual({
       protocol: "http:",
-      host: "192.168.86.38",
+      host: "192.168.1.50",
       source: "addon",
     });
     expect(
@@ -261,13 +261,13 @@ describe("voice socket URLs", () => {
         hass,
         pageProtocol: "http:",
         pageHost: "127.0.0.1:2325",
-        lanHost: "http://192.168.86.38:8123",
+        lanHost: "http://192.168.1.50:8123",
       }).url,
-    ).toBe("ws://192.168.86.38:8080/");
-    await expect(resolveVoiceSocketUrl(hass, "http:", "127.0.0.1:2325", undefined, " 192.168.86.38 ")).resolves.toBe(
-      "ws://192.168.86.38:8080/",
+    ).toBe("ws://192.168.1.50:8080/");
+    await expect(resolveVoiceSocketUrl(hass, "http:", "127.0.0.1:2325", undefined, " 192.168.1.50 ")).resolves.toBe(
+      "ws://192.168.1.50:8080/",
     );
-    expect(log).toHaveBeenCalledWith("[Grok Voice] duplex host 192.168.86.38:8080 via addon auth token");
+    expect(log).toHaveBeenCalledWith("[Grok Voice] duplex host 192.168.1.50:8080 via addon auth token");
     log.mockRestore();
   });
 
@@ -300,11 +300,11 @@ describe("voice socket URLs", () => {
         pageProtocol: "http:",
         pageHost: "127.0.0.1:2325",
         lanHost: "",
-        scriptHost: "http://192.168.86.38:8080/grok-voice.js",
+        scriptHost: "http://192.168.1.50:8080/grok-voice.js",
       }),
     ).toMatchObject({
-      url: "ws://192.168.86.38:8080/",
-      authority: { source: "script", host: "192.168.86.38" },
+      url: "ws://192.168.1.50:8080/",
+      authority: { source: "script", host: "192.168.1.50" },
     });
     expect(resolveVoiceSocketAuthority("http:", "127.0.0.1:2325", hass, "")).toEqual({
       protocol: "http:",
@@ -334,26 +334,26 @@ describe("voice socket URLs", () => {
   it("reads duplex_lan_host from /kiosk-config and from the grok-voice.js script tag", async () => {
     resetAddonLanHost();
     expect(cleanDuplexLanHost("")).toBe("");
-    expect(cleanDuplexLanHost(" 192.168.86.38 ")).toBe("192.168.86.38");
-    expect(cleanDuplexLanHost("http://192.168.86.38:8123/")).toBe("192.168.86.38");
+    expect(cleanDuplexLanHost(" 192.168.1.50 ")).toBe("192.168.1.50");
+    expect(cleanDuplexLanHost("http://192.168.1.50:8123/")).toBe("192.168.1.50");
     expect(cleanDuplexLanHost("127.0.0.1")).toBe("");
     const doc = {
       querySelectorAll() {
-        return [{ src: "http://192.168.86.38:8080/grok-voice.js" }];
+        return [{ src: "http://192.168.1.50:8080/grok-voice.js" }];
       },
     };
-    expect(kioskScriptOrigin(doc)).toBe("http://192.168.86.38:8080");
-    expect(kioskScriptHost(doc)).toBe("192.168.86.38");
+    expect(kioskScriptOrigin(doc)).toBe("http://192.168.1.50:8080");
+    expect(kioskScriptHost(doc)).toBe("192.168.1.50");
     expect(kioskScriptOrigin({ querySelectorAll: () => [{ src: "http://homeassistant.local:8080/grok-voice.js" }] })).toBe("");
     const fetched = await prefetchKioskConfig({
-      origin: "http://192.168.86.38:8080",
+      origin: "http://192.168.1.50:8080",
       fetch: async (url) => {
-        expect(url).toBe(`http://192.168.86.38:8080${KIOSK_CONFIG_PATH}`);
-        return { ok: true, json: async () => ({ duplex_lan_host: "192.168.86.38" }) };
+        expect(url).toBe(`http://192.168.1.50:8080${KIOSK_CONFIG_PATH}`);
+        return { ok: true, json: async () => ({ duplex_lan_host: "192.168.1.50" }) };
       },
     });
-    expect(fetched).toBe("192.168.86.38");
-    expect(configuredDuplexLanHost("")).toBe("192.168.86.38");
+    expect(fetched).toBe("192.168.1.50");
+    expect(configuredDuplexLanHost("")).toBe("192.168.1.50");
     expect(configuredDuplexLanHost("10.0.0.2")).toBe("10.0.0.2");
     rememberAddonLanHost("");
     resetAddonLanHost();

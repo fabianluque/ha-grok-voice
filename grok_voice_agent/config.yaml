@@ -1,7 +1,7 @@
 name: Grok Voice Agent
-version: "0.2.26"
+version: "0.3.0"
 slug: grok_voice_agent
-description: Full-duplex Grok Voice Think Fast 2.0 in a browser or Kiosk Satellite dashboard. Home Assistant tools run through the local MCP server.
+description: Realtime voice relay for Grok Voice in front of Kiosk Satellite tablets (session rewrite, tools and skills next to Home Assistant, short-term memory). Includes the legacy browser duplex client.
 url: https://github.com/fabianluque/ha-grok-voice
 arch:
   - aarch64
@@ -17,6 +17,7 @@ panel_icon: mdi:microphone-message
 panel_title: Grok Voice
 ports:
   8080/tcp: 8080
+  8766/tcp: 8766
 options:
   xai_api_key: ""
   instructions: >-
@@ -51,6 +52,8 @@ options:
   duplex_lan_host: ""
   home_location: ""
   conversation_memory_ttl_seconds: 480
+  ks_relay_secret: ""
+  ks_relay_port: 8766
 schema:
   xai_api_key: password
   instructions: str
@@ -68,3 +71,5 @@ schema:
   duplex_lan_host: str
   home_location: str
   conversation_memory_ttl_seconds: int(60,3600)
+  ks_relay_secret: password
+  ks_relay_port: port

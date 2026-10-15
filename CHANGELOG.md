@@ -4,6 +4,18 @@ Versions match `grok_voice_agent/config.yaml`. GitHub Releases list the
 merged pull requests since the previous tag. Issues closed with `Fixes #N`
 in those pull requests are included below when GitHub reports them.
 
+## [0.3.0] - 2026-10-15
+
+- The add-on is now a realtime voice relay for Grok Voice in front of Kiosk Satellite. Set the new **Kiosk Satellite relay secret** option (the xAI key stays in the add-on), then on each tablet set the xAI **Endpoint** to `ws://<ha-host>:8766/v1/realtime?model=grok-voice-latest`, the API key to the secret, **Tools** to None and history to its minimum.
+- Session rewrite: reasoning effort, end of speech (xAI's default instead of KS's 500 ms), the local date and time with explicit "today / tonight / tomorrow" rules (refreshed after midnight or ten minutes), and day labels on dates in tool results (UTC timestamps shown as local time with "today" / "tomorrow").
+- Built-in tools run in the relay against Home Assistant (on/off, lights, covers, locks, climate, fans, timers, lists, state lookup) instead of ~58 MCP tools; KS's `end_conversation` passes through.
+- Skills: one `skill` tool with a short index and `action=help`, backed by scripts, services, relay handlers (media) or Home Assistant's `script.skill`. Generic seed; on first run the relay imports `script.skill` from Home Assistant if present; import and export as JSON.
+- Short-term memory per tablet or house-wide, summarized by a fast xAI text model after each session.
+- New **relay** page in the Grok Voice panel (ingress only): settings with live reload and per-tablet overrides, skill editor, status with per-session latency and tool timings, memory with a clear button.
+- Usage and cost estimates on the Status tab: per-session records in `/data/stats.db` (duration, turns, latency median / p90, tools, xAI token usage, summary tokens), today / 7 / 30-day totals, per-tablet cost and latency, a daily chart, drill-down, configurable prices, and optional `sensor.grok_relay_*` entities in Home Assistant.
+- Measured on one setup, end of speech to first audio: 2.5 s → 1.0 s for a light command, 1.8 s → 0.75 s for a question.
+- README and DOCS rewritten around the relay; the browser and injected duplex client is documented as legacy.
+
 ## [0.2.26] - 2026-10-01
 
 - Narrow dismiss hang-up to clear thank-you / that's-all closers (`thank you`, `thanks`, `that's all`, `that's it`, `that'll do`, `goodbye`, `bye`, `good night`, `I'm done`, `we're done`, `we're good`, `all set`, and close variants). Drop weaker phrases that caused false hang-ups (`stop listening`, `you can go`, `never mind`, `that's enough`, `that's everything`, `carry on`, `go now`).
@@ -15,7 +27,7 @@ in those pull requests are included below when GitHub reports them.
 
 ## [0.2.24] - 2026-09-30
 
-- Add add-on option **Duplex LAN host** (`duplex_lan_host`) so Kiosk Satellite tablets can open duplex on a Home Assistant LAN IP (for example `192.168.86.38`) instead of falling through to `homeassistant.local`. Fire tablets often fail that mDNS name (`ERR_NAME_NOT_RESOLVED`). Leave the option blank to keep automatic discovery (HA connection host, ingress, script origin). The value is served at `/kiosk-config` and injected into `grok-voice.js` / `kiosk-boot.js`. Hang-up, Q&A, overlay streaming, and Listening-on-wake are unchanged.
+- Add add-on option **Duplex LAN host** (`duplex_lan_host`) so Kiosk Satellite tablets can open duplex on a Home Assistant LAN IP (for example `192.168.1.50`) instead of falling through to `homeassistant.local`. Fire tablets often fail that mDNS name (`ERR_NAME_NOT_RESOLVED`). Leave the option blank to keep automatic discovery (HA connection host, ingress, script origin). The value is served at `/kiosk-config` and injected into `grok-voice.js` / `kiosk-boot.js`. Hang-up, Q&A, overlay streaming, and Listening-on-wake are unchanged.
 
 ## [0.2.23] - 2026-09-30
 
@@ -44,7 +56,7 @@ in those pull requests are included below when GitHub reports them.
 
 ## [0.2.17] - 2026-09-30
 
-- Always inject add-on **Home location** (`home_location`, for example `Summit, NJ`) into every duplex `session.update` so Grok can answer where you live, what’s nearby, and weather here without asking. Customized **Instructions** no longer omit that block. Leave the option blank if unset.
+- Always inject add-on **Home location** (`home_location`, for example `Springfield, IL`) into every duplex `session.update` so Grok can answer where you live, what’s nearby, and weather here without asking. Customized **Instructions** no longer omit that block. Leave the option blank if unset.
 
 ## [0.2.16] - 2026-09-30
 
@@ -76,7 +88,7 @@ in those pull requests are included below when GitHub reports them.
 
 ## [0.2.10] - 2026-09-30
 
-- Name the city in session location context. Add-on **Home location** (`Summit, NJ`) is expanded to **Summit, New Jersey** in the Grok instructions so answers can say the city, not only a vague home/GPS string.
+- Name the city in session location context. Add-on **Home location** (`Springfield, IL`) is expanded to **Springfield, Illinois** in the Grok instructions so answers can say the city, not only a vague home/GPS string.
 - Keep short per-device conversation memory across wakes within the TTL. History is keyed by a stable tablet id (not area fallback), written as turns complete (including xAI `updated` transcripts after VAD stop), and reinjected on the next `session.update` both as instructions and as `conversation.item.create` messages so follow-ups like “do I have a meeting today?” use what the user just said, not only the calendar tool. Attic vs dining stay separate. Goodbye still clears that device; idle hang-up keeps the turns (~8 minutes).
 - Increase local mic pre-roll to **900ms** and flush it when the duplex session is `ready` (not at WebSocket open). Server VAD `prefix_padding_ms` is **800ms** and threshold **0.35**. getUserMedia is still not delayed.
 - Hang up after a one-shot home command or a dismissal without an exact goodbye phrase. Grok gets a local **`end_session`** tool (`reason=command` or `reason=dismiss`). After a short ack, the duplex ends and wake-word listening resumes (same path as goodbye). Phrase matching also accepts “you can go now” / “thanks I’m done”. Do not auto-end mid-multi-step or while asking a question. Command hang-up keeps the 8-minute tablet history; dismiss/goodbye still clears it.
@@ -84,7 +96,7 @@ in those pull requests are included below when GitHub reports them.
 
 ## [0.2.9] - 2026-09-30
 
-- Inject the current local date/time and home location into every Grok session at open (server-side `session.update` instructions). Timezone and GPS come from Home Assistant `/api/config` plus `zone.home`; the add-on **Home location** option supplies a city/ZIP such as Summit, NJ. The clock is computed when the session starts, not baked into the add-on.
+- Inject the current local date/time and home location into every Grok session at open (server-side `session.update` instructions). Timezone and GPS come from Home Assistant `/api/config` plus `zone.home`; the add-on **Home location** option supplies a city/ZIP such as Springfield, IL. The clock is computed when the session starts, not baked into the add-on.
 - Keep a short per-device conversation memory after hang-up so a new wake on the same satellite can follow up. Keyed by kiosk device (then area); TTL defaults to 8 minutes (`conversation_memory_ttl_seconds`). Cleared when that timer expires or the user says goodbye.
 - Soften server VAD slightly and include 400ms of audio pre-roll (`prefix_padding_ms`) so the first syllable after snappy listen-start is less likely to be clipped. Area lookup stays off the wake path.
 
@@ -95,7 +107,7 @@ in those pull requests are included below when GitHub reports them.
 ## [0.2.7] - 2026-09-30
 
 - Restore snappy listen-start on the attic kiosk inject. 0.2.6 awaited Home Assistant device/entity/area registry lists (and `getDeviceInfo`) on every wake before `getUserMedia` and the duplex socket. The inject now prefetches the area at boot and sends the cached/explicit/Attic fallback on auth immediately. Registry lookups run in parallel in the background. The duplex WebSocket opens while the mic is claimed.
-- Attach Assist media, todo, and Mealie tools on a blank allowlist (`HassMediaSearchAndPlay`, pause/volume/next, `HassListAddItem`, `HassGetState`, plus `music_assistant` / `media_player` / `todo` / `mealie` domains). Bare "play music" / "play X" from the attic tablet targets Music Assistant in the session area (Attic HomePod Mini) and does not ask which speaker.
+- Attach Assist media, todo, and Mealie tools on a blank allowlist (`HassMediaSearchAndPlay`, pause/volume/next, `HassListAddItem`, `HassGetState`, plus `music_assistant` / `media_player` / `todo` / `mealie` domains). Bare "play music" / "play X" from a tablet targets Music Assistant in the session area and does not ask which speaker.
 
 ## [0.2.6] - 2026-09-30
 

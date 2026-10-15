@@ -77,6 +77,8 @@ class Settings:
     ingress_port: int = 8099
     debug_port: int = 8080
     mcp_token_source: str = "missing"
+    ks_relay_secret: str = ""
+    ks_relay_port: int = 8766
 
 
 def clean_duplex_lan_host(value: object) -> str:
@@ -180,4 +182,6 @@ def load_settings(
             DEFAULT_TTL_SECONDS,
         ),
         mcp_token_source=mcp_token_source,
+        ks_relay_secret=clean_token(options.get("ks_relay_secret")),
+        ks_relay_port=int(options.get("ks_relay_port") or 8766),
     )

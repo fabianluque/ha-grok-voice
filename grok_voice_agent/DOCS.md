@@ -1,10 +1,144 @@
 # Grok Voice Agent
 
-Home Assistant add-on that talks to Grok Voice Think Fast 2.0 and runs Assist tools through the local MCP server. Open the add-on page in a browser, or load the kiosk client on a Kiosk Satellite dashboard. The xAI key stays in the add-on.
+Home Assistant add-on that relays [Kiosk Satellite](https://kiosksatellite.com/)'s realtime voice to xAI Grok Voice: it rewrites each session (reasoning, end of speech, date and time, short-term memory), runs a compact tool set and skills next to Home Assistant, and streams only the answer back to the tablet. The xAI key stays in the add-on.
 
-This page is the detailed companion to the [root README](../README.md). Start there for install and first-run configuration.
+This page is the detailed companion to the [root README](../README.md). Start there for the overview, install and tablet setup.
 
-## Install from the Add-on store
+## Kiosk Satellite realtime relay (xAI Endpoint)
+
+Kiosk Satellite (KS) has its own realtime voice (wake word → Grok) that speaks the
+OpenAI realtime protocol. Its xAI provider takes an **Endpoint**; point it at this
+add-on and the add-on relays each conversation to xAI:
+
+- **Faster turns.** KS's `session.update` is rewritten: KS's instructions (room)
+  stay, `reasoning.effort` becomes `none`, the 500 ms `silence_duration_ms` /
+  `prefix_padding_ms` are dropped (xAI's default end of speech), and the local
+  date and time are added with explicit rules (refreshed past midnight or after
+  10 minutes), so no date tool round trip is needed. "Call GetDateTime"
+  sentences are removed. See [Dates](#dates).
+- **Small tool set, run here.** Instead of Home Assistant's whole MCP list
+  (~58 tools, ~54 KB) the model gets ~10 short built-in tools (on/off, lights,
+  covers/garage, locks, climate, fans, timers on the tablet, to-do lists, state
+  lookup) plus skills. Built-ins run against Home Assistant intents
+  (`/api/intent/handle`: exposed entities only, the tablet's device for timers,
+  its room as the default area). KS only hears the answer; KS's own
+  `end_conversation` still reaches the tablet.
+- **Skills live in the relay.** Each skill has an index line (the `skill` tool
+  description), help (returned on `action=help`) and actions mapped to a Home
+  Assistant script, any service, a relay handler (media) or a pass-through to
+  HA's `script.skill`. The seed is generic (media, plus disabled samples for
+  routines and dashboard pages). On first run, if Home Assistant has a
+  `script.skill`, its skills are imported as pass-throughs. A skill can be
+  promoted to one direct tool (media is direct by default).
+- **Short-term memory.** After each session (never while the tablet waits) a fast
+  xAI text model writes 2-3 lines; the next session gets a "Recent context"
+  block (latest summaries in the window, tool calls verbatim). If summarizing
+  fails, trimmed exchanges are kept. Stored in `/data`.
+- **The xAI key stays in the add-on.** Tablets hold only a shared secret. The xAI
+  socket opens only when a tablet connects (no idle billing).
+
+### Add-on options (bootstrap only)
+
+| Option | |
+| --- | --- |
+| `xai_api_key` | used by the relay too |
+| `ks_relay_secret` | turns the relay on; tablets put it in KS's xAI API key field |
+| `ks_relay_port` | default 8766 |
+
+Restart the add-on once after setting them.
+
+### Relay panel (no restart)
+
+Open the **Grok Voice** sidebar panel and go to `relay/` (for example
+`…/api/hassio_ingress/<token>/relay/`, or add `relay/` to the panel URL).
+Changes are saved to `/data/settings.json` and `/data/skills.json` and apply
+to the next session.
+
+- **Status:** connected tablets, recent sessions with latency (xAI's
+  speech_stopped → first audio sent to the tablet) and tool timings, and the
+  short-term memory per tablet with **Clear** buttons.
+- **Usage and cost (estimates):** stored in `/data/stats.db` (SQLite, kept
+  90 days by default). Per session: tablet, start and end, duration, ready time,
+  turns with end-of-speech → first-audio latency (median and p90), tool calls
+  with names and timings, and xAI's `response.done` usage summed per session
+  (input / output text and audio tokens, `billable_audio_seconds`). Summaries
+  add their model's tokens. Totals for today, 7 and 30 days (sessions,
+  minutes, realtime vs summary cost), per-tablet cost and latency, a daily
+  chart and recent sessions (click for details). Prices live in Settings →
+  **Cost estimates**: realtime $ per minute (default 0.08) priced on session
+  time or on xAI's billable audio seconds, summary $ per 1M input / output
+  tokens (defaults 1.25 / 2.50, `grok-4.20-0309-non-reasoning` list price),
+  retention. With **Publish HA sensors** on, the relay writes
+  `sensor.grok_relay_cost_today`, `sensor.grok_relay_sessions_today`,
+  `sensor.grok_relay_minutes_today` and `sensor.grok_relay_latency_median`
+  (p90 as an attribute) through the Home Assistant API after each session.
+  These are state-only entities: they show up after the first session and are
+  not kept across a Home Assistant restart until the next session.
+- **Settings:** model, reasoning effort (none / high / default), end of speech
+  (unset = xAI default, kiosk = KS's 500 ms, custom ms), date/time injection,
+  the date line template, day labels on tool results, extra instructions, which built-in tool families are direct or off, and
+  memory: enabled, mode (summary / raw / off), window minutes (45), max items
+  (5), scope (per_tablet / house), other rooms' last-N-minutes window (10, per
+  tablet scope), summary model (`grok-4.20-0309-non-reasoning`), summary max
+  chars (400), and dropping KS's own history block.
+- **Skills:** toggles, index line, help, actions with backend pickers (HA
+  scripts and services), args (required, aliases, coerce), direct vs behind the
+  `skill` tool, a live preview of the exact tool JSON with its size, and
+  **Import from HA script.skill** (adds anything HA has that the relay lacks as a
+  pass-through; nothing is removed), and **Import / Export skills JSON** (same-named
+  skills are replaced). Imports are previewed; nothing is saved until **Save**.
+- **Tablets:** per-tablet overrides (reasoning effort, VAD, date/time, day labels, extra
+  instructions, tool families, memory on/off).
+
+The panel is only served through Home Assistant ingress (signed-in user); the
+LAN port never accepts it. API keys are never shown.
+
+### On each tablet (KS → Voice → Realtime → xAI)
+
+| KS setting | Value |
+| --- | --- |
+| Endpoint | `ws://<ha-host>:8766/v1/realtime?model=grok-voice-latest` |
+| API key | the relay secret |
+| Tools | **None** (the relay brings its own) |
+| History (realtime) | its minimum, when relay memory is on (the relay also drops KS's history block) |
+
+Then **Save & Validate**. Plain `ws://` is fine on the LAN. `GET /health` on the
+relay port answers `ok` once the Home Assistant link is up.
+
+### Dates
+
+Grok often got "tonight" and "tomorrow" wrong. The default date line, picked by
+testing variants against `grok-voice-latest` (text and spoken, including late
+evening and just after midnight), is:
+
+> Now: Thursday, Oct 15, 2026, 9:00 PM EDT. Tomorrow is Friday, Oct 16. Today =
+> Thursday 2026-10-15. Tonight means today's date. Always resolve relative dates
+> against this before answering or calling tools; pass explicit ISO dates to
+> tools; when comparing tool results, match the ISO date exactly.
+
+The panel can replace it (fields: `{weekday} {month} {day} {year} {time} {tz}
+{date} {tomorrow_weekday} {tomorrow_month} {tomorrow_day} {tomorrow_date}
+{yesterday_date}`).
+
+The line alone is enough when tool data carries local dates. Home Assistant
+often returns UTC timestamps instead (a game at 8:30 PM EDT is
+`2026-10-16T00:30Z`), and then every wording failed in the test. With **day
+labels on tool results** (on by default) the relay rewrites dates in tool
+output, for example `2026-10-16T00:30Z (local Thursday 2026-10-15 8:30 PM,
+today)` and `2026-10-16 (Friday, tomorrow)`, which fixed those cases.
+
+### Testing off the add-on
+
+`cd grok_voice_agent && XAI_API_KEY=… KS_RELAY_SECRET=… HA_URL=http://homeassistant.local:8123
+HA_TOKEN_FILE=… KS_RELAY_ADMIN_PORT=8770 python -m app.ks_relay` (panel on
+`http://127.0.0.1:8770/relay/`, no auth, localhost only; `KS_RELAY_DRY_RUN=1`
+answers tools without touching Home Assistant).
+
+## Legacy: browser and injected duplex mode
+
+The original mode: talk from **Open Web UI** in the sidebar, or inject `grok-voice.js` into a Kiosk Satellite dashboard so the tablet runs its own duplex client. It uses Home Assistant's MCP server for tools and the add-on options below (instructions, voice, model, MCP allowlist, home location, areas, idle timeout, memory TTL). New installs should use the relay above.
+
+### Install from the Add-on store
 
 Home Assistant clones this GitHub URL as a store repository. The repo root has `repository.yaml`; the add-on itself is the `grok_voice_agent/` folder (`config.yaml`, `Dockerfile`, …).
 
@@ -12,7 +146,7 @@ Home Assistant clones this GitHub URL as a store repository. The repo root has `
 2. Add `https://github.com/fabianluque/ha-grok-voice` and save.
 3. On the store page, open **Grok Voice Agent** and install it. Home Assistant builds the image locally from the Dockerfile.
 4. Open the add-on **Configuration**, set **xAI API key**, and save. Do not put that key in the browser UI.
-5. Optionally set **Home location** (city / region / ZIP), **Default area**, and **Duplex LAN host** (Home Assistant LAN IP such as `192.168.86.38` when Kiosk Satellite tablets cannot resolve `homeassistant.local`). Area and location ship **blank**. Leave **Home location** empty until you fill it in.
+5. Optionally set **Home location** (city / region / ZIP), **Default area**, and **Duplex LAN host** (Home Assistant LAN IP such as `192.168.1.50` when Kiosk Satellite tablets cannot resolve `homeassistant.local`). Area and location ship **blank**. Leave **Home location** empty until you fill it in.
 6. Install the official **Model Context Protocol Server** integration and expose the entities Assist may control.
 7. Leave the MCP URL blank. It uses `http://supervisor/core/api/mcp` with the Supervisor add-on token (`SUPERVISOR_TOKEN`). Leave the long-lived token blank too. Paste a long-lived token only if the log shows MCP HTTP 401. A blank token is not sent. The startup log should say `mcp_auth=supervisor`.
 8. Start the add-on.
@@ -23,15 +157,15 @@ After a client UI or kiosk-client change, run `npm run build` in `client/` so `g
 
 The add-on serves the mic UI on dashboard ingress (port 8099, **Open Web UI**) and on the debug port (`8080/tcp`). Open Web UI uses the signed-in Home Assistant ingress session, so it does not ask for a token. The debug port still sends an optional long-lived access token on the first WebSocket message. The same debug port also serves the kiosk IIFE at `http://<HA-LAN>:8080/grok-voice.js` (see [Kiosk Satellite](#kiosk-satellite)).
 
-## Local `/addons` (optional, for development)
+### Local `/addons` (optional, for development)
 
 To iterate without the GitHub store, copy `grok_voice_agent/` into Home Assistant’s local add-ons directory as `/addons/grok_voice_agent` (Samba share `addons`, SSH, or similar). Local add-ons do not use `repository.yaml`. Rebuild with `ha apps rebuild` / reinstall after you change the add-on or the packaged UI.
 
-## Test from a Mac browser
+### Test from a Mac browser
 
 The UI needs a **secure context** for `getUserMedia` (HTTPS, or `localhost`). `http://homeassistant.local:8080` is not secure, so Chrome and Safari will block the microphone unless you use one of the paths below.
 
-### Home Assistant Open Web UI / ingress
+#### Home Assistant Open Web UI / ingress
 
 1. Start **Grok Voice Agent**.
 2. Stay signed in to Home Assistant and choose **Open Web UI**, or open **Grok Voice** in the sidebar. That panel creates the ingress session, then loads the add-on. Do not paste a token.
@@ -43,7 +177,7 @@ Opening `https://<your-home-assistant-host>/api/hassio_ingress/<token>/` directl
 
 Prefer this path when Home Assistant itself is HTTPS (Nabu Casa or a local certificate). The WebSocket stays on the ingress URL; no extra port on the tablet.
 
-### LAN debug port `:8080`
+#### LAN debug port `:8080`
 
 1. Confirm the add-on maps `8080/tcp` (already in `config.yaml`) and has started.
 2. On the Mac, create a Home Assistant **long-lived access token** (Profile → Security) and paste it into the UI. Do not put an xAI key in the browser. Optionally check **Remember this token in this browser**.
@@ -61,11 +195,11 @@ Prefer this path when Home Assistant itself is HTTPS (Nabu Casa or a local certi
 
 The debug page talks to `ws://<that-host>:8080/` with the same `{ "type": "auth", "token": "..." }` message the kiosk client sends.
 
-## Kiosk Satellite
+### Kiosk Satellite
 
 Leave Voice Satellite's wake word on. Kiosk Satellite only detects a wake word while that detection is enabled; do not set it to Disabled. Kiosk Satellite's own voice runtime is often native (`voice.runtime=native`). That path starts Assist inside the app and pauses the dashboard, which is separate from the Voice Satellite card. The loaded kiosk script still blocks the card (`onWakeAction`, the blur overlay, and an STT `pipeline.start`). It also calls this kiosk's ESPHome `vs_cancel` action, matched by the kiosk device name, so the native Assist turn stops and the WebView stays awake for Grok. The Grok overlay paints **Listening** immediately on wake; `vs_cancel` runs in parallel and duplex no longer waits on a settle delay (a pause that closes the first socket is retried, and the mic graph is attached only to a live AudioContext). It does not call any other kiosk's action. Enable the inject only on the dashboards that should use Grok.
 
-### Stable client URL
+#### Stable client URL
 
 The running add-on always serves the current kiosk IIFE (classic script, not an ES module) next to the mic UI:
 
@@ -81,9 +215,9 @@ Replace `<HA-LAN>` with the hostname or IP the tablet uses to reach Home Assista
 
 CORS is allowed (`Access-Control-Allow-Origin: *`) so a dashboard origin (`http://127.0.0.1:2325` Kiosk Satellite proxy, or `http://<HA-LAN>:8123`) can load the file. Classic `<script src>` works without CORS; the header is for `fetch` / module resources. `Cache-Control: no-cache` makes the tablet revalidate after an add-on update.
 
-If every discovered Home Assistant URL is loopback (typical on the Kiosk Satellite proxy), the client used to fall back to `homeassistant.local`. Fire tablets often fail that mDNS name (`ERR_NAME_NOT_RESOLVED`). Set add-on **Duplex LAN host** (`duplex_lan_host`) to the Home Assistant LAN IP (`192.168.86.38`). The add-on exposes that value at `http://<HA-LAN>:8080/kiosk-config` and injects `window.GROK_VOICE_DUPLEX_LAN_HOST` into `grok-voice.js` / `kiosk-boot.js`. You can still set `window.GROK_VOICE_DUPLEX_LAN_HOST`, `window.GROK_VOICE_URL`, or `window.GROK_VOICE_SCRIPT` in the inject. If the option is blank, discovery still prefers a HA connection host or the host that served `grok-voice.js` before using `homeassistant.local`.
+If every discovered Home Assistant URL is loopback (typical on the Kiosk Satellite proxy), the client used to fall back to `homeassistant.local`. Fire tablets often fail that mDNS name (`ERR_NAME_NOT_RESOLVED`). Set add-on **Duplex LAN host** (`duplex_lan_host`) to the Home Assistant LAN IP (`192.168.1.50`). The add-on exposes that value at `http://<HA-LAN>:8080/kiosk-config` and injects `window.GROK_VOICE_DUPLEX_LAN_HOST` into `grok-voice.js` / `kiosk-boot.js`. You can still set `window.GROK_VOICE_DUPLEX_LAN_HOST`, `window.GROK_VOICE_URL`, or `window.GROK_VOICE_SCRIPT` in the inject. If the option is blank, discovery still prefers a HA connection host or the host that served `grok-voice.js` before using `homeassistant.local`.
 
-### Enable once on a kiosk
+#### Enable once on a kiosk
 
 Do this in Kiosk Satellite **Remote Admin** (the tablet’s `:2324` admin UI) for each dashboard that should run Grok.
 
@@ -123,7 +257,7 @@ Resolution order:
 
 A second tablet with the same inject resolves **its own** KS/HA area. Do not hardcode a room in the inject unless you are forcing an override. The add-on default is only the fallback when the kiosk did not send an area (Open Web UI, or lookup failed).
 
-### Session date, location, and short memory
+#### Session date, location, and short memory
 
 At each duplex session open the add-on writes a fresh block into the Grok `session.update` instructions (every client: kiosk, Open Web UI, port 8080):
 

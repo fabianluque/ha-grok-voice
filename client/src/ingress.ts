@@ -199,7 +199,7 @@ export function isMdnsFallbackHostname(host: string): boolean {
 
 /**
  * Hostname/IP from the add-on option or an inject override.
- * Accepts ``192.168.86.38``, ``http://192.168.86.38:8123``, or a host:port.
+ * Accepts ``192.168.1.50``, ``http://192.168.1.50:8123``, or a host:port.
  */
 export function cleanDuplexLanHost(value: unknown): string {
   if (value == null) {

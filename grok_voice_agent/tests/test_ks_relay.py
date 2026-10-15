@@ -1,0 +1,490 @@
+"""KS relay: session rewrite, auth, server-side tools hidden from the kiosk, settings, skills, memory."""
+
+import asyncio
+import json
+import time
+import socket
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+import pytest
+from websockets.asyncio.client import connect
+from websockets.asyncio.server import serve
+from websockets.exceptions import InvalidStatus
+
+from app.ks_relay import admin
+from app.ks_relay.ha import HaCache, Tablet, find_tablet
+from app.ks_relay.memory import MemorySettings, RelayMemory, SessionLog, strip_ks_history
+from app.ks_relay.relay import (
+    RelayContext,
+    RelaySession,
+    RelaySettings,
+    bearer_ok,
+    clock_line,
+    rewrite_session,
+    serve_relay,
+    strip_datetime_tool_hints,
+)
+from app.ks_relay.settings_store import DEFAULTS, SettingsError, SettingsStore, effective, validate
+from app.ks_relay.stats import StatsStore, add_usage, percentile, sensor_states
+from app.ks_relay.skills import SkillStore, load_seed, merge_import, preview, resolve, skill_specs, validate_skills
+from app.ks_relay.tools import tool_specs
+
+KS_SESSION = {
+    "voice": "eve",
+    "instructions": 'Be brief.\n\nYou run on a device named "Attic Dashboard" in Home Assistant. That is its name, '
+    "not yours. The device is in the Attic area. When the user doesn't name an area, use this one.\n\n"
+    "Earlier conversations with the user, oldest first. Use them when the user refers back to something:\n"
+    "User: hi\nAssistant: hello",
+    "turn_detection": {"type": "server_vad", "silence_duration_ms": 500, "prefix_padding_ms": 300},
+    "audio": {"input": {"format": {"type": "audio/pcm", "rate": 24000}}},
+    "tools": [
+        {"type": "function", "name": "HassTurnOn", "parameters": {}},
+        {"type": "function", "name": "end_conversation", "parameters": {"type": "object", "properties": {}}},
+        {"type": "web_search"},
+    ],
+}
+
+
+def _cfg(**over):
+    return {**json.loads(json.dumps(DEFAULTS)), **over}
+
+
+def test_rewrite_keeps_instructions_and_swaps_tools():
+    mine = [{"type": "function", "name": "turn_on", "parameters": {}}]
+    out = rewrite_session(KS_SESSION, _cfg(), mine, extra_instructions="It is noon.")
+    assert out["turn_detection"] == {"type": "server_vad"}
+    assert out["reasoning"] == {"effort": "none"}
+    assert [t.get("name", t["type"]) for t in out["tools"]] == ["turn_on", "end_conversation", "web_search"]
+    assert out["instructions"].startswith("Be brief.")
+    assert out["instructions"].endswith("It is noon.")
+    assert KS_SESSION["turn_detection"]["silence_duration_ms"] == 500  # input untouched
+
+
+def test_rewrite_vad_and_reasoning_modes():
+    kiosk = rewrite_session(KS_SESSION, _cfg(vad={"mode": "kiosk", "silence_ms": 0}, reasoning_effort="default"), [])
+    assert kiosk["turn_detection"]["silence_duration_ms"] == 500 and "reasoning" not in kiosk
+    custom = rewrite_session(KS_SESSION, _cfg(vad={"mode": "custom", "silence_ms": 200}), [])
+    assert custom["turn_detection"] == {"type": "server_vad", "silence_duration_ms": 200}
+
+
+def test_bearer_check_is_exact_and_fails_closed():
+    assert bearer_ok("Bearer s3cret", "s3cret")
+    assert not bearer_ok("Bearer nope", "s3cret")
+    assert not bearer_ok(None, "s3cret")
+    assert not bearer_ok("Bearer ", "")
+
+
+def test_clock_line_and_datetime_hint_stripping():
+    now = datetime(2026, 10, 15, 0, 1, tzinfo=ZoneInfo("America/New_York"))
+    line = clock_line("America/New_York", now)
+    assert line.startswith("Now: Thursday, Oct 15, 2026, 12:01 AM EDT. Tomorrow is Friday, Oct 16.")
+    text = "Be brief. Always call GetDateTime before answering about dates. Use the tools."
+    assert strip_datetime_tool_hints(text) == "Be brief. Use the tools."
+    assert "GetDateTime" in rewrite_session({"instructions": text}, _cfg(inject_datetime=False), [])["instructions"]
+    assert "get_datetime" not in {s["name"] for s in tool_specs()}
+
+
+def test_tablet_from_ks_location_line():
+    cache = HaCache(tablets=(Tablet("d1", "assist_satellite.attic", "Attic Dashboard", "attic", "Attic"),))
+    assert find_tablet(cache, name="Attic Dashboard").device_id == "d1"
+    assert find_tablet(cache, area="attic").device_id == "d1"
+    assert find_tablet(cache, name="Kitchen") is None
+
+
+# settings ---------------------------------------------------------------------
+def test_settings_validate_and_tablet_override(tmp_path):
+    with pytest.raises(SettingsError) as err:
+        validate({"reasoning_effort": "low", "memory": {"window_minutes": 0}, "bogus": 1})
+    assert len(err.value.errors) == 3
+    store = SettingsStore(tmp_path / "settings.json")
+    saved = store.save({"tools": {"locks": "off"}, "tablets": {"d1": {"reasoning_effort": "high", "memory_enabled": False}}})
+    assert saved["tools"]["locks"] == "off" and saved["tools"]["lights"] == "direct"
+    mine = effective(saved, "d1")
+    assert mine["reasoning_effort"] == "high" and mine["memory"]["enabled"] is False
+    assert effective(saved, "other")["reasoning_effort"] == "none"
+    assert "lock" not in {s["name"] for s in tool_specs(mine["tools"])}
+    assert SettingsStore(tmp_path / "settings.json").get()["tools"]["locks"] == "off"  # persisted
+
+
+# skills -----------------------------------------------------------------------
+GUARDED = {
+    "name": "notes",
+    "index": "notes (save, find)",
+    "help": "save {text}; find {query}.",
+    "aliases": ["note"],
+    "actions": [
+        {"name": "save", "aliases": ["add"], "backend": {"type": "script", "target": "script.note_save", "fixed": {"mode": "add"}},
+         "args": [{"name": "text", "required": True, "aliases": ["note"]}, {"name": "days", "aliases": [], "coerce": "day_list"}],
+         "guard": {"arg": "text", "pattern": r"\bpassword\b", "say": "I don't store passwords."}},
+        {"name": "find", "aliases": ["search"], "backend": {"type": "service", "target": "notes.search", "fixed": {}},
+         "args": [{"name": "query", "required": True, "aliases": ["q"]}]},
+    ],
+}
+
+
+def test_generic_seed_is_public_safe_and_media_is_direct():
+    from app.ks_relay.skills import SEED_PATH
+
+    skills = load_seed()
+    assert [s["name"] for s in skills] == ["media", "routine", "page", "dashboard"]
+    assert [t["name"] for t in preview(skills)["tools"]] == ["media"]  # skeletons start disabled
+    raw = SEED_PATH.read_text().lower()
+    for marker in ("person.", "device_tracker.", "@", "http://", "https://", "192.168."):
+        assert marker not in raw  # nothing tied to one household
+
+
+def test_skill_tool_description_and_promotion():
+    skills = load_seed() + [validate_skills([GUARDED])[0]]
+    specs = skill_specs(skills)
+    assert [t["name"] for t in specs] == ["media", "skill"]
+    assert specs[1]["description"] == "Skills (name, action, args): notes (save, find). action=help for details."
+    for s in skills:
+        if s["name"] == "media":
+            s["direct"] = False
+    specs = skill_specs(skills)
+    assert [t["name"] for t in specs] == ["skill"] and "media (play" in specs[0]["description"]
+
+
+def test_resolve_aliases_required_and_guard():
+    skills = validate_skills([GUARDED])
+    _, action, data = resolve(skills, "note", "add", {"note": "milk", "days": "mon, tue"})
+    assert action["name"] == "save" and data == {"text": "milk", "days": ["mon", "tue"]}
+    _, action, reply = resolve(skills, "notes", "find", {})
+    assert action is None and "missing: query" in reply["error"]
+    _, action, reply = resolve(skills, "notes", "save", {"text": "my password is 1234"})
+    assert action is None and reply["error_kind"] == "guard"
+    _, action, reply = resolve(skills, "notes", "help", {})
+    assert action is None and reply["ok"] and reply["actions"] == ["save", "find"]
+
+
+def test_import_from_ha_and_json(tmp_path):
+    description = "Skills (name, action, args): weather = forecast {day}; media. action=help for details."
+    merged, notes = merge_import(load_seed(), {"media": {"actions": ["play", "shuffle"], "help": "new help"}, "weather": {"actions": ["forecast"]}}, description)
+    media = next(s for s in merged if s["name"] == "media")
+    assert media["help"] == "new help"
+    assert next(a for a in media["actions"] if a["name"] == "shuffle")["backend"]["type"] == "ha_skill"
+    weather = next(s for s in merged if s["name"] == "weather")
+    assert weather["index"] == "weather = forecast {day}" and len(notes) == 4
+    store = SkillStore(tmp_path / "skills.json")
+    assert not store.saved
+    store.save(merged)
+    assert store.saved and len(SkillStore(tmp_path / "skills.json").get()) == len(merged)
+    from app.ks_relay.skills import merge_json
+
+    combined, notes = merge_json(merged, {"skills": [GUARDED]})
+    assert notes == ["added notes"] and combined[-1]["name"] == "notes"
+
+
+# memory -----------------------------------------------------------------------
+def test_memory_raw_fallback_and_context_block(tmp_path):
+    async def run():
+        memory = RelayMemory(tmp_path / "m.json", "")  # no key: summary falls back to raw
+        log = SessionLog(tablet="d1", area="Attic")
+        log.said("user", "Turn on the attic lights")
+        log.tool("turn_on", '{"domain":"light"}', '{"ok": true, "say": "Turned on the lights"}', True)
+        log.said("assistant", "Attic lights are on.")
+        cfg = MemorySettings()
+        memory.finish(log, cfg)
+        await memory.drain()
+        block = memory.context_block("d1", cfg, "America/New_York")
+        other = memory.context_block("d2", MemorySettings(house_window_minutes=0), "America/New_York")
+        cleared = await memory.clear("d1")
+        return block, other, cleared, RelayMemory(tmp_path / "m.json", "").items()
+
+    block, other, cleared, after = asyncio.run(run())
+    assert block.startswith("Recent context")
+    assert "tool: turn_on" in block and "Attic lights are on" in block
+    assert other == "" and cleared == 1 and after == []
+    assert "Earlier conversations" not in strip_ks_history(KS_SESSION["instructions"])
+    assert "Attic area" in strip_ks_history(KS_SESSION["instructions"])
+
+
+# end to end against a fake xAI ------------------------------------------------
+class FakeHa:
+    def __init__(self):
+        self.cache = HaCache(
+            tablets=(Tablet("d1", "assist_satellite.attic", "Attic Dashboard", "attic", "Attic"),),
+            time_zone="America/New_York",
+        )
+        self.intents = []
+        self.ready = True
+
+    async def intent(self, name, data, *, device_id="", satellite_id=""):
+        self.intents.append((name, data, device_id))
+        return {"response_type": "action_done", "speech": {"plain": {"speech": "Turned on the lights"}}, "data": {}}
+
+
+async def _fake_xai(ws, seen):
+    async for raw in ws:
+        msg = json.loads(raw)
+        seen.append(msg)
+        kind = msg["type"]
+        if kind == "session.update":
+            await ws.send(json.dumps({"type": "session.updated", "session": msg["session"]}))
+        elif kind == "input_audio_buffer.append" and msg["audio"] in ("bGlnaHQ=", "Ynll", "bXVzaWM="):
+            name, args = {"bGlnaHQ=": ("turn_on", "{}"), "Ynll": ("end_conversation", "{}"), "bXVzaWM=": ("media", '{"action":"pause"}')}[msg["audio"]]
+            await ws.send(json.dumps({"type": "input_audio_buffer.speech_stopped", "item_id": "u1"}))
+            await ws.send(json.dumps({"type": "response.created", "response": {"id": "r1"}}))
+            item = {"id": "f1", "type": "function_call", "name": name, "call_id": "c1", "arguments": args}
+            await ws.send(json.dumps({"type": "response.output_item.added", "response_id": "r1", "item": item}))
+            await ws.send(json.dumps({"type": "response.function_call_arguments.done", "response_id": "r1",
+                                      "item_id": "f1", "call_id": "c1", "name": name, "arguments": args}))
+            await ws.send(json.dumps({"type": "response.done", "response": {"id": "r1", "output": [item]}}))
+        elif kind == "response.create":
+            await ws.send(json.dumps({"type": "response.created", "response": {"id": "r2"}}))
+            await ws.send(json.dumps({"type": "response.output_audio.delta", "item_id": "a1", "delta": "AAAA"}))
+            usage = {"total_tokens": 30, "input_tokens": 20, "output_tokens": 10,
+                     "input_token_details": {"text_tokens": 15, "audio_tokens": 5, "cached_tokens": 4},
+                     "output_token_details": {"text_tokens": 2, "audio_tokens": 8}}
+            await ws.send(json.dumps({"type": "response.done", "response": {"id": "r2", "output": [], "usage": usage}}))
+
+
+async def _round_trip(audio: str, tmp_path):
+    seen, ha = [], FakeHa()
+    context = RelayContext(ha=ha, settings=SettingsStore(tmp_path / "s.json"), skills=SkillStore(tmp_path / "k.json"),
+                           memory=RelayMemory(tmp_path / "m.json", ""), stats=StatsStore(tmp_path / "stats.db"))
+    async with serve(lambda ws: _fake_xai(ws, seen), "127.0.0.1", 0) as upstream:
+        port = upstream.sockets[0].getsockname()[1]
+        settings = RelaySettings(xai_api_key="xai-test", secret="s3cret", upstream_url=f"ws://127.0.0.1:{port}/v1/realtime")
+
+        async def handler(ks):
+            await RelaySession(ks, settings, context, query={"model": ["grok-voice-latest"]}).run()
+
+        async with serve(handler, "127.0.0.1", 0) as relay:
+            rport = relay.sockets[0].getsockname()[1]
+            async with connect(f"ws://127.0.0.1:{rport}/") as ks:
+                await ks.send(json.dumps({"type": "session.update", "session": KS_SESSION}))
+                assert json.loads(await ks.recv())["type"] == "session.updated"
+                await ks.send(json.dumps({"type": "input_audio_buffer.append", "audio": audio}))
+                got = []
+                while True:
+                    try:
+                        got.append(json.loads(await asyncio.wait_for(ks.recv(), 1.0)))
+                    except asyncio.TimeoutError:
+                        break
+        await asyncio.sleep(0.1)
+    return got, seen, ha, context
+
+
+def test_relay_tool_runs_server_side_and_kiosk_only_hears_the_answer(tmp_path):
+    got, seen, ha, context = asyncio.run(_round_trip("bGlnaHQ=", tmp_path))
+    kinds = [m["type"] for m in got]
+    assert "response.function_call_arguments.done" not in kinds
+    assert "response.output_item.added" not in kinds
+    assert kinds.count("response.done") == 1
+    assert "response.output_audio.delta" in kinds
+    assert ha.intents == [("HassTurnOn", {"area": "Attic"}, "d1")]
+    report = context.report()
+    assert report["totals"]["today"]["sessions"] == 1
+    row = report["recent"][0]
+    assert row["tablet"] == "Attic Dashboard" and row["turns"] == 1 and [t["name"] for t in row["tools"]] == ["turn_on"]
+    assert row["usage"]["input_audio_tokens"] == 5 and row["usage"]["output_audio_tokens"] == 8 and row["usage"]["input_tokens"] == 20
+    assert row["realtime_cost"] > 0 and row["ready_ms"] is not None
+    sent = [m["type"] for m in seen]
+    assert sent.index("conversation.item.create") < sent.index("response.create")
+    session = seen[0]["session"]
+    assert session["reasoning"] == {"effort": "none"}
+    assert "silence_duration_ms" not in session["turn_detection"]
+    assert "Now: " in session["instructions"]
+    assert "Earlier conversations" not in session["instructions"]  # relay memory on: KS history dropped
+    recent = context.status.snapshot()["recent"][0]
+    assert recent["tablet"] == "Attic Dashboard" and recent["tools"][0]["name"] == "turn_on"
+
+
+def test_direct_media_skill_runs_relay_handler(tmp_path):
+    got, seen, ha, _ = asyncio.run(_round_trip("bXVzaWM=", tmp_path))
+    assert ha.intents == [("HassMediaPause", {"area": "Attic"}, "d1")]
+
+
+def test_end_conversation_reaches_the_kiosk(tmp_path):
+    got, seen, ha, _ = asyncio.run(_round_trip("Ynll", tmp_path))
+    calls = [m for m in got if m["type"] == "response.function_call_arguments.done"]
+    assert [c["name"] for c in calls] == ["end_conversation"]
+    assert ha.intents == []
+
+
+def test_relay_server_rejects_a_wrong_secret(tmp_path):
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+
+    async def run():
+        settings = RelaySettings(xai_api_key="x", secret="right", port=port, host="127.0.0.1")
+        context = RelayContext(ha=FakeHa(), settings=SettingsStore(tmp_path / "s.json"), skills=SkillStore(tmp_path / "k.json"))
+        task = asyncio.create_task(serve_relay(settings, context))
+        await asyncio.sleep(0.3)
+        status = None
+        try:
+            async with connect(f"ws://127.0.0.1:{port}/v1/realtime", additional_headers={"Authorization": "Bearer wrong"}):
+                pass
+        except InvalidStatus as exc:
+            status = exc.response.status_code
+        task.cancel()
+        return status
+
+    assert asyncio.run(run()) == 401
+
+
+def test_panel_ops_validate_and_never_send_secrets(tmp_path):
+    context = RelayContext(ha=FakeHa(), settings=SettingsStore(tmp_path / "s.json"), skills=SkillStore(tmp_path / "k.json"),
+                           memory=RelayMemory(tmp_path / "m.json", "xai-secret-key"))
+    context.ha.cache.services = {}
+
+    async def run():
+        loaded = await admin.handle(context, {"op": "load"})
+        bad = await admin.handle(context, {"op": "save_settings", "settings": {"vad": {"mode": "fast"}}})
+        good = await admin.handle(context, {"op": "save_settings", "settings": {"reasoning_effort": "high"}})
+        skills = loaded["skills"]
+        skills[0]["actions"][0]["backend"]["target"] = "not a script"
+        bad_skill = await admin.handle(context, {"op": "save_skills", "skills": skills})
+        return loaded, bad, good, bad_skill
+
+    loaded, bad, good, bad_skill = asyncio.run(run())
+    assert "xai-secret-key" not in json.dumps(loaded, default=str)
+    assert bad["errors"] and good["settings"]["reasoning_effort"] == "high"
+    assert any("relay handler" in e for e in bad_skill["errors"])
+
+
+def test_panel_page_is_served_on_relay_path():
+    from websockets.datastructures import Headers
+    from websockets.http11 import Request
+
+    from app.server import is_relay_panel_socket
+    from app.static import process_http_request
+
+    response = process_http_request(Request("/relay/", Headers()))
+    assert response.status_code == 200 and b"Kiosk Satellite relay" in response.body
+
+    class Sock:
+        request = Request("/relay/ws", Headers())
+
+    assert is_relay_panel_socket(Sock())
+
+
+# dates ---------------------------------------------------------------------
+def test_default_date_line_is_the_measured_wording():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from app.ks_relay.dates import date_line
+
+    now = datetime(2026, 10, 15, 0, 10, tzinfo=ZoneInfo("America/New_York"))
+    assert date_line("America/New_York", "", now) == (
+        "Now: Thursday, Oct 15, 2026, 12:10 AM EDT. Tomorrow is Friday, Oct 16. Today = Thursday 2026-10-15. "
+        "Tonight means today's date. Always resolve relative dates against this before answering or calling tools; "
+        "pass explicit ISO dates to tools; when comparing tool results, match the ISO date exactly."
+    )
+    assert date_line("America/New_York", "It is {weekday} {date}.", now) == "It is Thursday 2026-10-15."
+    assert date_line("America/New_York", "bad {nope}", now).startswith("Now: Thursday")
+
+
+def test_annotate_tool_dates_utc_and_plain():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from app.ks_relay.dates import annotate_dates
+
+    now = datetime(2026, 10, 15, 21, 0, tzinfo=ZoneInfo("America/New_York"))
+    out = annotate_dates('{"date": "2026-10-16T00:30Z", "start": "2026-10-16", "end": "2026-10-17"}', "America/New_York", now)
+    assert '"2026-10-16T00:30Z (local Thursday 2026-10-15 8:30 PM, today)"' in out
+    assert '"2026-10-16 (Friday, tomorrow)"' in out and '"2026-10-17 (Saturday, in 2 days)"' in out
+    assert annotate_dates("no dates", "America/New_York", now) == "no dates"
+
+
+def test_date_settings_validate():
+    import pytest
+
+    from app.ks_relay.settings_store import SettingsError, validate
+
+    merged = validate({"date_template": "Today {date}", "annotate_tool_dates": False})
+    assert merged["date_template"] == "Today {date}" and merged["annotate_tool_dates"] is False
+    with pytest.raises(SettingsError) as err:
+        validate({"date_template": "Today {when}"})
+    assert "unknown field" in err.value.errors[0]
+
+
+# stats -----------------------------------------------------------------------
+def test_usage_flattening_and_percentiles():
+    total = add_usage({}, {"input_tokens": 3, "input_token_details": {"audio_tokens": 2, "cached_tokens": 1}, "flag": True})
+    add_usage(total, {"input_tokens": 1, "output_token_details": {"audio_tokens": 4}})
+    assert total == {"input_tokens": 4, "input_audio_tokens": 2, "input_cached_tokens": 1, "output_audio_tokens": 4}
+    assert percentile([100, 200, 300, 400, 500, 600, 700, 800, 900, 1000], 90) == 900
+    assert percentile([], 90) is None
+
+
+def test_stats_totals_daily_tablets_and_retention(tmp_path):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    zone = ZoneInfo("America/New_York")
+    now = datetime(2026, 10, 15, 21, 0, tzinfo=zone).timestamp()
+    store = StatsStore(tmp_path / "stats.db")
+    costs = {"realtime_per_min": 0.08, "summary_input_per_m": 1.25, "summary_output_per_m": 2.5, "retention_days": 90}
+
+    def ses(started, minutes, tablet, lat):
+        return {"tablet": tablet, "device_id": tablet, "started": started, "ended": started + minutes * 60, "ready_ms": 300,
+                "turns": lat, "tools": [{"name": "turn_on", "ok": True, "ms": 40}], "usage": {"input_tokens": 5}}
+
+    assert store.record_session(ses(now - 3600, 1.5, "a", [500, 700]), costs)["realtime_cost"] == 0.12
+    store.record_session(ses(now - 3 * 86400, 2, "b", [900]), costs)
+    store.record_session(ses(now - 20 * 86400, 1, "a", [400]), costs)
+    store.record_summary("a", "grok-4.20-0309-non-reasoning", 400_000, 100_000, costs, ts=now - 60)  # 0.5 + 0.25
+    report = store.report("America/New_York", now=now, names={"a": "Attic"})
+    today, week, month = report["totals"]["today"], report["totals"]["7d"], report["totals"]["30d"]
+    assert (today["sessions"], today["minutes"], today["realtime_cost"], today["summary_cost"]) == (1, 1.5, 0.12, 0.75)
+    assert today["cost"] == 0.87 and today["latency_median"] == 600 and today["tool_calls"] == 1
+    assert week["sessions"] == 2 and month["sessions"] == 3 and month["realtime_cost"] == 0.36
+    assert len(report["daily"]) == 30 and report["daily"][-1]["date"] == "2026-10-15" and report["daily"][-1]["summary_cost"] == 0.75
+    attic = next(t for t in report["tablets"] if t["tablet"] == "Attic")
+    assert attic["sessions"] == 2 and attic["summary_cost"] == 0.75 and attic["latency_p90"] == 700
+    assert report["recent"][0]["tablet"] == "Attic" and report["recent"][0]["latency_median"] == 600
+    store.record_session(ses(time.time(), 1, "c", []), {**costs, "retention_days": 1})
+    assert not store._rows("SELECT 1 FROM sessions WHERE started < ?", (time.time() - 86400,))  # older rows pruned
+
+
+def test_sensor_states_and_cost_settings():
+    from app.ks_relay.settings_store import SettingsError, validate
+
+    states = dict((e, (s, a)) for e, s, a in sensor_states({"cost": 0.87, "sessions": 2, "minutes": 3.5, "latency_median": None,
+                                                            "realtime_cost": 0.12, "summary_cost": 0.75, "latency_p90": None}))
+    assert states["sensor.grok_relay_cost_today"][0] == 0.87 and states["sensor.grok_relay_cost_today"][1]["estimate"] is True
+    assert states["sensor.grok_relay_latency_median"][0] == "unknown"
+    merged = validate({"costs": {"realtime_per_min": 0.05}, "ha_sensors": True})
+    assert merged["costs"]["realtime_per_min"] == 0.05 and merged["costs"]["summary_input_per_m"] == 1.25 and merged["ha_sensors"]
+    import pytest
+
+    with pytest.raises(SettingsError):
+        validate({"costs": {"realtime_per_min": -1}})
+
+
+def test_summary_usage_is_priced(tmp_path):
+    import httpx
+
+    def reply(request):
+        return httpx.Response(200, json={"choices": [{"message": {"content": "Lights on in the attic."}}],
+                                         "usage": {"prompt_tokens": 1000, "completion_tokens": 100}})
+
+    async def run():
+        http = httpx.AsyncClient(transport=httpx.MockTransport(reply))
+        memory = RelayMemory(tmp_path / "m.json", "xai-test", http=http)
+        context = RelayContext(ha=FakeHa(), settings=SettingsStore(tmp_path / "s.json"), skills=SkillStore(tmp_path / "k.json"),
+                               memory=memory, stats=StatsStore(tmp_path / "stats.db"))
+        log = SessionLog(tablet="d1", area="Attic")
+        log.said("user", "Turn on the attic lights")
+        log.said("assistant", "Done.")
+        memory.finish(log, MemorySettings())
+        await memory.drain()
+        await http.aclose()
+        return context.report()
+
+    report = asyncio.run(run())
+    assert report["totals"]["today"]["summary_cost"] == round(1000 / 1e6 * 1.25 + 100 / 1e6 * 2.5, 4)
+    assert report["tablets"][0]["tablet"] == "Attic Dashboard"
+
+
+def test_realtime_basis_billable_audio(tmp_path):
+    store = StatsStore(tmp_path / "stats.db")
+    entry = {"tablet": "a", "started": 0.0 + time.time() - 120, "ended": time.time(), "usage": {"billable_audio_seconds": 30}}
+    assert store.record_session(entry, {"realtime_per_min": 0.08})["realtime_cost"] == 0.16
+    assert store.record_session(entry, {"realtime_per_min": 0.08, "realtime_basis": "billable_audio"})["realtime_cost"] == 0.04

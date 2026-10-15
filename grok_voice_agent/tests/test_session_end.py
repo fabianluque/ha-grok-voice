@@ -25,8 +25,8 @@ class FakeHttp:
                     {
                         "time_zone": "America/New_York",
                         "location_name": "Home",
-                        "latitude": 40.7155,
-                        "longitude": -74.3646,
+                        "latitude": 39.7817,
+                        "longitude": -89.6501,
                         "country": "US",
                     }
                 ),
@@ -38,8 +38,8 @@ class FakeHttp:
                     {
                         "attributes": {
                             "friendly_name": "Home",
-                            "latitude": 40.7155,
-                            "longitude": -74.3646,
+                            "latitude": 39.7817,
+                            "longitude": -89.6501,
                         }
                     }
                 ),
@@ -91,7 +91,7 @@ def _settings(idle: float = 0.2, **overrides) -> Settings:
         allowlist=frozenset({"HassTurnOn"}),
         idle_timeout_seconds=idle,
         ha_api_url=HOME_ASSISTANT_API_URL,
-        home_location="Summit, NJ",
+        home_location="Springfield, IL",
         conversation_memory_ttl_seconds=480,
     )
     values.update(overrides)
@@ -370,9 +370,9 @@ def test_session_update_injects_live_date_and_home_location():
     sent = asyncio.run(run())
     update = next(json.loads(item) for item in sent if isinstance(item, str) and "session.update" in item)
     text = update["session"]["instructions"]
-    assert "The user lives in Summit, NJ" in text
-    assert "Summit, NJ" in text
-    assert "Summit, New Jersey" in text
+    assert "The user lives in Springfield, IL" in text
+    assert "Springfield, IL" in text
+    assert "Springfield, Illinois" in text
     assert "where they live" in text
     assert "America/New_York" in text
     assert "current local date and time" in text
@@ -399,8 +399,8 @@ def test_custom_instructions_do_not_drop_home_location():
     update = next(json.loads(item) for item in sent if isinstance(item, str) and "session.update" in item)
     text = update["session"]["instructions"]
     assert "You are a pirate. Keep answers salty." in text
-    assert "The user lives in Summit, NJ" in text
-    assert "Summit, NJ" in text
+    assert "The user lives in Springfield, IL" in text
+    assert "Springfield, IL" in text
     assert "current local date and time" in text
 
 
@@ -436,7 +436,7 @@ def test_idle_keeps_short_history_for_the_same_device():
             json.dumps(
                 {
                     "type": "response.output_audio_transcript.done",
-                    "transcript": "A concert in Summit on Saturday.",
+                    "transcript": "A concert in Springfield on Saturday.",
                 }
             )
         )
@@ -467,7 +467,7 @@ def test_idle_keeps_short_history_for_the_same_device():
     update = next(json.loads(item) for item in sent if isinstance(item, str) and "session.update" in item)
     text = update["session"]["instructions"]
     assert "what's happening this weekend" in text
-    assert "concert in Summit" in text
+    assert "concert in Springfield" in text
     items = [json.loads(item) for item in sent if isinstance(item, str) and "conversation.item.create" in item]
     user_items = [item for item in items if item.get("item", {}).get("role") == "user"]
     assert any("what's happening this weekend" in str(item) for item in user_items)
