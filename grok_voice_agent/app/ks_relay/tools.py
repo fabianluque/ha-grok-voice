@@ -146,6 +146,10 @@ def tool_specs(families: dict | None = None) -> list[dict]:
 
 
 TOOL_NAMES = frozenset(spec["name"] for spec in tool_specs())
+# Writes to the house: a successful call is a finished home command (relay hang-up policy).
+HOME_WRITE_TOOLS = frozenset({"turn_on", "turn_off", "set_light", "open_close", "lock", "climate", "fan_speed", "todo"})
+# Tools that retry once without the tablet's room when nothing matched in it.
+AREA_FALLBACK_TOOLS = HOME_WRITE_TOOLS
 
 
 def _clean(args: dict, *keys: str) -> dict:
@@ -247,7 +251,51 @@ class RelayTools:
         handler = getattr(self, f"_t_{name}", None)
         if handler is None:
             return {"ok": False, "error": f"unknown tool {name}"}
-        return await handler(args)
+        result = await handler(args)
+        if name not in AREA_FALLBACK_TOOLS or not _failed(result):
+            return result
+        retry = self._without_tablet_area(name, args)
+        if retry is None:
+            return result
+        again = await handler(retry)
+        if _failed(again):
+            return result
+        log.info("tool %s matched only without the tablet's area", name)
+        return {**again, "area_dropped": self.tablet.area_name if self.tablet else ""}
+
+    def _tablet_area_words(self) -> set[str]:
+        if not self.tablet:
+            return set()
+        return {w for w in (_words(self.tablet.area_name), _words(self.tablet.area_id)) if w}
+
+    def _without_tablet_area(self, name: str, args: dict) -> dict | None:
+        """The same call without the tablet's room, or None when there is nothing safe to retry.
+
+        Only the tablet's own room is dropped: the relay injects it (``_with_area``)
+        and tells the model to default to it, so a home command for a device in
+        another room ("left garage", "grocery list") arrives with the wrong area.
+        An area the user named that is not this tablet's room stays strict. A
+        name (or list) must remain so the retry never widens to the whole house.
+        """
+        rooms = self._tablet_area_words()
+        if not rooms:
+            return None
+        if name == "todo":
+            list_name = _words(args.get("list"))
+            if not list_name:
+                return None
+            stripped = list_name
+            for room in rooms:
+                stripped = re.sub(rf"(?:^| ){re.escape(room)}(?= |$)", " ", stripped).strip()
+            if stripped == list_name:
+                return None
+            rest = {k: v for k, v in args.items() if k not in ("list", "area")}
+            if stripped and stripped != "list":
+                rest["list"] = stripped
+            return rest
+        if not args.get("name") or _words(args.get("area")) not in rooms:
+            return None
+        return {k: v for k, v in args.items() if k != "area"}
 
     async def _t_turn_on(self, args):
         data = _clean(self._with_area(args), "name", "area")
@@ -501,6 +549,11 @@ class RelayTools:
 
 def _words(text: object) -> str:
     return re.sub(r"[^a-z0-9]+", " ", str(text or "").lower()).strip()
+
+
+def _failed(result: object) -> bool:
+    """A failed call that changed nothing (no entity reported done)."""
+    return isinstance(result, dict) and result.get("ok") is False and not result.get("done")
 
 
 async def run_tool(tools: RelayTools, name: str, arguments: str, timeout: float) -> tuple[str, bool, bool]:

@@ -13,6 +13,14 @@ its API key field. For each KS socket the relay:
 
 While a relay tool runs, the ``response.done`` of the answer that called it is
 held back, so KS keeps "responding" and its idle countdown does not run.
+
+Assistant transcripts are cleaned of internal markup before KS sees them; a
+reply that leaks markup or repeats a sentence is cancelled at that point.
+After a successful home command (or a "thanks, that's all") the relay ends the
+conversation itself when Grok does not: it sends KS an ``end_conversation``
+call of its own (``relay_end_*``) before the answer's ``response.done``, which
+KS runs locally like any other end, and drops KS's output for it. Every event
+the relay sends xAI carries an ``event_id`` starting with ``relay_``.
 """
 
 from __future__ import annotations
@@ -35,6 +43,7 @@ from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed
 
 from app.auth import peer_host, redact
+from app.grok_session import is_closing_utterance, is_open_followup
 from app.ks_relay.dates import annotate_dates, clock_time, date_line  # noqa: F401 - clock_time re-exported
 from app.ks_relay.ha import HaLink, identify_tablet, usable_ipv4
 from app.ks_relay.memory import (
@@ -57,7 +66,8 @@ from app.ks_relay.timeline import (
     pcm_rate,
     sanitize,
 )
-from app.ks_relay.tools import END_CONVERSATION, RelayTools, run_tool, tool_specs
+from app.ks_relay.tools import END_CONVERSATION, HOME_WRITE_TOOLS, RelayTools, run_tool, tool_specs
+from app.ks_relay.transcript import TranscriptFilter
 
 log = logging.getLogger("grok_voice.ks_relay")
 
@@ -66,7 +76,30 @@ _MODEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 _DEVICE_RE = re.compile(r'You run on a device named "([^"]+)"')
 _AREA_RE = re.compile(r"The device is in the (.+?) area\.")
 HELD_DONE_LIMIT = 45.0
+PENDING_CREATE_LIMIT = 10.0
 CLOCK_REFRESH_SECONDS = 600.0
+RELAY_EVENT_PREFIX = "relay_"
+RELAY_END_PREFIX = "relay_end_"
+HANGUP_INSTRUCTION = (
+    "Action succeeded. Confirm once in one short sentence, then call end_conversation. Do not repeat anything."
+)
+_AUDIO_DELTAS = frozenset({"response.output_audio.delta", "response.audio.delta"})
+# delta type -> (done type, text field of the done event)
+_TEXT_DELTAS = {
+    "response.output_audio_transcript.delta": ("response.output_audio_transcript.done", "transcript"),
+    "response.audio_transcript.delta": ("response.audio_transcript.done", "transcript"),
+    "response.output_text.delta": ("response.output_text.done", "text"),
+    "response.text.delta": ("response.text.done", "text"),
+}
+_TEXT_DONES = {done: field_name for done, field_name in _TEXT_DELTAS.values()}
+
+
+def race_error(code: str, message: str) -> bool:
+    """Protocol races that are harmless: a response already running, an item or call already gone."""
+    text = f"{code} {message}".lower().replace("_", " ")
+    if "active response" in text:
+        return True
+    return "not found" in text and ("item" in text or "call id" in text)
 _DATETIME_TOOL_RE = re.compile(
     r"(?:^|(?<=[.!?\n]))[ \t]*[^.!?\n]*\b(?:GetDateTime|get_datetime|HassGetCurrentTime|HassGetCurrentDate)\b[^.!?\n]*[.!?]?"
 )
@@ -217,7 +250,19 @@ def rewrite_session(session: dict, cfg: dict, tools: list[dict], *, extra_instru
 
 
 def _new_entry() -> dict:
-    return {"ours": [], "ks": False, "end": False}
+    """One response: relay tool tasks, whether KS has a call in it, and its output state."""
+    return {
+        "ours": [],
+        "ks": False,
+        "end": False,
+        "id": "",
+        "hangup": False,  # relay follow-up after successful home writes
+        "drop": False,  # started after end_conversation: never reaches KS
+        "cut": False,  # leak or repeat: cancelled, later output not forwarded
+        "done_sent": False,  # KS already has this reply's transcript done
+        "text": "",
+        "filter": TranscriptFilter(),
+    }
 
 
 class RelaySession:
@@ -245,6 +290,16 @@ class RelaySession:
         self.first_audio_logged = True
         self.label = "?"
         self.pending_create_from_relay = False
+        self.pending_create_at = 0.0
+        self.pending_hangup = False
+        self.ks_tool_names = frozenset({END_CONVERSATION})
+        self.session_instructions = ""
+        self.ended = False  # end_conversation (KS's or the relay's) was called
+        self.relay_end_calls: set[str] = set()
+        self.dismiss_pending = False
+        self.last_done_at = 0.0
+        self.last_text = ""
+        self._relay_seq = 0
         self.our_call_ids: set[str] = set()
         self.instructions_base: str | None = None
         self.clock_text = ""
@@ -383,8 +438,15 @@ class RelaySession:
                 log.info("[%s] session.update from KS %dms, %d tools", self.label, self.ms(), len(message["session"]["tools"]))
                 self.mark("session.update", tools=len(message["session"]["tools"]))
                 self._touch()
+            elif kind == "conversation.item.create" and self._relay_end_output(message):
+                log.info("[%s] dropped KS output for the relay's end_conversation", self.label)
+                continue
             upstream = self.upstream or await upstream_task
             await upstream.send(raw)
+
+    def _relay_end_output(self, message: dict) -> bool:
+        item = message.get("item") if isinstance(message.get("item"), dict) else {}
+        return item.get("type") == "function_call_output" and str(item.get("call_id")) in self.relay_end_calls
 
     def _remote_ip(self) -> str:
         return usable_ipv4(peer_host(getattr(self.ks, "remote_address", None)))
@@ -439,6 +501,12 @@ class RelaySession:
         specs = [*tool_specs(self.cfg.get("tools")), *skill_specs(skills)]
         self.tool_names = frozenset(spec["name"] for spec in specs)
         rewritten = rewrite_session(session, self.cfg, specs, extra_instructions="\n".join(extra))
+        self.ks_tool_names = frozenset(
+            str(t.get("name"))
+            for t in rewritten["tools"]
+            if isinstance(t, dict) and t.get("type") == "function" and t.get("name") not in self.tool_names
+        )
+        self.session_instructions = rewritten["instructions"]
         if self.cfg.get("inject_datetime", True):
             text = rewritten["instructions"]
             self.instructions_base = text[: -len(self.clock_text)].rstrip() if text.endswith(self.clock_text) else text
@@ -461,9 +529,20 @@ class RelaySession:
             self.hide_session_updated += 1
             self.clock_text = clock_line(self.ha.cache.time_zone, template=self.cfg.get("date_template", ""))
             instructions = f"{self.instructions_base}\n{self.clock_text}"
-            await self.upstream.send(json.dumps({"type": "session.update", "session": {"instructions": instructions}}))
+            self.session_instructions = instructions
+            await self._send_up({"type": "session.update", "session": {"instructions": instructions}})
             log.info("[%s] clock refreshed in instructions", self.label)
             self.mark("clock_refresh")
+
+    def _relay_id(self) -> str:
+        self._relay_seq += 1
+        return f"{RELAY_EVENT_PREFIX}{self._relay_seq}"
+
+    async def _send_up(self, event: dict) -> str:
+        """Send a relay-originated event to xAI, tagged so its errors are recognized as ours."""
+        event_id = self._relay_id()
+        await self.upstream.send(json.dumps({**event, "event_id": event_id}))
+        return event_id
 
     # xAI -> KS ------------------------------------------------------------
     async def _ks_send(self, event: dict | str) -> None:
@@ -472,6 +551,13 @@ class RelaySession:
 
     def _ours(self, name: object) -> bool:
         return isinstance(name, str) and name in self.tool_names
+
+    def _tablet_call(self, name: object) -> bool:
+        """A function KS runs itself (its end_conversation). xAI's web_search / x_search are not."""
+        return isinstance(name, str) and name in self.ks_tool_names
+
+    def _can_end(self) -> bool:
+        return END_CONVERSATION in self.ks_tool_names and not self.ended
 
     async def _pump_upstream(self) -> None:
         async for raw in self.upstream:
@@ -488,6 +574,9 @@ class RelaySession:
                 await self._ks_send(raw)
             elif isinstance(forward, dict):
                 await self._ks_send(forward)
+            elif isinstance(forward, list):
+                for item in forward:
+                    await self._ks_send(raw if item is True else item)
             self._check_held()
 
     async def _on_upstream(self, event: dict):
@@ -506,12 +595,11 @@ class RelaySession:
                 self.record.said("user", text)
             if text.strip():
                 self.mark("transcript", role="user", text=sanitize(text, self._secrets(), MAX_TRANSCRIPT))
-        elif kind in ("response.output_audio_transcript.done", "response.audio_transcript.done"):
-            text = str(event.get("transcript") or "")
-            if self.record is not None:
-                self.record.said("assistant", text)
-            if text.strip():
-                self.mark("transcript", role="assistant", text=sanitize(text, self._secrets(), MAX_TRANSCRIPT))
+                if is_closing_utterance(text):
+                    end = self._on_dismiss()
+                    if end is not None:
+                        return [True, end]
+            return True
         if kind == "response.done":
             response = event.get("response") or {}
             usage = response.get("usage")
@@ -532,8 +620,17 @@ class RelaySession:
                 output=compact_response_output(response.get("output")),
             )
             self._touch()
+            self.last_done_at = now_m
+            self.pending_create_from_relay = False
+        current = self.current
+        if current is not None and current["drop"] and kind.startswith("response.") and kind != "response.created":
+            if kind == "response.done":
+                self.active_response = False
+                self.current = None
+            return False
         if kind == "input_audio_buffer.speech_started":
             self._touch()
+            self.dismiss_pending = False
             self.mark("speech_started")
             return True
         if kind == "input_audio_buffer.speech_stopped":
@@ -542,8 +639,10 @@ class RelaySession:
             self._touch()
             self.mark("speech_stopped")
             return True
-        if kind in ("response.output_audio.delta", "response.audio.delta"):
+        if kind in _AUDIO_DELTAS:
             self._audio_s += b64_pcm16_seconds(str(event.get("delta") or ""), self._pcm_rate)
+            if current is not None and current["cut"]:
+                return False
             if not self.first_audio_logged:
                 self.first_audio_logged = True
                 self._first_audio_at = time.monotonic()
@@ -561,31 +660,81 @@ class RelaySession:
                 self.mark("first_audio", e2s_ms=e2s)
                 self._touch()
             return True
+        if kind in _TEXT_DELTAS:
+            if current is None:
+                return True
+            if current["cut"]:
+                return False
+            text, cut = current["filter"].feed(str(event.get("delta") or ""))
+            out: list = [{**event, "delta": text}] if text else []
+            if cut:
+                out.extend(await self._cut(current, event))
+            return out or False
+        if kind in _TEXT_DONES:
+            entry = current if current is not None else _new_entry()
+            if entry["done_sent"]:
+                return False
+            field_name = _TEXT_DONES[kind]
+            given = str(event.get(field_name) or "")
+            text = entry["filter"].final(given)
+            if entry["filter"].cut and not entry["cut"]:
+                entry["cut"] = True
+                self.mark("transcript_cut", reason=entry["filter"].reason)
+                log.warning("[%s] assistant reply cut (%s) at done", self.label, entry["filter"].reason)
+            self._assistant_said(entry, text)
+            return True if text == given else {**event, field_name: text}
         if kind == "response.created":
             self.active_response = True
-            self.current = _new_entry()
+            entry = _new_entry()
+            entry["id"] = str((event.get("response") or {}).get("id") or "")
+            self.current = entry
             self._response_at = time.monotonic()
             self._first_audio_at = None
             self._audio_s = 0.0
             self._turn_e2s = None
             self._unknown_types = set()
-            if self.held_done is not None:
-                self.held_done = None  # the follow-up answer continues the held one
-                self.pending_create_from_relay = False
+            followup = self.pending_create_from_relay
+            self.held_done = None  # a follow-up answer continues the held one
+            self.pending_create_from_relay = False
+            entry["hangup"] = followup and self.pending_hangup
+            self.pending_hangup = False
+            if self.ended:
+                entry["drop"] = True
+                self.mark("response_dropped", response_id=entry["id"] or None)
+                log.info("[%s] dropped a response that started after end_conversation", self.label)
+                if self.upstream is not None:
+                    await self._send_up({"type": "response.cancel", **({"response_id": entry["id"]} if entry["id"] else {})})
+                return False
             return True
         if kind == "error":
-            err = event.get("error") or {}
+            err = event.get("error") if isinstance(event.get("error"), dict) else {}
             code = str(err.get("code") or "")
-            self.mark("error", code=code, message=sanitize(str(err.get("message") or "")[:300], self._secrets(), 300))
-            if self.pending_create_from_relay and "active_response" in code:
-                self.pending_create_from_relay = False
+            message = str(err.get("message") or "")
+            event_id = str(err.get("event_id") or event.get("event_id") or "")
+            ours = event_id.startswith(RELAY_EVENT_PREFIX)
+            # A race on an event KS sent itself (its turn's response.create) stays KS's to handle.
+            race = race_error(code, message) and (ours or not event_id)
+            self.mark(
+                "error",
+                code=code,
+                message=sanitize(message[:300], self._secrets(), 300),
+                event_id=event_id or None,
+                hidden=True if ours or race else None,
+            )
+            if ours or race:
+                log.info("[%s] xAI error kept from KS (%s): %s", self.label, "race" if race else "relay event", code)
+                if race:
+                    self.pending_create_from_relay = False
+                    self.pending_hangup = False
+                elif self.held_done is not None:
+                    await self._release_held()
                 return False
             if self.held_done is not None:
                 await self._release_held()
             return True
 
         item = event.get("item") if isinstance(event.get("item"), dict) else None
-        entry = self.current if self.current is not None else _new_entry()
+        entry = current if current is not None else _new_entry()
         self.current = entry
         if kind == "response.output_item.added" and item:
             item_type = str(item.get("type") or "")
@@ -595,20 +744,23 @@ class RelaySession:
                 if self._ours(item.get("name")):
                     self.hidden_items.add(str(item.get("id")))
                     return False
-                entry["ks"] = True
-                if item.get("name") == END_CONVERSATION:
-                    entry["end"] = True
+                if self._tablet_call(item.get("name")):
+                    entry["ks"] = True
+                    entry["end"] = entry["end"] or item.get("name") == END_CONVERSATION
                 return True
         if kind == "response.function_call_arguments.delta" and str(event.get("item_id")) in self.hidden_items:
             return False
         if kind == "response.function_call_arguments.done":
-            if not self._ours(event.get("name")):
-                if event.get("name") == END_CONVERSATION:
+            name = event.get("name")
+            if not self._ours(name):
+                if name == END_CONVERSATION:
                     entry["ks"] = entry["end"] = True
+                    self.ended = True
                     self.end_reason = "end_conversation"
                     self.mark("end_conversation")
-                elif event.get("name"):
+                elif self._tablet_call(name):
                     entry["ks"] = True
+                elif name:
                     raw_args = event.get("arguments") or ""
                     try:
                         parsed_args = json.loads(raw_args) if raw_args else {}
@@ -616,7 +768,7 @@ class RelaySession:
                         parsed_args = raw_args
                     self.mark(
                         "provider_tool",
-                        name=str(event.get("name")),
+                        name=str(name),
                         call_id=event.get("call_id"),
                         arguments=sanitize(parsed_args, self._secrets(), 500),
                     )
@@ -638,8 +790,10 @@ class RelaySession:
         if kind == "response.done":
             self.active_response = False
             self.current = None
+            self.last_text = entry["text"] or entry["filter"].sent
             if not entry["ours"]:
-                return True
+                end = self._relay_end(entry)
+                return [end, True] if end is not None else True
             response = event.get("response") or {}
             output = [
                 o
@@ -655,6 +809,99 @@ class RelaySession:
             return False
         self._maybe_mark_unknown(kind, item)
         return True
+
+    def _assistant_said(self, entry: dict, text: str) -> None:
+        """Record one reply's clean transcript once (memory and timeline)."""
+        if entry["text"] or not text.strip():
+            return
+        entry["text"] = text
+        if self.record is not None:
+            self.record.said("assistant", text)
+        self.mark("transcript", role="assistant", text=sanitize(text, self._secrets(), MAX_TRANSCRIPT))
+
+    async def _cut(self, entry: dict, event: dict) -> list[dict]:
+        """Stop a reply that leaked markup or repeated itself: cancel it at xAI, close its text for KS."""
+        entry["cut"] = True
+        flt = entry["filter"]
+        log.warning("[%s] assistant reply cut (%s)", self.label, flt.reason)
+        self.mark("transcript_cut", reason=flt.reason)
+        self._assistant_said(entry, flt.sent)
+        if self.active_response and self.upstream is not None:
+            await self._send_up({"type": "response.cancel", **({"response_id": entry["id"]} if entry["id"] else {})})
+        done_type, field_name = _TEXT_DELTAS[event["type"]]
+        done = {
+            "type": done_type,
+            "event_id": self._relay_id(),
+            "response_id": event.get("response_id"),
+            "item_id": event.get("item_id"),
+            "output_index": event.get("output_index"),
+            "content_index": event.get("content_index"),
+            field_name: flt.sent,
+        }
+        entry["done_sent"] = True
+        out = [{k: v for k, v in done.items() if v is not None}]
+        if self.cfg.get("flush_tablet_audio_on_cut"):
+            # KS treats speech_started as a barge-in and flushes what it has buffered.
+            out.append({"type": "input_audio_buffer.speech_started", "event_id": self._relay_id(), "audio_start_ms": 0})
+        return out
+
+    def _on_dismiss(self) -> dict | None:
+        """The user said "thanks" / "that's all": end now if the reply to it is already done, else after it."""
+        if not self.cfg.get("hangup_on_thanks", True) or not self._can_end():
+            return None
+        self.mark("dismiss_phrase")
+        answered = (
+            not self.active_response
+            and self.held_done is None
+            and not self.pending_create_from_relay
+            and self.speech_stopped_at is not None
+            and self.last_done_at > self.speech_stopped_at
+        )
+        if not answered:
+            self.dismiss_pending = True
+            return None
+        if is_open_followup(self.last_text):
+            return None
+        return self._end_call("", "dismiss")
+
+    def _relay_end(self, entry: dict) -> dict | None:
+        """The relay's end_conversation for a finished reply that should have hung up, or None."""
+        if not self._can_end() or entry["end"]:
+            return None
+        if entry["hangup"]:
+            reason = "home_command"
+        elif self.dismiss_pending:
+            reason = "dismiss"
+        else:
+            return None
+        if is_open_followup(entry["text"] or entry["filter"].sent):
+            self.dismiss_pending = False
+            log.info("[%s] reply asks a follow-up; conversation stays open", self.label)
+            return None
+        return self._end_call(entry["id"], reason)
+
+    def _end_call(self, response_id: str, reason: str) -> dict:
+        """An end_conversation call for KS that xAI never made. KS runs it like its own and ends."""
+        event_id = self._relay_id()
+        call_id = f"{RELAY_END_PREFIX}{self._relay_seq}"
+        self.relay_end_calls.add(call_id)
+        self.ended = True
+        self.dismiss_pending = False
+        self.end_reason = "end_conversation"
+        self.mark("end_conversation", by="relay", reason=reason)
+        log.info("[%s] relay ends the conversation (%s)", self.label, reason)
+        event = {
+            "type": "response.function_call_arguments.done",
+            "event_id": event_id,
+            "item_id": f"{call_id}_item",
+            "output_index": 0,
+            "call_id": call_id,
+            "name": END_CONVERSATION,
+            "arguments": "{}",
+        }
+        if response_id:
+            event["response_id"] = response_id
+        return event
 
     async def _run_tool(self, event: dict) -> dict:
         assert self.tools is not None
@@ -717,16 +964,26 @@ class RelaySession:
                 "item": {"type": "function_call_output", "call_id": event.get("call_id"), "output": output},
             },
             "event": ev,
+            "name": name,
+            "ok": ok,
         }
+
+    def _hangup_after(self, calls: list[tuple[str, bool] | None]) -> bool:
+        """Every relay call in the answer was a successful home-control write (and KS can end)."""
+        if not self.cfg.get("hangup_after_home_command", True) or not self._can_end() or not calls:
+            return False
+        return all(call is not None and call[0] in HOME_WRITE_TOOLS and call[1] for call in calls)
 
     async def _answer(self, entry: dict) -> None:
         results = await asyncio.gather(*entry["ours"], return_exceptions=True)
+        calls: list[tuple[str, bool] | None] = []
         for result in results:
             if not isinstance(result, dict):
+                calls.append(None)
                 continue
-            message = result["message"] if "message" in result else result
             ev = result.get("event")
-            await self.upstream.send(json.dumps(message))
+            await self._send_up(result["message"])
+            calls.append((str(result.get("name")), bool(result.get("ok"))))
             if ev is not None:
                 ev["result_t"] = self.ms()
             self._touch()
@@ -734,8 +991,15 @@ class RelaySession:
             return  # KS ends the conversation; no spoken follow-up
         if entry["ks"]:
             return  # KS sends response.create once its own output is in
+        hangup = self._hangup_after(calls)
+        create: dict = {"type": "response.create"}
+        if hangup:
+            # Response instructions replace the session's for this answer only, so both go.
+            create["response"] = {"instructions": f"{self.session_instructions}\n\n{HANGUP_INSTRUCTION}".strip()}
         self.pending_create_from_relay = True
-        await self.upstream.send(json.dumps({"type": "response.create"}))
+        self.pending_create_at = time.monotonic()
+        self.pending_hangup = hangup
+        await self._send_up(create)
 
     async def _release_held(self) -> None:
         held, self.held_done = self.held_done, None
@@ -745,6 +1009,9 @@ class RelaySession:
     def _check_held(self) -> None:
         if self.held_done is not None and time.monotonic() - self.held_since > HELD_DONE_LIMIT:
             asyncio.create_task(self._release_held())
+        if self.pending_create_from_relay and time.monotonic() - self.pending_create_at > PENDING_CREATE_LIMIT:
+            self.pending_create_from_relay = False
+            self.pending_hangup = False
 
 
 async def serve_relay(settings: RelaySettings, context: RelayContext) -> None:

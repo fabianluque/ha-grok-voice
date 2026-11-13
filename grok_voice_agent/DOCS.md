@@ -22,7 +22,27 @@ add-on and the add-on relays each conversation to xAI:
   lookup) plus skills. Built-ins run against Home Assistant intents
   (`/api/intent/handle`: exposed entities only, the tablet's device for timers,
   its room as the default area). KS only hears the answer; KS's own
-  `end_conversation` still reaches the tablet.
+  `end_conversation` still reaches the tablet. A home command (on/off,
+  lights, covers, locks, climate, fans, to-do) that matches nothing in the
+  tablet's own room is retried once without that room ("open the left garage"
+  from the kitchen). An area the user named that is not the tablet's room is
+  never dropped, and the retry needs a device or list name.
+- **Clean, single answers.** Assistant transcripts forwarded to the tablet are
+  stripped of internal markup (`<turn_end>`, `<system_warning>…</system_warning>`,
+  any other `<…>` tag). A reply that leaks markup or repeats a sentence is
+  cancelled at that point (`response.cancel`) and its remaining audio and text
+  are not forwarded.
+- **Hang-up after home commands.** When every relay tool call in an answer is
+  a successful home-control write, the follow-up asks Grok to confirm once and
+  call `end_conversation`. If it does not, the relay ends the conversation
+  itself: it sends KS an `end_conversation` call of its own (`relay_end_…`)
+  just before the answer's `response.done`. KS runs it locally like its own
+  end, and KS's output for it never reaches xAI. Questions stay open. Saying
+  "thanks" or "that's all" ends the same way after the reply. Anything xAI
+  starts after an end is dropped. Every event the relay sends xAI has an
+  `event_id` starting with `relay_`; errors for those, and harmless races
+  ("already has an active response", item / call id not found), are logged on
+  the timeline instead of being sent to the tablet.
 - **Skills live in the relay.** Each skill has an index line (the `skill` tool
   description), help (returned on `action=help`) and actions mapped to a Home
   Assistant script, any service, a relay handler (media) or a pass-through to
@@ -93,7 +113,11 @@ the Settings tab without restarting the add-on.
   (unset = xAI default, kiosk = KS's 500 ms, custom ms), date/time injection,
   the date line template, day labels on tool results, extra instructions, cache
   identical read-only skill calls in a session (help / catalog / get / list;
-  default on), which built-in tool families are direct or off, and
+  default on), hang up after a successful home command (default on), hang up
+  on "thanks / that's all" (default on), flush the tablet's audio when a
+  leaked or repeated reply is cut (default off; sends KS a synthetic
+  `speech_started`, which KS treats as a barge-in), which built-in tool
+  families are direct or off, and
   memory: enabled, mode (summary / raw / off), window minutes (45), max items
   (5), scope (per_tablet / house), other rooms' last-N-minutes window (10, per
   tablet scope), summary model (`grok-4.20-0309-non-reasoning`), summary max
@@ -110,7 +134,8 @@ the Settings tab without restarting the add-on.
   skills are replaced). Imports are previewed; nothing is saved until **Save**.
 - **Tablets:** detected IP(s) per satellite, unmatched session IPs with
   **Assign to tablet**, and per-tablet overrides (reasoning effort, VAD, date/time, day labels, extra
-  instructions, tool families, memory on/off).
+  instructions, tool families, memory on/off, hang-up after home commands,
+  hang-up on thanks).
 
 The panel is only served through Home Assistant ingress (signed-in user); the
 LAN port never accepts it. API keys are never shown.
