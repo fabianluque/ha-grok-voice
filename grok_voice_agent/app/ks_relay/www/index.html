@@ -149,8 +149,11 @@ function kindLabel(e){const k=e.kind||"";
  if(k==="response.done")return "response.done"+(e.status?" · "+e.status:"");
  if(k==="memory_summary")return `memory summary (${e.summary_kind||"summary"})`;
  if(k==="session_end")return `session end · ${e.reason||""}`;
- if(k==="end_conversation")return "end_conversation";
- if(k==="error")return `error ${e.code||""} ${e.message||""}`.trim();
+ if(k==="end_conversation")return e.by==="relay"?`end_conversation (relay · ${(e.reason||"").replace(/_/g," ")})`:"end_conversation";
+ if(k==="transcript_cut")return `assistant reply cut · ${e.reason||""}`;
+ if(k==="response_dropped")return "response after end dropped";
+ if(k==="dismiss_phrase")return "user dismissal (thanks / that's all)";
+ if(k==="error")return `error ${e.code||""} ${e.message||""}`.trim()+(e.hidden?" (not sent to tablet)":"");
  if(k==="omitted")return e.detail||"further events dropped";
  return k}
 function providerQuery(args){if(!args)return"";let o=args;if(typeof args==="string"){try{o=JSON.parse(args)}catch(e){return""}}
@@ -271,6 +274,9 @@ function settings(m){const s=S.settings,mem=s.memory,r=relayInfo();
  ${field("Date and time in instructions",`<input id="dt" type="checkbox" ${s.inject_datetime?"checked":""}>`)}
  ${field("Label dates in tool results (today / tomorrow, local time)",`<input id="ann" type="checkbox" ${s.annotate_tool_dates?"checked":""}>`)}
  ${field("Cache identical read-only skill calls in a session (help / catalog / get / list)",`<input id="cache_ro" type="checkbox" ${s.cache_readonly_skills!==false?"checked":""}>`)}
+ ${field("Hang up after a successful home command (questions stay open)",`<input id="hang_home" type="checkbox" ${s.hangup_after_home_command!==false?"checked":""}>`)}
+ ${field("Hang up when the user says thanks / that's all",`<input id="hang_thanks" type="checkbox" ${s.hangup_on_thanks!==false?"checked":""}>`)}
+ ${field("Flush tablet audio when a leaked or repeated reply is cut",`<input id="flush_cut" type="checkbox" ${s.flush_tablet_audio_on_cut?"checked":""}>`)}
  </div>${field("Date line (blank = default; fields: {weekday} {month} {day} {year} {time} {tz} {date} {tomorrow_weekday} {tomorrow_month} {tomorrow_day} {tomorrow_date} {yesterday_date})",`<textarea id="dtt" placeholder="${esc(S.date_default||"")}">${esc(s.date_template||"")}</textarea>`)}${field("Extra instructions (added after the tablet's)",`<textarea id="extra">${esc(s.extra_instructions)}</textarea>`)}
  <p class="muted">unset = xAI's default end of speech (fastest); kiosk = keep the tablet's 500 ms; custom = your value.</p></div>`);m.append(c);
  const t=$(`<div class="card"><h2>Built-in tools</h2><p class="muted">Direct tools run in the relay against Home Assistant intents. Media and other skills are on the Skills tab.</p><div class="row">${Object.entries(S.families).map(([k,d])=>field(esc(d),sel("fam_"+k,["direct","off"],s.tools[k]))).join("")}</div></div>`);m.append(t);
@@ -295,7 +301,7 @@ function settings(m){const s=S.settings,mem=s.memory,r=relayInfo();
  </div><p class="muted">Used for the Status tab's estimates. "session" prices the whole connection time; "billable_audio" uses xAI's reported billable audio seconds when present. New prices apply to sessions recorded from now on.</p></div>`);m.append(cc);
  const out=$(`<div><button class="b">Save</button><span class="err" id="serr"></span></div>`);m.append(out);
  out.querySelector("button").onclick=()=>{const v=(i)=>document.getElementById(i),n=(i)=>Number(v(i).value);
-  const next={...S.settings,model:v("model").value.trim(),reasoning_effort:v("reasoning").value,vad:{mode:v("vadmode").value,silence_ms:n("vadms")},inject_datetime:v("dt").checked,annotate_tool_dates:v("ann").checked,cache_readonly_skills:v("cache_ro").checked,date_template:v("dtt").value.trim(),extra_instructions:v("extra").value,
+  const next={...S.settings,model:v("model").value.trim(),reasoning_effort:v("reasoning").value,vad:{mode:v("vadmode").value,silence_ms:n("vadms")},inject_datetime:v("dt").checked,annotate_tool_dates:v("ann").checked,cache_readonly_skills:v("cache_ro").checked,hangup_after_home_command:v("hang_home").checked,hangup_on_thanks:v("hang_thanks").checked,flush_tablet_audio_on_cut:v("flush_cut").checked,date_template:v("dtt").value.trim(),extra_instructions:v("extra").value,
    costs:{realtime_per_min:n("c_rt"),realtime_basis:v("c_basis").value,summary_input_per_m:n("c_in"),summary_output_per_m:n("c_out"),retention_days:n("c_keep")},ha_sensors:v("c_ha").checked,
    tools:Object.fromEntries(Object.keys(S.families).map(k=>[k,v("fam_"+k).value])),
    memory:{enabled:v("m_en").checked,mode:v("m_mode").value,window_minutes:n("m_win"),max_items:n("m_max"),scope:v("m_scope").value,house_window_minutes:n("m_house"),summary_model:v("m_model").value.trim(),summary_max_chars:n("m_chars"),strip_ks_history:v("m_strip").checked}};

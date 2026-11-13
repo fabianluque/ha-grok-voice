@@ -42,8 +42,13 @@ DEFAULTS: dict = {
     "annotate_tool_dates": True,
     "extra_instructions": (
         "Home control and timers run through your tools; call them right away with sensible "
-        "defaults instead of asking which device or room."
+        "defaults instead of asking which device or room.\n"
+        "After a home command succeeds, confirm it once in one short sentence and call "
+        "end_conversation. Keep the conversation open after answering a question. Never repeat a confirmation."
     ),
+    "hangup_after_home_command": True,
+    "hangup_on_thanks": True,
+    "flush_tablet_audio_on_cut": False,
     "tools": {family: "direct" for family in TOOL_FAMILIES},
     "memory": {
         "enabled": True,
@@ -68,7 +73,20 @@ DEFAULTS: dict = {
     "tablets": {},
     "ip_tablets": {},
 }
-TABLET_KEYS = ("reasoning_effort", "vad", "inject_datetime", "annotate_tool_dates", "extra_instructions", "tools", "memory_enabled")
+TABLET_KEYS = (
+    "reasoning_effort",
+    "vad",
+    "inject_datetime",
+    "annotate_tool_dates",
+    "extra_instructions",
+    "tools",
+    "memory_enabled",
+    "hangup_after_home_command",
+    "hangup_on_thanks",
+)
+_FLAGS = ("inject_datetime", "annotate_tool_dates", "ha_sensors", "cache_readonly_skills", "hangup_after_home_command",
+          "hangup_on_thanks", "flush_tablet_audio_on_cut")
+_TABLET_FLAGS = ("inject_datetime", "annotate_tool_dates", "memory_enabled", "hangup_after_home_command", "hangup_on_thanks")
 _MODEL_RE = re.compile(r"^[A-Za-z0-9._-]{0,64}$")
 
 
@@ -169,14 +187,11 @@ def validate(data: object) -> dict:
         vad = _vad(data["vad"], "vad", errors)
         if vad:
             merged["vad"] = vad
-    if "inject_datetime" in data:
-        flag = _bool(data["inject_datetime"], "inject_datetime", errors)
-        if flag is not None:
-            merged["inject_datetime"] = flag
-    if "annotate_tool_dates" in data:
-        flag = _bool(data["annotate_tool_dates"], "annotate_tool_dates", errors)
-        if flag is not None:
-            merged["annotate_tool_dates"] = flag
+    for key in _FLAGS:
+        if key in data:
+            flag = _bool(data[key], key, errors)
+            if flag is not None:
+                merged[key] = flag
     if "date_template" in data:
         text = _text(data["date_template"], "date_template", 1000, errors)
         if text is not None:
@@ -235,14 +250,6 @@ def validate(data: object) -> dict:
             value = check(costs[key])
             if value is not None:
                 merged["costs"][key] = value
-    if "ha_sensors" in data:
-        flag = _bool(data["ha_sensors"], "ha_sensors", errors)
-        if flag is not None:
-            merged["ha_sensors"] = flag
-    if "cache_readonly_skills" in data:
-        flag = _bool(data["cache_readonly_skills"], "cache_readonly_skills", errors)
-        if flag is not None:
-            merged["cache_readonly_skills"] = flag
     tablets = data.get("tablets", {})
     if not isinstance(tablets, dict):
         errors.append("tablets must be an object")
@@ -263,7 +270,7 @@ def validate(data: object) -> dict:
                 clean[key] = _choice(value, f"{label}.reasoning_effort", ("none", "high", "default"), errors)
             elif key == "vad":
                 clean[key] = _vad(value, f"{label}.vad", errors)
-            elif key in ("inject_datetime", "annotate_tool_dates", "memory_enabled"):
+            elif key in _TABLET_FLAGS:
                 clean[key] = _bool(value, f"{label}.{key}", errors)
             elif key == "extra_instructions":
                 clean[key] = _text(value, f"{label}.extra_instructions", 4000, errors)

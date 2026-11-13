@@ -23,6 +23,7 @@ from app.ks_relay.memory import (
     strip_ks_history,
 )
 from app.ks_relay.relay import (
+    HANGUP_INSTRUCTION,
     RelayContext,
     RelaySession,
     RelaySettings,
@@ -541,6 +542,10 @@ async def _round_trip(audio: str, tmp_path):
                         got.append(json.loads(await asyncio.wait_for(ks.recv(), 1.0)))
                     except asyncio.TimeoutError:
                         break
+                    if got[-1]["type"] == "response.function_call_arguments.done":
+                        # What Kiosk Satellite does for every call it runs (openai_realtime_backend.dart _runTool).
+                        await ks.send(json.dumps({"type": "conversation.item.create", "item": {
+                            "type": "function_call_output", "call_id": got[-1]["call_id"], "output": '{"success": true}'}}))
         await asyncio.sleep(0.05)
     pending = [t for t in list(_BACKGROUND) if not t.done()]
     if pending:
@@ -551,11 +556,22 @@ async def _round_trip(audio: str, tmp_path):
 def test_relay_tool_runs_server_side_and_kiosk_only_hears_the_answer(tmp_path):
     got, seen, ha, context = asyncio.run(_round_trip("bGlnaHQ=", tmp_path))
     kinds = [m["type"] for m in got]
-    assert "response.function_call_arguments.done" not in kinds
+    calls = [m for m in got if m["type"] == "response.function_call_arguments.done"]
+    assert [c["name"] for c in calls] == ["end_conversation"]  # the relay's hang-up, never the relay tool
+    assert calls[0]["call_id"].startswith("relay_end_") and calls[0]["event_id"].startswith("relay_")
+    assert kinds.index("response.function_call_arguments.done") < kinds.index("response.done")
     assert "response.output_item.added" not in kinds
     assert kinds.count("response.done") == 1
     assert "response.output_audio.delta" in kinds
     assert ha.intents == [("HassTurnOn", {"area": "Attic"}, "d1")]
+    create = next(m for m in seen if m["type"] == "response.create")
+    assert create["response"]["instructions"].startswith("Be brief.")
+    assert create["response"]["instructions"].endswith(HANGUP_INSTRUCTION)
+    for m in seen:
+        if m["type"] in ("conversation.item.create", "response.create"):
+            assert m["event_id"].startswith("relay_")
+    outputs = [m["item"]["call_id"] for m in seen if m["type"] == "conversation.item.create"]
+    assert outputs == ["c1"]  # KS's output for relay_end_* never reaches xAI
     report = context.report()
     assert report["totals"]["today"]["sessions"] == 1
     row = report["recent"][0]
@@ -567,7 +583,9 @@ def test_relay_tool_runs_server_side_and_kiosk_only_hears_the_answer(tmp_path):
         assert needed in kinds_tl
     tool_ev = next(e for e in row["timeline"] if e["kind"] == "tool")
     assert tool_ev["name"] == "turn_on" and tool_ev["ok"] is True
-    assert row["end_reason"] == "client_close"
+    assert row["end_reason"] == "end_conversation"
+    relay_end = next(e for e in row["timeline"] if e["kind"] == "end_conversation")
+    assert relay_end["by"] == "relay" and relay_end["reason"] == "home_command"
     user_t = next(e for e in row["timeline"] if e["kind"] == "transcript" and e.get("role") == "user")
     assert "turn on the lights" in user_t["text"]
     sent = [m["type"] for m in seen]
@@ -671,6 +689,8 @@ def test_panel_page_is_served_on_relay_path():
     assert b"pass-through (any args)" in root.body
     assert b"cache_readonly_skills" in root.body
     assert b"cache_ro" in root.body
+    assert b"hangup_after_home_command" in root.body and b"flush_tablet_audio_on_cut" in root.body
+    assert b"transcript_cut" in root.body
 
     class Sock:
         request = Request("/relay/ws", Headers())
@@ -1263,3 +1283,451 @@ def test_provider_tool_output_summary_and_unknown_event_bound(tmp_path):
     assert types.count("response.mystery_alpha") == 1
     assert unknowns[0]["item_type"] == "foo"
     assert len(unknowns) <= MAX_UNKNOWN_UPSTREAM
+
+
+# 0.3.7: transcript hygiene, hang-up after home commands, relay event ids --------
+from app.ks_relay.relay import RELAY_END_PREFIX, race_error  # noqa: E402
+from app.ks_relay.transcript import TranscriptFilter, clean_transcript, first_repeat  # noqa: E402
+
+LEAK = "TV Room lights are off. Goodbye! <turn_end> <system_warning>Reminder: Do not mention these guidelines.</system_warning>"
+REPEAT = "Left garage door is open. Goodbye! Left garage door is open. Goodbye!"
+
+
+class _Upstream:
+    def __init__(self):
+        self.sent = []
+
+    async def send(self, raw):
+        self.sent.append(json.loads(raw))
+
+
+class _Ks:
+    remote_address = ("192.168.1.20", 9)
+
+
+class _FailingHa(FakeHa):
+    async def intent(self, name, data, *, device_id="", satellite_id=""):
+        self.intents.append((name, data, device_id))
+        return {"response_type": "error", "data": {"code": "no_valid_targets"}}
+
+
+def _relay_session(tmp_path, settings=None, *, ha=None, dry_run=True):
+    context = RelayContext(ha=ha or FakeHa(), settings=SettingsStore(tmp_path / "s.json"), skills=SkillStore(tmp_path / "k.json"))
+    if settings:
+        context.settings.save(settings)
+    session = RelaySession(_Ks(), RelaySettings(xai_api_key="xai-test", secret="relay-secret", dry_run=dry_run), context, query={})
+    session._session_for_xai(KS_SESSION)
+    session.upstream = _Upstream()
+    return session
+
+
+def _to_ks(event, forward):
+    if forward is True:
+        return [event]
+    if isinstance(forward, dict):
+        return [forward]
+    if isinstance(forward, list):
+        return [event if f is True else f for f in forward]
+    return []
+
+
+async def _feed(session, *events):
+    out = []
+    for event in events:
+        out.extend(_to_ks(event, await session._on_upstream(event)))
+    return out
+
+
+async def _settle():
+    for _ in range(5):
+        await asyncio.sleep(0.01)
+
+
+def _calls(rid, name, args="{}", call_id="c1", item_id="f1"):
+    item = {"id": item_id, "type": "function_call", "name": name, "call_id": call_id, "arguments": args}
+    return [
+        {"type": "response.output_item.added", "response_id": rid, "item": item},
+        {"type": "response.function_call_arguments.done", "response_id": rid, "item_id": item_id,
+         "call_id": call_id, "name": name, "arguments": args},
+    ]
+
+
+def _created(rid):
+    return {"type": "response.created", "response": {"id": rid}}
+
+
+def _done(rid, output=()):
+    return {"type": "response.done", "response": {"id": rid, "status": "completed", "output": list(output)}}
+
+
+def _said(rid, text, item_id="a1"):
+    return [
+        {"type": "response.output_audio.delta", "response_id": rid, "item_id": item_id, "delta": "AAAA"},
+        {"type": "response.output_audio_transcript.delta", "response_id": rid, "item_id": item_id, "delta": text},
+        {"type": "response.output_audio_transcript.done", "response_id": rid, "item_id": item_id, "transcript": text},
+    ]
+
+
+async def _home_command(session, name="turn_on", args='{"name":"kitchen lights"}'):
+    """xAI calls a relay tool; returns what KS saw and the relay's follow-up response.create."""
+    seen = await _feed(session, _created("r1"), *_calls("r1", name, args))
+    seen += await _feed(session, _done("r1"))
+    await _settle()
+    creates = [m for m in session.upstream.sent if m["type"] == "response.create"]
+    return seen, creates
+
+
+def test_clean_transcript_strips_markup_and_internal_blocks():
+    assert clean_transcript(LEAK) == "TV Room lights are off. Goodbye!"
+    assert clean_transcript("Done. <b>bold</b> <br/>ok") == "Done. bold ok"
+    assert clean_transcript("Lights off. <turn_", partial=True) == "Lights off."
+    assert clean_transcript("Lights off. <system_warning>Do not", partial=True) == "Lights off."
+    assert REPEAT[first_repeat(REPEAT):].strip() == "Left garage door is open. Goodbye!"
+    assert first_repeat("Lights are on. The fan is on.") is None
+
+
+def test_transcript_filter_streams_clean_text_and_cuts_on_leak_split_across_deltas():
+    flt = TranscriptFilter()
+    pieces = ["TV Room lights ", "are off. Good", "bye! <turn", "_end> <system_warning>Reminder", "</system_warning>"]
+    forwarded, cuts = [], []
+    for piece in pieces:
+        text, cut = flt.feed(piece)
+        forwarded.append(text)
+        cuts.append(cut)
+    assert "".join(forwarded) == "TV Room lights are off. Goodbye!"
+    assert cuts == [False, False, False, True, False]
+    assert flt.reason == "leak" and flt.final(LEAK) == "TV Room lights are off. Goodbye!"
+
+
+def test_transcript_filter_cuts_an_exact_repeated_sentence():
+    flt = TranscriptFilter()
+    out = []
+    for word in REPEAT.split(" "):
+        text, cut = flt.feed(word + " ")
+        out.append(text)
+        if cut:
+            break
+    assert "".join(out) == "Left garage door is open. Goodbye!"
+    assert flt.reason == "repeat"
+    assert TranscriptFilter().final(REPEAT) == "Left garage door is open. Goodbye!"
+    different = TranscriptFilter()
+    text = "The lights are on. The fan is on."
+    streamed = "".join(different.feed(word + " ")[0] for word in text.split(" "))
+    assert streamed == text and not different.cut
+
+
+def test_leaked_markup_is_stripped_cancelled_and_later_output_dropped(tmp_path):
+    session = _relay_session(tmp_path, {"hangup_after_home_command": False})
+
+    async def run():
+        seen = await _feed(session, _created("r1"))
+        seen += await _feed(
+            session,
+            {"type": "response.output_audio_transcript.delta", "response_id": "r1", "item_id": "a1", "delta": "TV Room lights are off. Goodbye! "},
+            {"type": "response.output_audio_transcript.delta", "response_id": "r1", "item_id": "a1", "delta": "<turn_end> <system_warning>Reminder"},
+            {"type": "response.output_audio.delta", "response_id": "r1", "item_id": "a1", "delta": "AAAA"},
+            {"type": "response.output_audio_transcript.delta", "response_id": "r1", "item_id": "a1", "delta": "</system_warning>"},
+            {"type": "response.output_audio_transcript.done", "response_id": "r1", "item_id": "a1", "transcript": LEAK},
+            _done("r1"),
+        )
+        return seen
+
+    seen = asyncio.run(run())
+    texts = [m.get("delta") or m.get("transcript") for m in seen if "transcript" in m["type"]]
+    assert texts == ["TV Room lights are off. Goodbye!", "TV Room lights are off. Goodbye!"]
+    assert not any("<" in json.dumps(m) for m in seen)
+    assert [m["type"] for m in seen].count("response.output_audio.delta") == 0
+    assert [m["type"] for m in seen][-1] == "response.done"
+    assert not any(m["type"] == "input_audio_buffer.speech_started" for m in seen)  # flush is opt-in
+    cancels = [m for m in session.upstream.sent if m["type"] == "response.cancel"]
+    assert len(cancels) == 1 and cancels[0]["event_id"].startswith("relay_") and cancels[0]["response_id"] == "r1"
+    tl = session.context.status.live[session.status_id]["timeline"]
+    assert any(e["kind"] == "transcript_cut" and e["reason"] == "leak" for e in tl)
+    said = [e["text"] for e in tl if e["kind"] == "transcript" and e.get("role") == "assistant"]
+    assert said == ["TV Room lights are off. Goodbye!"]
+
+
+def test_repeated_confirmation_is_cut_and_flush_is_optional(tmp_path):
+    session = _relay_session(tmp_path, {"hangup_after_home_command": False, "flush_tablet_audio_on_cut": True})
+
+    async def run():
+        seen = await _feed(session, _created("r1"))
+        for sentence in ("Left garage door is open. ", "Goodbye! ", "Left garage door is open. ", "Goodbye!"):
+            seen += await _feed(session, {"type": "response.output_audio_transcript.delta", "response_id": "r1",
+                                          "item_id": "a1", "delta": sentence})
+            seen += await _feed(session, {"type": "response.output_audio.delta", "response_id": "r1", "item_id": "a1", "delta": "AAAA"})
+        seen += await _feed(session, _done("r1"))
+        return seen
+
+    seen = asyncio.run(run())
+    deltas = "".join(m["delta"] for m in seen if m["type"] == "response.output_audio_transcript.delta")
+    assert deltas.strip() == "Left garage door is open. Goodbye!"
+    done = [m for m in seen if m["type"] == "response.output_audio_transcript.done"]
+    assert len(done) == 1 and done[0]["transcript"] == "Left garage door is open. Goodbye!"
+    assert [m["type"] for m in seen].count("response.output_audio.delta") == 2
+    flush = [m for m in seen if m["type"] == "input_audio_buffer.speech_started"]
+    assert len(flush) == 1 and flush[0]["event_id"].startswith("relay_")
+    assert [m["type"] for m in session.upstream.sent] == ["response.cancel"]
+
+
+def test_done_only_transcript_is_sanitized(tmp_path):
+    session = _relay_session(tmp_path)
+
+    async def run():
+        await _feed(session, _created("r1"))
+        return await _feed(session, {"type": "response.output_audio_transcript.done", "response_id": "r1", "transcript": LEAK})
+
+    (done,) = asyncio.run(run())
+    assert done["transcript"] == "TV Room lights are off. Goodbye!"
+
+
+def test_home_write_follow_up_asks_to_hang_up_and_relay_ends_when_grok_does_not(tmp_path):
+    session = _relay_session(tmp_path)
+
+    async def run():
+        seen, creates = await _home_command(session)
+        follow = await _feed(session, _created("r2"), *_said("r2", "Kitchen lights are on."), _done("r2"))
+        ks_out = {"type": "conversation.item.create", "item": {"type": "function_call_output",
+                                                                 "call_id": follow[-2]["call_id"], "output": '{"success": true}'}}
+        dropped = session._relay_end_output(ks_out)
+        later = await _feed(session, _created("r3"), *_said("r3", "Anything else?", "a3"), _done("r3"))
+        return seen, creates, follow, dropped, later
+
+    seen, creates, follow, dropped, later = asyncio.run(run())
+    assert [m["type"] for m in seen] == ["response.created"]  # tool call and its done stay hidden
+    assert len(creates) == 1
+    instructions = creates[0]["response"]["instructions"]
+    assert instructions.startswith("Be brief.") and instructions.endswith(HANGUP_INSTRUCTION)
+    assert creates[0]["event_id"].startswith("relay_")
+    kinds = [m["type"] for m in follow]
+    assert kinds[-2:] == ["response.function_call_arguments.done", "response.done"]
+    end = follow[-2]
+    assert end["name"] == "end_conversation" and end["call_id"].startswith(RELAY_END_PREFIX)
+    assert end["arguments"] == "{}" and end["response_id"] == "r2"
+    assert dropped is True
+    assert later == []  # a response after the end never reaches KS
+    cancels = [m for m in session.upstream.sent if m["type"] == "response.cancel"]
+    assert cancels and cancels[-1]["response_id"] == "r3"
+    assert session.end_reason == "end_conversation"
+
+
+def test_ks_output_for_relay_end_never_reaches_xai(tmp_path):
+    session = _relay_session(tmp_path)
+    session.relay_end_calls.add("relay_end_7")
+
+    class Ks(_Ks):
+        def __init__(self):
+            self.messages = [
+                json.dumps({"type": "conversation.item.create", "item": {"type": "function_call_output", "call_id": "relay_end_7", "output": "{}"}}),
+                json.dumps({"type": "conversation.item.create", "item": {"type": "function_call_output", "call_id": "c1", "output": "{}"}}),
+            ]
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if not self.messages:
+                raise StopAsyncIteration
+            return self.messages.pop(0)
+
+    session.ks = Ks()
+
+    async def run():
+        task = asyncio.get_running_loop().create_future()
+        task.set_result(session.upstream)
+        await session._pump_ks(task)
+
+    asyncio.run(run())
+    assert [m["item"]["call_id"] for m in session.upstream.sent] == ["c1"]
+
+
+def test_follow_up_that_ends_itself_or_asks_a_question_is_left_alone(tmp_path):
+    session = _relay_session(tmp_path)
+
+    async def own_end():
+        await _home_command(session)
+        return await _feed(session, _created("r2"), *_said("r2", "Done. Goodbye!"), *_calls("r2", "end_conversation", call_id="c2", item_id="f2"), _done("r2"))
+
+    follow = asyncio.run(own_end())
+    ends = [m for m in follow if m["type"] == "response.function_call_arguments.done"]
+    assert [e["call_id"] for e in ends] == ["c2"]
+
+    asked = _relay_session(tmp_path / "q")
+
+    async def question():
+        await _home_command(asked)
+        return await _feed(asked, _created("r2"), *_said("r2", "The lights are on. Want them dimmer?"), _done("r2"))
+
+    follow = asyncio.run(question())
+    assert not any(m["type"] == "response.function_call_arguments.done" for m in follow)
+    assert asked.ended is False
+
+
+def test_question_answers_and_failed_writes_stay_open(tmp_path):
+    qa = _relay_session(tmp_path / "qa")
+
+    async def state():
+        _, creates = await _home_command(qa, "get_state", '{"name":"garage"}')
+        follow = await _feed(qa, _created("r2"), *_said("r2", "The garage is closed."), _done("r2"))
+        return creates, follow
+
+    creates, follow = asyncio.run(state())
+    assert "response" not in creates[0]
+    assert not any(m["type"] == "response.function_call_arguments.done" for m in follow)
+
+    failed = _relay_session(tmp_path / "fail", ha=_FailingHa(), dry_run=False)
+
+    async def write():
+        _, creates = await _home_command(failed, "turn_on", '{"name":"porch light"}')
+        return creates
+
+    assert "response" not in asyncio.run(write())[0]
+
+
+def test_hangup_setting_and_per_tablet_override(tmp_path):
+    off = _relay_session(tmp_path / "off", {"hangup_after_home_command": False})
+    tablet_off = _relay_session(tmp_path / "tab", {"tablets": {"d1": {"hangup_after_home_command": False}}})
+    tablet_on = _relay_session(tmp_path / "on", {"hangup_after_home_command": False, "tablets": {"d1": {"hangup_after_home_command": True}}})
+
+    async def run(session):
+        _, creates = await _home_command(session)
+        return "response" in creates[0]
+
+    assert asyncio.run(run(off)) is False
+    assert asyncio.run(run(tablet_off)) is False
+    assert asyncio.run(run(tablet_on)) is True
+
+
+def test_dismiss_phrase_ends_after_the_reply(tmp_path):
+    session = _relay_session(tmp_path)
+
+    async def before_reply():
+        seen = await _feed(session, {"type": "input_audio_buffer.speech_stopped"}, _created("r1"),
+                           {"type": "conversation.item.input_audio_transcription.completed", "transcript": "Okay, thank you."})
+        seen += await _feed(session, *_said("r1", "You're welcome!"), _done("r1"))
+        return seen
+
+    seen = asyncio.run(before_reply())
+    assert [m["type"] for m in seen][-2:] == ["response.function_call_arguments.done", "response.done"]
+    assert seen[-2]["call_id"].startswith(RELAY_END_PREFIX)
+
+    late = _relay_session(tmp_path / "late")
+
+    async def after_reply():
+        await _feed(late, {"type": "input_audio_buffer.speech_stopped"}, _created("r1"), *_said("r1", "You're welcome."), _done("r1"))
+        return await _feed(late, {"type": "conversation.item.input_audio_transcription.completed", "transcript": "that's all"})
+
+    seen = asyncio.run(after_reply())
+    assert [m["type"] for m in seen] == ["conversation.item.input_audio_transcription.completed", "response.function_call_arguments.done"]
+
+    request = _relay_session(tmp_path / "req")
+
+    async def not_a_dismissal():
+        return await _feed(request, {"type": "input_audio_buffer.speech_stopped"}, _created("r1"),
+                           {"type": "conversation.item.input_audio_transcription.completed", "transcript": "thank you for turning on the lights"},
+                           *_said("r1", "Sure."), _done("r1"))
+
+    assert not any(m["type"] == "response.function_call_arguments.done" for m in asyncio.run(not_a_dismissal()))
+
+
+def test_output_after_a_real_end_conversation_is_dropped(tmp_path):
+    session = _relay_session(tmp_path)
+
+    async def run():
+        first = await _feed(session, _created("r1"), *_said("r1", "Goodbye!"), *_calls("r1", "end_conversation"), _done("r1"))
+        second = await _feed(session, _created("r2"), *_said("r2", "Goodbye!", "a2"), *_calls("r2", "turn_on", call_id="c2", item_id="f2"), _done("r2"))
+        await _settle()
+        return first, second
+
+    first, second = asyncio.run(run())
+    assert [m["type"] for m in first][-1] == "response.done"
+    assert second == []
+    assert session.context.ha.intents == []  # a tool call in a dropped response never runs
+
+
+def test_provider_search_does_not_count_as_a_tablet_call(tmp_path):
+    session = _relay_session(tmp_path, {"hangup_after_home_command": False})
+
+    async def run():
+        seen = await _feed(session, _created("r1"), *_calls("r1", "web_search", '{"query":"weather"}', call_id="s1", item_id="s1"),
+                           *_calls("r1", "get_state", '{"name":"garage"}'))
+        seen += await _feed(session, _done("r1"))
+        await _settle()
+        return seen
+
+    seen = asyncio.run(run())
+    assert [m["type"] for m in session.upstream.sent] == ["conversation.item.create", "response.create"]
+    assert [m["type"] for m in seen].count("response.done") == 0  # held until the follow-up answers
+    assert session.held_done is not None
+
+
+def test_pending_create_clears_and_a_later_real_error_reaches_ks(tmp_path):
+    session = _relay_session(tmp_path, {"hangup_after_home_command": False})
+
+    async def run():
+        await _home_command(session, "get_state", '{"name":"garage"}')
+        assert session.pending_create_from_relay is True
+        await _feed(session, _created("r2"), _done("r2"))
+        assert session.pending_create_from_relay is False
+        real = await _feed(session, {"type": "error", "error": {"code": "conversation_already_has_active_response",
+                                                                   "message": "busy", "event_id": "turn_1"}})
+        session.pending_create_from_relay = True
+        session.pending_create_at = time.monotonic() - 60
+        session._check_held()
+        return real
+
+    real = asyncio.run(run())
+    assert len(real) == 1 and real[0]["type"] == "error"
+    assert session.pending_create_from_relay is False
+
+
+def test_relay_and_race_errors_are_recorded_not_forwarded(tmp_path):
+    session = _relay_session(tmp_path)
+
+    async def run():
+        out = []
+        for err in (
+            {"code": "invalid_value", "message": "bad instructions", "event_id": "relay_4"},
+            {"code": "conversation_already_has_active_response", "message": "Conversation already has an active response"},
+            {"code": "item_not_found", "message": "Item with id 'x' not found"},
+            {"code": "invalid_value", "message": "call_id 'c9' not found"},
+            {"code": "conversation_already_has_active_response", "message": "busy", "event_id": "turn_2"},
+            {"code": "server_error", "message": "boom"},
+        ):
+            out.append(await _feed(session, {"type": "error", "error": err}))
+        return out
+
+    out = asyncio.run(run())
+    assert [len(o) for o in out] == [0, 0, 0, 0, 1, 1]
+    tl = session.context.status.live[session.status_id]["timeline"]
+    errors = [e for e in tl if e["kind"] == "error"]
+    assert len(errors) == 6 and [bool(e.get("hidden")) for e in errors] == [True, True, True, True, False, False]
+    assert errors[0]["event_id"] == "relay_4"
+    assert race_error("", "Conversation already has an active response")
+    assert not race_error("server_error", "boom")
+
+
+def test_every_relay_event_carries_a_relay_event_id(tmp_path):
+    session = _relay_session(tmp_path)
+
+    async def run():
+        await _home_command(session)
+        await _feed(session, _created("r2"), *_said("r2", "Done."), _done("r2"))
+        await _feed(session, _created("r3"))  # after the end: cancelled
+
+    asyncio.run(run())
+    ids = [m.get("event_id", "") for m in session.upstream.sent]
+    assert ids and all(i.startswith("relay_") for i in ids)
+    assert len(set(ids)) == len(ids)
+
+
+def test_hangup_settings_defaults_and_policy_line():
+    merged = validate({})
+    assert merged["hangup_after_home_command"] is True and merged["hangup_on_thanks"] is True
+    assert merged["flush_tablet_audio_on_cut"] is False
+    assert "end_conversation" in DEFAULTS["extra_instructions"] and "open" in DEFAULTS["extra_instructions"]
+    assert validate({"tablets": {"d1": {"hangup_after_home_command": False}}})["tablets"]["d1"] == {"hangup_after_home_command": False}
+    with pytest.raises(SettingsError):
+        validate({"hangup_after_home_command": "yes"})
+    with pytest.raises(SettingsError):
+        validate({"tablets": {"d1": {"flush_tablet_audio_on_cut": True}}})
