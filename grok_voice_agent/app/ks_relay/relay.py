@@ -14,8 +14,10 @@ its API key field. For each KS socket the relay:
 While a relay tool runs, the ``response.done`` of the answer that called it is
 held back, so KS keeps "responding" and its idle countdown does not run.
 
-Assistant transcripts are cleaned of internal markup before KS sees them; a
-reply that leaks markup or repeats a sentence is cancelled at that point.
+Assistant transcripts are cleaned of internal markup before KS sees them. A
+reply that leaks a ``<system…>`` block or repeats a sentence stops its text
+there; xAI streams text well ahead of audio, so its audio keeps flowing for an
+allowance sized to the clean text, and only then is it cancelled.
 After a successful home command (or a "thanks, that's all") the relay ends the
 conversation itself when Grok does not: it sends KS an ``end_conversation``
 call of its own (``relay_end_*``) before the answer's ``response.done``, which
@@ -64,6 +66,7 @@ from app.ks_relay.timeline import (
     b64_pcm16_seconds,
     compact_response_output,
     pcm_rate,
+    sample_bytes,
     sanitize,
 )
 from app.ks_relay.tools import END_CONVERSATION, HOME_WRITE_TOOLS, RelayTools, run_tool, tool_specs
@@ -76,6 +79,9 @@ _MODEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 _DEVICE_RE = re.compile(r'You run on a device named "([^"]+)"')
 _AREA_RE = re.compile(r"The device is in the (.+?) area\.")
 HELD_DONE_LIMIT = 45.0
+# Audio a cut reply may still play: xAI streams the transcript seconds ahead of the audio.
+CUT_AUDIO_PER_CHAR = 0.075
+CUT_AUDIO_BASE = 0.4
 PENDING_CREATE_LIMIT = 10.0
 CLOCK_REFRESH_SECONDS = 600.0
 RELAY_EVENT_PREFIX = "relay_"
@@ -258,7 +264,10 @@ def _new_entry() -> dict:
         "id": "",
         "hangup": False,  # relay follow-up after successful home writes
         "drop": False,  # started after end_conversation: never reaches KS
-        "cut": False,  # leak or repeat: cancelled, later output not forwarded
+        "cut": False,  # leak or repeat: later text not forwarded, audio limited to the allowance
+        "allowance": None,  # seconds of audio the clean text needs, set at the cut
+        "audio_s": 0.0,  # this reply's audio forwarded to KS
+        "stopped": False,  # allowance spent: cancelled at xAI, later audio dropped
         "done_sent": False,  # KS already has this reply's transcript done
         "text": "",
         "filter": TranscriptFilter(),
@@ -310,6 +319,7 @@ class RelaySession:
         self.idle_timeout_ms: int | None = None
         self.last_activity = time.monotonic()
         self._pcm_rate = 24000
+        self._sample_bytes = 2
         self._audio_s = 0.0
         self._response_at: float | None = None
         self._first_audio_at: float | None = None
@@ -433,6 +443,7 @@ class RelaySession:
                     with contextlib.suppress(TypeError, ValueError):
                         self.idle_timeout_ms = int(detection["idle_timeout_ms"])
                 self._pcm_rate = pcm_rate(original, self._pcm_rate)
+                self._sample_bytes = sample_bytes(original, self._sample_bytes)
                 message = {**message, "session": self._session_for_xai(original)}
                 raw = json.dumps(message)
                 log.info("[%s] session.update from KS %dms, %d tools", self.label, self.ms(), len(message["session"]["tools"]))
@@ -640,9 +651,14 @@ class RelaySession:
             self.mark("speech_stopped")
             return True
         if kind in _AUDIO_DELTAS:
-            self._audio_s += b64_pcm16_seconds(str(event.get("delta") or ""), self._pcm_rate)
-            if current is not None and current["cut"]:
-                return False
+            seconds = b64_pcm16_seconds(str(event.get("delta") or ""), self._pcm_rate, self._sample_bytes)
+            self._audio_s += seconds
+            if current is not None:
+                if current["stopped"]:
+                    return False
+                if current["allowance"] is not None and current["audio_s"] >= current["allowance"]:
+                    return await self._stop_cut(current) or False
+                current["audio_s"] += seconds
             if not self.first_audio_logged:
                 self.first_audio_logged = True
                 self._first_audio_at = time.monotonic()
@@ -659,6 +675,8 @@ class RelaySession:
                 self._pending_tool_events.clear()
                 self.mark("first_audio", e2s_ms=e2s)
                 self._touch()
+            if current is not None and current["allowance"] is not None and current["audio_s"] >= current["allowance"]:
+                return [True, *await self._stop_cut(current)]
             return True
         if kind in _TEXT_DELTAS:
             if current is None:
@@ -668,7 +686,7 @@ class RelaySession:
             text, cut = current["filter"].feed(str(event.get("delta") or ""))
             out: list = [{**event, "delta": text}] if text else []
             if cut:
-                out.extend(await self._cut(current, event))
+                out.extend(self._cut(current, event))
             return out or False
         if kind in _TEXT_DONES:
             entry = current if current is not None else _new_entry()
@@ -678,9 +696,7 @@ class RelaySession:
             given = str(event.get(field_name) or "")
             text = entry["filter"].final(given)
             if entry["filter"].cut and not entry["cut"]:
-                entry["cut"] = True
-                self.mark("transcript_cut", reason=entry["filter"].reason)
-                log.warning("[%s] assistant reply cut (%s) at done", self.label, entry["filter"].reason)
+                self._start_cut(entry, text)
             self._assistant_said(entry, text)
             return True if text == given else {**event, field_name: text}
         if kind == "response.created":
@@ -819,15 +835,19 @@ class RelaySession:
             self.record.said("assistant", text)
         self.mark("transcript", role="assistant", text=sanitize(text, self._secrets(), MAX_TRANSCRIPT))
 
-    async def _cut(self, entry: dict, event: dict) -> list[dict]:
-        """Stop a reply that leaked markup or repeated itself: cancel it at xAI, close its text for KS."""
+    def _start_cut(self, entry: dict, clean: str) -> None:
+        """Stop the reply's text here; its audio may still play for as long as the clean text needs."""
         entry["cut"] = True
+        entry["allowance"] = round(CUT_AUDIO_PER_CHAR * len(clean) + CUT_AUDIO_BASE, 3)
+        reason = entry["filter"].reason
+        log.warning("[%s] assistant reply cut (%s), audio allowance %.2fs", self.label, reason, entry["allowance"])
+        self.mark("transcript_cut", reason=reason, allowance_s=entry["allowance"], audio_s=round(entry["audio_s"], 3))
+
+    def _cut(self, entry: dict, event: dict) -> list[dict]:
+        """A reply leaked a system block or repeated itself: close its text for KS, keep its audio for now."""
         flt = entry["filter"]
-        log.warning("[%s] assistant reply cut (%s)", self.label, flt.reason)
-        self.mark("transcript_cut", reason=flt.reason)
+        self._start_cut(entry, flt.sent)
         self._assistant_said(entry, flt.sent)
-        if self.active_response and self.upstream is not None:
-            await self._send_up({"type": "response.cancel", **({"response_id": entry["id"]} if entry["id"] else {})})
         done_type, field_name = _TEXT_DELTAS[event["type"]]
         done = {
             "type": done_type,
@@ -839,11 +859,19 @@ class RelaySession:
             field_name: flt.sent,
         }
         entry["done_sent"] = True
-        out = [{k: v for k, v in done.items() if v is not None}]
+        return [{k: v for k, v in done.items() if v is not None}]
+
+    async def _stop_cut(self, entry: dict) -> list[dict]:
+        """A cut reply used up its audio allowance: cancel it at xAI and drop the rest."""
+        entry["stopped"] = True
+        log.info("[%s] cut reply stopped after %.2fs of audio", self.label, entry["audio_s"])
+        self.mark("audio_cut", audio_s=round(entry["audio_s"], 3), allowance_s=entry["allowance"])
+        if self.active_response and self.upstream is not None:
+            await self._send_up({"type": "response.cancel", **({"response_id": entry["id"]} if entry["id"] else {})})
         if self.cfg.get("flush_tablet_audio_on_cut"):
             # KS treats speech_started as a barge-in and flushes what it has buffered.
-            out.append({"type": "input_audio_buffer.speech_started", "event_id": self._relay_id(), "audio_start_ms": 0})
-        return out
+            return [{"type": "input_audio_buffer.speech_started", "event_id": self._relay_id(), "audio_start_ms": 0}]
+        return []
 
     def _on_dismiss(self) -> dict | None:
         """The user said "thanks" / "that's all": end now if the reply to it is already done, else after it."""
