@@ -60,25 +60,49 @@ _SECRET_KEY_RE = re.compile(
 )
 
 
-def b64_pcm16_seconds(delta: str, rate: int = 24000) -> float:
-    """Duration of a base64 PCM16 mono frame; uses length only (no decode)."""
-    if not delta or rate <= 0:
+def b64_pcm16_seconds(delta: str, rate: int = 24000, sample_bytes: int = 2) -> float:
+    """Duration of a base64 mono audio frame (PCM16 by default); uses length only (no decode)."""
+    if not delta or rate <= 0 or sample_bytes <= 0:
         return 0.0
     pad = len(delta) - len(delta.rstrip("="))
     nbytes = (len(delta) * 3) // 4 - pad
     if nbytes <= 0:
         return 0.0
-    return nbytes / 2 / float(rate)
+    return nbytes / sample_bytes / float(rate)
+
+
+_G711 = ("audio/pcmu", "audio/pcma", "g711_ulaw", "g711_alaw")
+
+
+def _output_format(session: dict | None) -> tuple[str, int | None]:
+    """(format type, rate) of the audio the model sends, falling back to the input side."""
+    session = session or {}
+    audio = session.get("audio") or {}
+    kind, rate = "", None
+    for side in ("output", "input"):
+        fmt = (audio.get(side) or {}).get("format") or {}
+        if isinstance(fmt, str):
+            fmt = {"type": fmt}
+        kind = kind or str(fmt.get("type") or "")
+        if rate is None and isinstance(fmt.get("rate"), (int, float)) and fmt.get("rate"):
+            rate = int(fmt["rate"])
+    kind = kind or str(session.get("output_audio_format") or "")
+    return kind.lower(), rate
 
 
 def pcm_rate(session: dict | None, default: int = 24000) -> int:
-    audio = (session or {}).get("audio") or {}
-    for side in ("output", "input"):
-        fmt = (audio.get(side) or {}).get("format") or {}
-        rate = fmt.get("rate")
-        if isinstance(rate, (int, float)) and rate:
-            return int(rate)
-    return default
+    kind, rate = _output_format(session)
+    if rate:
+        return rate
+    return 8000 if kind in _G711 else default
+
+
+def sample_bytes(session: dict | None, default: int = 2) -> int:
+    """Bytes per mono sample: 1 for G.711 (mu-law / A-law), 2 for PCM16."""
+    kind, _ = _output_format(session)
+    if not kind:
+        return default
+    return 1 if kind in _G711 else 2
 
 
 def _redact_text(text: str, secrets: list[str] | tuple[str, ...] = ()) -> str:

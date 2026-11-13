@@ -28,10 +28,15 @@ add-on and the add-on relays each conversation to xAI:
   from the kitchen). An area the user named that is not the tablet's room is
   never dropped, and the retry needs a device or list name.
 - **Clean, single answers.** Assistant transcripts forwarded to the tablet are
-  stripped of internal markup (`<turn_end>`, `<system_warning>…</system_warning>`,
-  any other `<…>` tag). A reply that leaks markup or repeats a sentence is
-  cancelled at that point (`response.cancel`) and its remaining audio and text
-  are not forwarded.
+  stripped of internal markup. End-of-turn markers (`<turn_end>`,
+  `<end_of_turn>`) and other tags are removed silently. Only a `<system…>`
+  block (such as `<system_warning>…</system_warning>`) or a sentence repeated
+  word for word cuts a reply. A cut stops the reply's text at that point.
+  xAI streams the transcript seconds ahead of the audio, so the reply's audio
+  keeps playing for an allowance sized to the clean text (75 ms per character
+  plus 0.4 s, measured from the audio bytes in the session's format and sample
+  rate). Only once that is used up does the relay send `response.cancel` and
+  drop the rest. A reply that finishes inside its allowance is left alone.
 - **Hang-up after home commands.** When every relay tool call in an answer is
   a successful home-control write, the follow-up asks Grok to confirm once and
   call `end_conversation`. If it does not, the relay ends the conversation
@@ -115,8 +120,9 @@ the Settings tab without restarting the add-on.
   identical read-only skill calls in a session (help / catalog / get / list;
   default on), hang up after a successful home command (default on), hang up
   on "thanks / that's all" (default on), flush the tablet's audio when a
-  leaked or repeated reply is cut (default off; sends KS a synthetic
-  `speech_started`, which KS treats as a barge-in), which built-in tool
+  leaked or repeated reply is stopped (default off; sent once the reply's audio
+  allowance is used up, as a synthetic `speech_started` that KS treats as a
+  barge-in), which built-in tool
   families are direct or off, and
   memory: enabled, mode (summary / raw / off), window minutes (45), max items
   (5), scope (per_tablet / house), other rooms' last-N-minutes window (10, per

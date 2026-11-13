@@ -4,6 +4,13 @@ Versions match `grok_voice_agent/config.yaml`. GitHub Releases list the
 merged pull requests since the previous tag. Issues closed with `Fixes #N`
 in those pull requests are included below when GitHub reports them.
 
+## [0.3.8] - 2026-11-13
+
+Fixes tablets hearing only a blip of each reply after 0.3.7.
+
+- xAI streams a reply's whole transcript within about 0.1 s of its first audio, seconds ahead of most of the audio, and the streamed text often ends with a harmless `<turn_end>`. 0.3.7 treated any tag as a leak, so normal replies were cut and cancelled right after the first audio and every later audio delta was dropped. End-of-turn markers (`<turn_end>`, `</turn_end>`, `<end_of_turn>`) and other tags are now stripped silently. Only a `<system…>` block (such as `<system_warning>`) or a sentence repeated word for word cuts a reply.
+- A cut never cancels or drops audio straight away. It stops the reply's text and gives its audio an allowance sized to the clean text that was forwarded: 75 ms per character plus 0.4 s, measured from the audio bytes using the session's format (PCM16 or G.711) and sample rate. Audio deltas keep reaching the tablet until the allowance is used up. Then the relay sends `response.cancel`, drops the rest, and sends the optional flush (`flush_tablet_audio_on_cut`). A reply that finishes inside its allowance is left alone. Hang-up after home commands, the relay's `end_conversation` and dropping output after an end work as before. The timeline shows the allowance on `transcript_cut` and the audio played on a new `audio_cut` event.
+
 ## [0.3.7] - 2026-11-13
 
 Kiosk Satellite relay fixes for double confirmations, double goodbyes and leaked internal text.

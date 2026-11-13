@@ -4,6 +4,10 @@ Grok voice sometimes speaks or writes internal markup after its answer
 (``Goodbye! <turn_end> <system_warning>…</system_warning>``) or says the same
 confirmation twice in one reply. ``TranscriptFilter`` cleans the streamed text
 and reports the point where a reply should be cut.
+
+Only ``<system…>`` blocks are leaks. End-of-turn markers (``<turn_end>``,
+``<end_of_turn>``) and any other tag are stripped silently: xAI often ends a
+normal reply's streamed text with ``<turn_end>``.
 """
 
 from __future__ import annotations
@@ -14,6 +18,7 @@ _TAG_RE = re.compile(r"</?[A-Za-z_][\w:.-]*(?:\s[^<>]*)?/?>")
 # Blocks whose content is internal too, not just the tags around it.
 _BLOCK_RE = re.compile(r"<(system[\w-]*)\b[^<>]*>.*?</\1\s*>", re.S | re.I)
 _OPEN_BLOCK_RE = re.compile(r"<system[\w-]*\b[^<>]*>", re.I)
+_LEAK_RE = re.compile(r"<\s*/?\s*system[\w-]*\b[^<>]*>", re.I)
 _PARTIAL_TAG_RE = re.compile(r"<[^<>]*$")
 _SENTENCE_RE = re.compile(r"[^.!?]*[.!?]+")
 
@@ -34,9 +39,9 @@ def clean_transcript(text: str, *, partial: bool = False) -> str:
     return re.sub(r"\s{2,}", " ", out).strip()
 
 
-def first_tag(text: str) -> int | None:
-    """Index of the first complete tag (a leak), or None."""
-    match = _TAG_RE.search(text or "")
+def first_leak(text: str) -> int | None:
+    """Index of the first complete ``<system…>`` / ``</system…>`` tag, or None."""
+    match = _LEAK_RE.search(text or "")
     return match.start() if match else None
 
 
@@ -70,9 +75,9 @@ def _hold_possible_repeat(text: str) -> str:
 def _clip(raw: str, *, partial: bool) -> tuple[str, str]:
     """(clean text up to any leak or repeat, reason) for raw transcript text."""
     reason = ""
-    tag = first_tag(raw)
-    if tag is not None:
-        raw, reason = raw[:tag], "leak"
+    leak = first_leak(raw)
+    if leak is not None:
+        raw, reason = raw[:leak], "leak"
     text = clean_transcript(raw, partial=partial and not reason)
     repeat = first_repeat(text)
     if repeat is not None:

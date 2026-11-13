@@ -690,7 +690,7 @@ def test_panel_page_is_served_on_relay_path():
     assert b"cache_readonly_skills" in root.body
     assert b"cache_ro" in root.body
     assert b"hangup_after_home_command" in root.body and b"flush_tablet_audio_on_cut" in root.body
-    assert b"transcript_cut" in root.body
+    assert b"transcript_cut" in root.body and b"audio_cut" in root.body
 
     class Sock:
         request = Request("/relay/ws", Headers())
@@ -1416,59 +1416,160 @@ def test_transcript_filter_cuts_an_exact_repeated_sentence():
     assert streamed == text and not different.cut
 
 
-def test_leaked_markup_is_stripped_cancelled_and_later_output_dropped(tmp_path):
+def _audio(seconds, rate=24000, sample_bytes=2):
+    import base64
+
+    return base64.b64encode(b"\x00" * int(seconds * rate * sample_bytes)).decode()
+
+
+def _audio_delta(rid, seconds, item_id="a1"):
+    return {"type": "response.output_audio.delta", "response_id": rid, "item_id": item_id, "delta": _audio(seconds)}
+
+
+def _text_delta(rid, text, item_id="a1"):
+    return {"type": "response.output_audio_transcript.delta", "response_id": rid, "item_id": item_id, "delta": text}
+
+
+def test_turn_end_marker_is_stripped_silently_and_every_audio_delta_plays(tmp_path):
     session = _relay_session(tmp_path, {"hangup_after_home_command": False})
+    clean = "TV room lights are off. Goodbye!"
 
     async def run():
-        seen = await _feed(session, _created("r1"))
-        seen += await _feed(
-            session,
-            {"type": "response.output_audio_transcript.delta", "response_id": "r1", "item_id": "a1", "delta": "TV Room lights are off. Goodbye! "},
-            {"type": "response.output_audio_transcript.delta", "response_id": "r1", "item_id": "a1", "delta": "<turn_end> <system_warning>Reminder"},
-            {"type": "response.output_audio.delta", "response_id": "r1", "item_id": "a1", "delta": "AAAA"},
-            {"type": "response.output_audio_transcript.delta", "response_id": "r1", "item_id": "a1", "delta": "</system_warning>"},
-            {"type": "response.output_audio_transcript.done", "response_id": "r1", "item_id": "a1", "transcript": LEAK},
-            _done("r1"),
-        )
+        seen = await _feed(session, _created("r1"), _text_delta("r1", "TV room lights are off. "), _text_delta("r1", "Goodbye! <turn_end>"),
+                           {"type": "response.output_audio_transcript.done", "response_id": "r1", "item_id": "a1", "transcript": clean})
+        for _ in range(40):  # 4 s of audio, all after the text: longer than any cut allowance for this text
+            seen += await _feed(session, _audio_delta("r1", 0.1))
+        seen += await _feed(session, _done("r1"))
         return seen
 
     seen = asyncio.run(run())
-    texts = [m.get("delta") or m.get("transcript") for m in seen if "transcript" in m["type"]]
-    assert texts == ["TV Room lights are off. Goodbye!", "TV Room lights are off. Goodbye!"]
+    kinds = [m["type"] for m in seen]
+    assert kinds.count("response.output_audio.delta") == 40
+    assert "".join(m["delta"] for m in seen if m["type"] == "response.output_audio_transcript.delta") == clean
+    assert [m["transcript"] for m in seen if m["type"] == "response.output_audio_transcript.done"] == [clean]
     assert not any("<" in json.dumps(m) for m in seen)
-    assert [m["type"] for m in seen].count("response.output_audio.delta") == 0
-    assert [m["type"] for m in seen][-1] == "response.done"
-    assert not any(m["type"] == "input_audio_buffer.speech_started" for m in seen)  # flush is opt-in
+    assert session.upstream.sent == []  # no cancel
+    tl = session.context.status.live[session.status_id]["timeline"]
+    assert not any(e["kind"] in ("transcript_cut", "audio_cut") for e in tl)
+
+
+def test_leaked_system_block_keeps_audio_up_to_the_allowance_then_cancels(tmp_path):
+    session = _relay_session(tmp_path, {"hangup_after_home_command": False})
+    clean = "TV Room lights are off. Goodbye!"
+    allowance = round(0.075 * len(clean) + 0.4, 3)
+
+    async def run():
+        seen = await _feed(session, _created("r1"), _text_delta("r1", clean + " "), _text_delta("r1", "<turn_end> <system_warning>Reminder"))
+        assert session.upstream.sent == []  # nothing cancelled at the cut
+        audio = []
+        for _ in range(10):  # 0.5 s each: 5 s, past the allowance
+            audio.append((await _feed(session, _audio_delta("r1", 0.5)), len(session.upstream.sent)))
+        seen += await _feed(session, _text_delta("r1", "</system_warning>"),
+                            {"type": "response.output_audio_transcript.done", "response_id": "r1", "item_id": "a1", "transcript": LEAK},
+                            _done("r1"))
+        return seen, audio
+
+    seen, audio = asyncio.run(run())
+    texts = [m.get("delta") or m.get("transcript") for m in seen if "transcript" in m["type"]]
+    assert texts == [clean, clean]
+    assert not any("<" in json.dumps(m) for m in seen)
+    forwarded = [len([m for m in out if m["type"] == "response.output_audio.delta"]) for out, _ in audio]
+    played = int(-(-allowance // 0.5))  # whole deltas until the allowance is spent
+    assert forwarded == [1] * played + [0] * (10 - played)
+    assert [cancels for _, cancels in audio] == [0] * (played - 1) + [1] * (10 - played + 1)
     cancels = [m for m in session.upstream.sent if m["type"] == "response.cancel"]
     assert len(cancels) == 1 and cancels[0]["event_id"].startswith("relay_") and cancels[0]["response_id"] == "r1"
+    assert not any(m["type"] == "input_audio_buffer.speech_started" for m in seen)  # flush is opt-in
+    assert [m["type"] for m in seen][-1] == "response.done"
     tl = session.context.status.live[session.status_id]["timeline"]
-    assert any(e["kind"] == "transcript_cut" and e["reason"] == "leak" for e in tl)
+    cut = next(e for e in tl if e["kind"] == "transcript_cut")
+    assert cut["reason"] == "leak" and cut["allowance_s"] == allowance
+    assert next(e for e in tl if e["kind"] == "audio_cut")["audio_s"] == played * 0.5
     said = [e["text"] for e in tl if e["kind"] == "transcript" and e.get("role") == "assistant"]
-    assert said == ["TV Room lights are off. Goodbye!"]
+    assert said == [clean]
 
 
-def test_repeated_confirmation_is_cut_and_flush_is_optional(tmp_path):
+def test_repeated_confirmation_is_cut_and_flush_waits_for_the_allowance(tmp_path):
     session = _relay_session(tmp_path, {"hangup_after_home_command": False, "flush_tablet_audio_on_cut": True})
 
     async def run():
         seen = await _feed(session, _created("r1"))
         for sentence in ("Left garage door is open. ", "Goodbye! ", "Left garage door is open. ", "Goodbye!"):
-            seen += await _feed(session, {"type": "response.output_audio_transcript.delta", "response_id": "r1",
-                                          "item_id": "a1", "delta": sentence})
-            seen += await _feed(session, {"type": "response.output_audio.delta", "response_id": "r1", "item_id": "a1", "delta": "AAAA"})
+            seen += await _feed(session, _text_delta("r1", sentence))
+        at_cut = list(seen)
+        for _ in range(8):  # 1 s each, past the 3 s allowance
+            seen += await _feed(session, _audio_delta("r1", 1.0))
         seen += await _feed(session, _done("r1"))
-        return seen
+        return at_cut, seen
 
-    seen = asyncio.run(run())
+    at_cut, seen = asyncio.run(run())
+    assert not any(m["type"] == "input_audio_buffer.speech_started" for m in at_cut)
     deltas = "".join(m["delta"] for m in seen if m["type"] == "response.output_audio_transcript.delta")
     assert deltas.strip() == "Left garage door is open. Goodbye!"
     done = [m for m in seen if m["type"] == "response.output_audio_transcript.done"]
     assert len(done) == 1 and done[0]["transcript"] == "Left garage door is open. Goodbye!"
-    assert [m["type"] for m in seen].count("response.output_audio.delta") == 2
+    assert [m["type"] for m in seen].count("response.output_audio.delta") == 3  # 0.075 * 34 + 0.4 = 2.95 s
+    kinds = [m["type"] for m in seen]
     flush = [m for m in seen if m["type"] == "input_audio_buffer.speech_started"]
     assert len(flush) == 1 and flush[0]["event_id"].startswith("relay_")
+    assert kinds.index("input_audio_buffer.speech_started") == max(i for i, k in enumerate(kinds) if k == "response.output_audio.delta") + 1
     assert [m["type"] for m in session.upstream.sent] == ["response.cancel"]
 
+
+def test_cut_reply_that_finishes_inside_its_allowance_is_not_cancelled_and_still_hangs_up(tmp_path):
+    session = _relay_session(tmp_path)
+
+    async def run():
+        await _home_command(session)
+        follow = await _feed(session, _created("r2"), _text_delta("r2", "Kitchen lights are on. <system_warning>x</system_warning>"))
+        for _ in range(5):
+            follow += await _feed(session, _audio_delta("r2", 0.2))
+        follow += await _feed(session, _done("r2"))
+        return follow
+
+    follow = asyncio.run(run())
+    assert [m["type"] for m in follow].count("response.output_audio.delta") == 5
+    assert not any(m["type"] == "response.cancel" for m in session.upstream.sent)
+    assert [m["type"] for m in follow][-2:] == ["response.function_call_arguments.done", "response.done"]
+    assert follow[-2]["call_id"].startswith(RELAY_END_PREFIX)
+
+
+def test_cut_reply_stopped_at_its_allowance_still_hangs_up_and_drops_later_output(tmp_path):
+    session = _relay_session(tmp_path)
+
+    async def run():
+        await _home_command(session)
+        follow = await _feed(session, _created("r2"), _text_delta("r2", "Done. Done."))
+        for _ in range(4):
+            follow += await _feed(session, _audio_delta("r2", 0.5))
+        follow += await _feed(session, {"type": "response.done", "response": {"id": "r2", "status": "cancelled", "output": []}})
+        later = await _feed(session, _created("r3"), _audio_delta("r3", 0.5, "a3"), _done("r3"))
+        return follow, later
+
+    follow, later = asyncio.run(run())
+    assert [m["type"] for m in follow].count("response.output_audio.delta") == 2  # 0.075 * 5 + 0.4 = 0.775 s
+    cancels = [m for m in session.upstream.sent if m["type"] == "response.cancel"]
+    assert [c["response_id"] for c in cancels] == ["r2", "r3"]
+    assert follow[-2]["name"] == "end_conversation" and follow[-1]["type"] == "response.done"
+    assert later == []
+
+
+def test_end_markers_are_not_leaks_and_audio_length_follows_the_session_format():
+    from app.ks_relay.timeline import b64_pcm16_seconds, pcm_rate, sample_bytes
+    from app.ks_relay.transcript import first_leak
+
+    for marker in ("<turn_end>", "</turn_end>", "<end_of_turn>", "<eot/>"):
+        flt = TranscriptFilter()
+        assert flt.feed(f"Lights off. {marker}") == ("Lights off.", False) and not flt.cut
+        assert flt.final(f"Lights off. {marker}") == "Lights off." and not flt.cut
+    assert first_leak("ok <system_warning>x") == 3 and first_leak("ok </system>") == 3 and first_leak("ok <turn_end>") is None
+    pcm = {"audio": {"output": {"format": {"type": "audio/pcm", "rate": 16000}}}}
+    ulaw = {"audio": {"output": {"format": {"type": "audio/pcmu"}}}}
+    assert (pcm_rate(pcm), sample_bytes(pcm)) == (16000, 2)
+    assert (pcm_rate(ulaw), sample_bytes(ulaw)) == (8000, 1)
+    assert (pcm_rate({}), sample_bytes({})) == (24000, 2)
+    assert b64_pcm16_seconds(_audio(0.5, 8000, 1), 8000, 1) == 0.5
+    assert b64_pcm16_seconds(_audio(0.5)) == 0.5
 
 def test_done_only_transcript_is_sanitized(tmp_path):
     session = _relay_session(tmp_path)
