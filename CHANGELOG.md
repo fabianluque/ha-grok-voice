@@ -4,6 +4,18 @@ Versions match `grok_voice_agent/config.yaml`. GitHub Releases list the
 merged pull requests since the previous tag. Issues closed with `Fixes #N`
 in those pull requests are included below when GitHub reports them.
 
+## [0.3.7] - 2026-11-13
+
+Kiosk Satellite relay fixes for double confirmations, double goodbyes and leaked internal text.
+
+- Home commands that match nothing in the tablet's own room retry once without that room (on/off, lights, covers, locks, climate, fans, to-do lists). Grok was given the tablet's room as the default, so "open the left garage" from the kitchen arrived as `area: Kitchen`, failed, and Grok retried and confirmed twice. Only the tablet's own room is dropped (an area the user named stays strict), and a device or list name must remain so a retry never widens to the whole house. The result carries `area_dropped`.
+- Assistant transcripts sent to the tablet are cleaned of `<turn_end>`, `<system_warning>…</system_warning>` (with its content) and any other `<…>` tag, in both delta and done events. A reply that leaks a tag or repeats a sentence word for word is cancelled at xAI (`response.cancel`), the tablet gets the clean text up to that point, and the rest of that reply's audio and text is not forwarded. New setting **Flush tablet audio when a reply is cut** (default off) also sends the tablet a synthetic `speech_started` so it drops buffered audio.
+- Hang-up after home commands (new setting `hangup_after_home_command`, default on, per-tablet override). When every relay tool call in an answer is a successful home-control write, the follow-up `response.create` carries "Action succeeded. Confirm once in one short sentence, then call end_conversation. Do not repeat anything." If that answer finishes without `end_conversation`, the relay sends the tablet its own `end_conversation` call (`call_id` `relay_end_…`) just before the held `response.done` and drops the tablet's `function_call_output` for it. Q&A stays open, and an answer that asks a follow-up question is not hung up. "Thanks" / "that's all" from the user ends the same way after the reply (`hangup_on_thanks`, default on). The default extra instructions gain a policy line (hang up after home commands, keep Q&A open, confirm once).
+- After any `end_conversation` (Grok's or the relay's), responses xAI starts before the session closes are cancelled and never reach the tablet, and tool calls in them are not run.
+- xAI `web_search` / `x_search` calls no longer count as tablet calls: an answer that called a relay tool and a search used to skip the spoken follow-up and go silent.
+- The relay's pending-follow-up flag clears on `response.created` / `response.done` or after 10 s, so it can no longer swallow a later real error.
+- Every event the relay sends xAI has an `event_id` starting with `relay_`. Errors for those, plus the harmless races "already has an active response" and item / call id not found, are recorded on the session timeline (marked not sent) instead of reaching the tablet. A race on the tablet's own event (its turn's `response.create`) is still forwarded, because Kiosk Satellite handles it.
+
 ## [0.3.6] - 2026-10-15
 
 - Skills imported from Home Assistant `script.skill` (`ha_skill` actions with an empty args spec) pass every argument through instead of rejecting them as unknown. Declared args on `ha_skill` still validate. Import may fill simple `{arg}` lists from HA help text (`ask {request}`); anything more complex stays pass-through. The Skills tab labels those actions **pass-through (any args)**.
