@@ -153,6 +153,7 @@ function kindLabel(e){const k=e.kind||"";
  if(k==="transcript_cut")return `assistant reply cut · ${e.reason||""}`+(e.allowance_s!=null?` · audio allowance ${e.allowance_s} s`:"");
  if(k==="audio_cut")return `cut reply stopped · ${e.audio_s!=null?e.audio_s:"?"} s of audio played`;
  if(k==="response_dropped")return "response after end dropped";
+ if(k==="memory_injected")return `memory injected · ${e.summary_items||0} summary, ${e.replay_items||0} replayed`;
  if(k==="dismiss_phrase")return "user dismissal (thanks / that's all)";
  if(k==="error")return `error ${e.code||""} ${e.message||""}`.trim()+(e.hidden?" (not sent to tablet)":"");
  if(k==="omitted")return e.detail||"further events dropped";
@@ -288,6 +289,7 @@ function settings(m){const s=S.settings,mem=s.memory,r=relayInfo();
  ${field("Max items",`<input id="m_max" type="number" min="1" max="20" value="${mem.max_items}">`)}
  ${field("Scope",sel("m_scope",["per_tablet","house"],mem.scope))}
  ${field("Other rooms, last N minutes (per_tablet; 0 = off)",`<input id="m_house" type="number" min="0" max="240" value="${mem.house_window_minutes}">`)}
+ ${field("Replay this tablet's last exchanges if it ended within N minutes (0 = off)",`<input id="m_replay" type="number" min="0" max="240" value="${mem.replay_minutes!=null?mem.replay_minutes:10}">`)}
  ${field("Summary model (xAI text)",`<input id="m_model" value="${esc(mem.summary_model)}">`)}
  ${field("Summary max chars",`<input id="m_chars" type="number" min="80" max="2000" value="${mem.summary_max_chars}">`)}
  ${field("Drop KS's own history block",`<input id="m_strip" type="checkbox" ${mem.strip_ks_history?"checked":""}>`)}
@@ -305,7 +307,7 @@ function settings(m){const s=S.settings,mem=s.memory,r=relayInfo();
   const next={...S.settings,model:v("model").value.trim(),reasoning_effort:v("reasoning").value,vad:{mode:v("vadmode").value,silence_ms:n("vadms")},inject_datetime:v("dt").checked,annotate_tool_dates:v("ann").checked,cache_readonly_skills:v("cache_ro").checked,hangup_after_home_command:v("hang_home").checked,hangup_on_thanks:v("hang_thanks").checked,flush_tablet_audio_on_cut:v("flush_cut").checked,date_template:v("dtt").value.trim(),extra_instructions:v("extra").value,
    costs:{realtime_per_min:n("c_rt"),realtime_basis:v("c_basis").value,summary_input_per_m:n("c_in"),summary_output_per_m:n("c_out"),retention_days:n("c_keep")},ha_sensors:v("c_ha").checked,
    tools:Object.fromEntries(Object.keys(S.families).map(k=>[k,v("fam_"+k).value])),
-   memory:{enabled:v("m_en").checked,mode:v("m_mode").value,window_minutes:n("m_win"),max_items:n("m_max"),scope:v("m_scope").value,house_window_minutes:n("m_house"),summary_model:v("m_model").value.trim(),summary_max_chars:n("m_chars"),strip_ks_history:v("m_strip").checked}};
+   memory:{enabled:v("m_en").checked,mode:v("m_mode").value,window_minutes:n("m_win"),max_items:n("m_max"),scope:v("m_scope").value,house_window_minutes:n("m_house"),replay_minutes:n("m_replay"),summary_model:v("m_model").value.trim(),summary_max_chars:n("m_chars"),strip_ks_history:v("m_strip").checked}};
   call({op:"save_settings",settings:next}).then(d=>{if(d.errors){v("serr").textContent=" "+d.errors.join("\n")}else{S.settings=d.settings;v("serr").innerHTML=' <span class="ok">Saved. Applies to the next session.</span>'}})}}
 // ---------- skills
 function skills(m){const wrap=$(`<div class="skills"><div class="card" id="sklist"></div><div id="sked"></div></div>`);m.append(wrap);

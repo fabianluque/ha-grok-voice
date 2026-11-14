@@ -1,11 +1,14 @@
 """Short-term memory for the KS relay.
 
 Each session records what the user said, what Grok said and the relay's tool
-calls (name and ok/failed only). After the session ends (off the hot path) a
-fast xAI text model turns it into 2-3 lines; the result is stored per tablet
-in /data. The next session gets a compact "Recent context" block in its
-instructions. Empty summaries are not stored. If summarizing fails, the
-trimmed exchanges are stored instead.
+calls (name, ok/failed and the device or area names it targeted; no other
+arguments). After the session ends (off the hot path) a fast xAI text model
+turns it into 2-3 lines; the result is stored per tablet in /data with the
+session's last few exchanges. The next session on the same tablet within
+``replay_minutes`` gets those exchanges replayed as conversation items, and
+every session gets a compact "Recent context" block in its instructions.
+Empty summaries are not stored. If summarizing fails, the trimmed exchanges
+are stored instead.
 """
 
 from __future__ import annotations
@@ -37,6 +40,13 @@ SUMMARY_PROMPT = (
     "names, numbers, places or times mentioned. Leave out anything that did not come up; never write lines "
     "like 'no pending requests'. No preamble. If nothing is worth remembering, reply with exactly: NONE"
 )
+CONTEXT_HEADER = (
+    "Recent context (earlier conversations). If the user says them/it/that without naming a device, it refers "
+    "to the most recent device below."
+)
+REPLAY_MAX_ITEMS = 6
+REPLAY_MAX_CHARS = 300
+MAX_TARGETS = 3
 
 
 @dataclass(frozen=True)
@@ -50,6 +60,7 @@ class MemorySettings:
     summary_model: str = "grok-4.20-0309-non-reasoning"
     summary_max_chars: int = 400
     strip_ks_history: bool = True
+    replay_minutes: int = 10  # same tablet: replay the last session's exchanges this recent (0 = never)
 
     @classmethod
     def from_dict(cls, data: dict) -> "MemorySettings":
@@ -75,7 +86,7 @@ class SessionLog:
             self.lines.append((role, text))
 
     def tool(self, name: str, arguments: str, output: str, ok: bool) -> None:
-        line = compact_tool_line(name, arguments, ok)
+        line = compact_tool_line(name, arguments, ok, output)
         self.facts.append(line)
         self.lines.append(("tool", line))
 
@@ -88,6 +99,11 @@ class SessionLog:
         text = "\n".join(f"{names[r]}: {t}" for r, t in self.lines)
         return text[-max_chars:]
 
+    def exchanges(self, limit: int = REPLAY_MAX_ITEMS) -> list[list[str]]:
+        """The last user/assistant lines, for replay as conversation items."""
+        said = [[r, t[:REPLAY_MAX_CHARS]] for r, t in self.lines if r in ("user", "assistant")]
+        return said[-limit:]
+
     def raw(self, max_chars: int) -> str:
         pairs = [f"{'User' if r == 'user' else 'You'}: {t[:120]}" for r, t in self.lines if r in ("user", "assistant")]
         out = " / ".join(pairs[-6:])
@@ -98,6 +114,7 @@ def strip_ks_history(instructions: str) -> str:
     return KS_HISTORY_RE.sub("", instructions or "").rstrip()
 
 
+_FACT_RE = re.compile(r"^\S+(?: \S+)? (?:ok|failed)(?: \([^()]*\))?$")
 _FACT_ARROW_RE = re.compile(r"^(?P<name>\S+)(?:\s+(?P<rest>.*?))?\s*->\s*(?P<status>ok|failed)\b", re.DOTALL)
 _SKILL_NAME_RE = re.compile(r'"name"\s*:\s*"([^"]+)"')
 _SKILL_ACTION_RE = re.compile(r'"action"\s*:\s*"([^"]+)"')
@@ -129,8 +146,31 @@ def tool_label(name: str, arguments: str = "") -> str:
     return "skill"
 
 
-def compact_tool_line(name: str, arguments: str = "", ok: bool = True) -> str:
-    return f"{tool_label(name, arguments)} {'ok' if ok else 'failed'}"
+def _json_dict(text: str) -> dict:
+    try:
+        value = json.loads(text) if (text or "").strip() else {}
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def tool_targets(name: str, arguments: str = "", output: str = "") -> list[str]:
+    """Device or area names a call acted on: HA's matched entities, else the name / area it asked for."""
+    if (name or "").strip() == "skill":
+        return []
+    done = _json_dict(output).get("done")
+    if isinstance(done, list):
+        names = [str(d).strip() for d in done if isinstance(d, str) and d.strip()]
+        if names:
+            return names[:MAX_TARGETS]
+    args = _json_dict(arguments)
+    return [str(args[k]).strip()[:60] for k in ("name", "area") if isinstance(args.get(k), str) and args[k].strip()]
+
+
+def compact_tool_line(name: str, arguments: str = "", ok: bool = True, output: str = "") -> str:
+    line = f"{tool_label(name, arguments)} {'ok' if ok else 'failed'}"
+    targets = tool_targets(name, arguments, output)
+    return f"{line} ({', '.join(targets)})" if targets else line
 
 
 def compact_stored_fact(fact: str) -> str:
@@ -146,10 +186,9 @@ def compact_stored_fact(fact: str) -> str:
         if name == "skill":
             return compact_tool_line("skill", rest, status == "ok")
         return f"{name} {status}"
-    parts = fact.split()
-    if len(parts) >= 2 and parts[-1] in ("ok", "failed"):
+    if _FACT_RE.match(fact):
         return fact
-    return parts[0]
+    return fact.split()[0]
 
 
 def compact_memory_item(item: dict) -> dict | None:
@@ -159,6 +198,23 @@ def compact_memory_item(item: dict) -> dict | None:
         return None
     facts = [compact_stored_fact(f) for f in item.get("facts") or []]
     return {**item, "text": text, "facts": [f for f in facts if f]}
+
+
+def replay_events(exchanges: list) -> list[dict]:
+    """Prior turns as realtime conversation items (never followed by ``response.create``)."""
+    events = []
+    for pair in exchanges[-REPLAY_MAX_ITEMS:]:
+        if not isinstance(pair, (list, tuple)) or len(pair) != 2 or pair[0] not in ("user", "assistant"):
+            continue
+        text = " ".join(str(pair[1] or "").split())[:REPLAY_MAX_CHARS]
+        if not text:
+            continue
+        content_type = "input_text" if pair[0] == "user" else "text"
+        events.append({
+            "type": "conversation.item.create",
+            "item": {"type": "message", "role": pair[0], "content": [{"type": content_type, "text": text}]},
+        })
+    return events
 
 
 class RelayMemory:
@@ -231,6 +287,7 @@ class RelayMemory:
             "kind": kind,
             "text": text[: settings.summary_max_chars],
             "facts": session.facts[-8:],
+            "exchanges": session.exchanges(),
         }
         async with self._lock:
             self._items.append(item)
@@ -286,9 +343,33 @@ class RelayMemory:
                 await http.aclose()
 
     # next session ----------------------------------------------------------------
-    def context_block(self, tablet: str, settings: MemorySettings, time_zone: str = "UTC", *, now: float | None = None) -> str:
+    def replay(self, tablet: str, settings: MemorySettings, *, now: float | None = None) -> tuple[dict | None, list[dict]]:
+        """(item, conversation.item.create events) for this tablet's last session if it ended recently."""
+        if not settings.active or settings.replay_minutes <= 0:
+            return None, []
+        now = now or time.time()
+        for item in reversed(self._items):
+            if item.get("tablet") != tablet:
+                continue
+            age = now - item["ts"]
+            if age < 0 or age > settings.replay_minutes * 60:
+                return None, []
+            events = replay_events(item.get("exchanges") or [])
+            return (item, events) if events else (None, [])
+        return None, []
+
+    def context(
+        self,
+        tablet: str,
+        settings: MemorySettings,
+        time_zone: str = "UTC",
+        *,
+        now: float | None = None,
+        replayed: dict | None = None,
+    ) -> tuple[str, int]:
+        """(Recent context block, number of items in it). A replayed session shows only its tool facts."""
         if not settings.active:
-            return ""
+            return "", 0
         now = now or time.time()
         window = settings.window_minutes * 60
         house = settings.house_window_minutes * 60
@@ -307,19 +388,23 @@ class RelayMemory:
         chosen = chosen[-settings.max_items :]
         compact = [c for item in chosen if (c := compact_memory_item(item))]
         if not compact:
-            return ""
+            return "", 0
         zone = ZoneInfo(time_zone or "UTC")
-        lines = ["Recent context (earlier conversations; use it only if the user refers back):"]
+        lines = [CONTEXT_HEADER]
         for item in compact:
             moment = datetime.fromtimestamp(item["started"], zone)
             when = f"{moment.hour % 12 or 12}:{moment.minute:02d} {'AM' if moment.hour < 12 else 'PM'}"
             minutes = int((now - item["ts"]) // 60)
             where = "" if item.get("tablet") == tablet else f", {item.get('area') or item.get('tablet')}"
-            head = f"- {when} ({minutes} min ago{where}): {item.get('text') or ''}".rstrip(": ")
-            lines.append(head)
+            replayed_here = replayed is not None and item.get("ts") == replayed.get("ts") and item.get("tablet") == tablet
+            text = "last conversation, replayed above" if replayed_here else item.get("text") or ""
+            lines.append(f"- {when} ({minutes} min ago{where}): {text}".rstrip(": "))
             for fact in item.get("facts") or []:
                 lines.append(f"  tool: {fact}")
-        return "\n".join(lines)
+        return "\n".join(lines), len(compact)
+
+    def context_block(self, tablet: str, settings: MemorySettings, time_zone: str = "UTC", *, now: float | None = None) -> str:
+        return self.context(tablet, settings, time_zone, now=now)[0]
 
     def items(self) -> list[dict]:
         return [c for item in self._items if (c := compact_memory_item(item))]

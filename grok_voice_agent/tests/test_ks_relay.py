@@ -691,6 +691,7 @@ def test_panel_page_is_served_on_relay_path():
     assert b"cache_ro" in root.body
     assert b"hangup_after_home_command" in root.body and b"flush_tablet_audio_on_cut" in root.body
     assert b"transcript_cut" in root.body and b"audio_cut" in root.body
+    assert b"replay_minutes" in root.body and b"memory_injected" in root.body
 
     class Sock:
         request = Request("/relay/ws", Headers())
@@ -1311,12 +1312,14 @@ class _FailingHa(FakeHa):
         return {"response_type": "error", "data": {"code": "no_valid_targets"}}
 
 
-def _relay_session(tmp_path, settings=None, *, ha=None, dry_run=True):
-    context = RelayContext(ha=ha or FakeHa(), settings=SettingsStore(tmp_path / "s.json"), skills=SkillStore(tmp_path / "k.json"))
+def _relay_session(tmp_path, settings=None, *, ha=None, dry_run=True, memory=None, update=True):
+    context = RelayContext(ha=ha or FakeHa(), settings=SettingsStore(tmp_path / "s.json"), skills=SkillStore(tmp_path / "k.json"),
+                           memory=memory)
     if settings:
         context.settings.save(settings)
     session = RelaySession(_Ks(), RelaySettings(xai_api_key="xai-test", secret="relay-secret", dry_run=dry_run), context, query={})
-    session._session_for_xai(KS_SESSION)
+    if update:
+        session._session_for_xai(KS_SESSION)
     session.upstream = _Upstream()
     return session
 
@@ -1832,3 +1835,140 @@ def test_hangup_settings_defaults_and_policy_line():
         validate({"hangup_after_home_command": "yes"})
     with pytest.raises(SettingsError):
         validate({"tablets": {"d1": {"flush_tablet_audio_on_cut": True}}})
+
+
+# 0.3.9: no goodbye after home commands, replayed per-tablet memory ---------------
+from app.ks_relay.memory import CONTEXT_HEADER, compact_tool_line as _tool_line, replay_events  # noqa: E402
+from app.ks_relay.relay import END_CONVERSATION_DESCRIPTION  # noqa: E402
+
+
+def test_end_conversation_description_and_hangup_wording_say_no_goodbye():
+    out = rewrite_session(KS_SESSION, _cfg(), [])
+    end = next(t for t in out["tools"] if t.get("name") == "end_conversation")
+    original = next(t for t in KS_SESSION["tools"] if t.get("name") == "end_conversation")
+    assert end["description"] == END_CONVERSATION_DESCRIPTION
+    assert "Do not say goodbye after a home command" in end["description"]
+    assert end["type"] == "function" and end["parameters"] == original["parameters"]
+    assert "description" not in original  # KS's tool is not modified in place
+    assert next(t for t in out["tools"] if t["type"] == "web_search") == {"type": "web_search"}
+    assert "no goodbye or sign-off" in HANGUP_INSTRUCTION and "end_conversation" in HANGUP_INSTRUCTION
+    assert "no goodbye or sign-off" in DEFAULTS["extra_instructions"]
+
+
+def test_tool_facts_keep_targets_but_no_other_arguments():
+    assert _tool_line("turn_on", '{"name":"TV room lights","domain":"light"}', True) == "turn_on ok (TV room lights)"
+    assert _tool_line("turn_off", '{"area":"Kitchen"}', True, '{"ok": true, "done": ["Ceiling", "Counter"]}') == "turn_off ok (Ceiling, Counter)"
+    assert _tool_line("set_light", '{"name":"lamp","area":"Office","brightness":40}', False) == "set_light failed (lamp, Office)"
+    assert _tool_line("todo", '{"action":"add","item":"milk","list":"Grocery"}', True) == "todo ok"
+    assert _tool_line("skill", '{"name":"dashboard","action":"set","args":{"layout":"x"}}', True) == "skill dashboard.set ok"
+    assert compact_stored_fact("turn_on ok (TV room lights)") == "turn_on ok (TV room lights)"
+    assert compact_stored_fact("skill dashboard.set ok") == "skill dashboard.set ok"
+
+
+class _ScriptedKs(_Ks):
+    def __init__(self, messages):
+        self.messages = [json.dumps(m) for m in messages]
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self.messages:
+            raise StopAsyncIteration
+        return self.messages.pop(0)
+
+
+async def _pump(session, messages):
+    session.ks = _ScriptedKs(messages)
+    task = asyncio.get_running_loop().create_future()
+    task.set_result(session.upstream)
+    await session._pump_ks(task)
+
+
+def test_turn_them_off_after_turn_on_the_tv_room_lights(tmp_path):
+    memory = RelayMemory(tmp_path / "m.json", "")  # no key: raw summary
+
+    async def run():
+        first = _relay_session(tmp_path / "one", memory=memory)
+        await _feed(first, {"type": "input_audio_buffer.speech_stopped"},
+                    {"type": "conversation.item.input_audio_transcription.completed", "transcript": "Turn on the TV room lights"})
+        await _home_command(first, "turn_on", '{"name":"TV room lights"}')
+        await _feed(first, _created("r2"), *_said("r2", "TV room lights are on."), _done("r2"))
+        await memory.complete(first.record, MemorySettings())
+
+        second = _relay_session(tmp_path / "two", memory=memory, update=False)
+        await _pump(second, [{"type": "session.update", "session": KS_SESSION},
+                             {"type": "input_audio_buffer.append", "audio": "AAAA"}])
+        sent = list(second.upstream.sent)
+        echo = await _feed(second, {"type": "conversation.item.created", "item": {
+            "id": "i1", "type": "message", "role": "user", "content": [{"type": "input_text", "text": "Turn on the TV room lights"}]}})
+        await _feed(second, {"type": "input_audio_buffer.speech_stopped"},
+                    {"type": "conversation.item.input_audio_transcription.completed", "transcript": "turn them off"})
+        _, creates = await _home_command(second, "turn_off", '{"name":"TV room lights"}')
+        follow = await _feed(second, _created("r2"), *_said("r2", "Off. <turn_end>"), *[_audio_delta("r2", 0.5) for _ in range(6)], _done("r2"))
+        return first, second, sent, echo, creates, follow
+
+    first, second, sent, echo, creates, follow = asyncio.run(run())
+    assert first.record.facts == ["turn_on ok (TV room lights)"]
+    assert [m["type"] for m in sent] == ["session.update", "conversation.item.create", "conversation.item.create", "input_audio_buffer.append"]
+    instructions = sent[0]["session"]["instructions"]
+    assert CONTEXT_HEADER in instructions
+    assert "If the user says them/it/that without naming a device, it refers to the most recent device below." in instructions
+    assert "tool: turn_on ok (TV room lights)" in instructions and "last conversation, replayed above" in instructions
+    replayed = [(m["item"]["role"], m["item"]["content"][0]["type"], m["item"]["content"][0]["text"]) for m in sent[1:3]]
+    assert replayed == [("user", "input_text", "Turn on the TV room lights"), ("assistant", "text", "TV room lights are on.")]
+    assert all(m["event_id"].startswith("relay_") for m in sent[1:3])
+    assert echo == []  # the echo of a replayed item never reaches KS
+    tl = second.context.status.live[second.status_id]["timeline"]
+    injected = next(e for e in tl if e["kind"] == "memory_injected")
+    assert injected["summary_items"] == 1 and injected["replay_items"] == 2
+    assert creates[0]["response"]["instructions"].endswith(HANGUP_INSTRUCTION)  # hang-up unaffected
+    assert [m["type"] for m in follow].count("response.output_audio.delta") == 7  # no cut, every delta plays
+    assert [m["type"] for m in follow][-2:] == ["response.function_call_arguments.done", "response.done"]
+    assert sum(m["type"] == "response.create" for m in second.upstream.sent) == 1  # replay never asks for a response
+
+
+def test_replay_window_cap_and_other_tablets(tmp_path):
+    memory = RelayMemory(tmp_path / "m.json", "")
+    now = time.time()
+    lines = [["user" if i % 2 == 0 else "assistant", f"line {i}"] for i in range(10)]
+    memory._items = [
+        {"ts": now - 60, "started": now - 90, "tablet": "d1", "area": "Attic", "kind": "raw", "text": "older", "facts": [], "exchanges": lines},
+        {"ts": now - 30, "started": now - 40, "tablet": "d2", "area": "Den", "kind": "raw", "text": "den", "facts": [], "exchanges": lines},
+    ]
+    item, events = memory.replay("d1", MemorySettings(), now=now)
+    assert item["text"] == "older" and len(events) == 6
+    assert events[0]["item"]["content"][0]["text"] == "line 4" and events[-1]["item"]["role"] == "assistant"
+    assert memory.replay("d1", MemorySettings(replay_minutes=0), now=now) == (None, [])
+    assert memory.replay("d1", MemorySettings(), now=now + 11 * 60) == (None, [])
+    block, count = memory.context("d1", MemorySettings(), "UTC", now=now + 11 * 60)
+    assert count == 1 and "older" in block and "replayed" not in block  # past the replay window: summary only
+    assert "den" not in block  # other rooms only for house_window_minutes
+    assert memory.replay("d3", MemorySettings(), now=now) == (None, [])
+    assert replay_events([["tool", "x"], ["user", "  "], ["user", "hi"]]) == [
+        {"type": "conversation.item.create", "item": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}}
+    ]
+
+
+def test_replay_is_sent_once_and_only_when_memory_is_on(tmp_path):
+    memory = RelayMemory(tmp_path / "m.json", "")
+    now = time.time()
+    memory._items = [{"ts": now - 60, "started": now - 90, "tablet": "d1", "area": "Attic", "kind": "raw", "text": "t",
+                      "facts": ["turn_on ok (Attic lamp)"], "exchanges": [["user", "lamp on"], ["assistant", "On."]]}]
+
+    async def run(session):
+        await _pump(session, [{"type": "session.update", "session": KS_SESSION}, {"type": "session.update", "session": KS_SESSION}])
+        return [m["type"] for m in session.upstream.sent]
+
+    twice = asyncio.run(run(_relay_session(tmp_path / "a", memory=memory, update=False)))
+    assert twice == ["session.update", "conversation.item.create", "conversation.item.create", "session.update"]
+    off = asyncio.run(run(_relay_session(tmp_path / "b", {"tablets": {"d1": {"memory_enabled": False}}}, memory=memory, update=False)))
+    assert off == ["session.update", "session.update"]
+
+
+def test_replay_minutes_setting():
+    assert validate({})["memory"]["replay_minutes"] == 10
+    assert validate({})["memory"]["window_minutes"] == 45
+    assert validate({"memory": {"replay_minutes": 0}})["memory"]["replay_minutes"] == 0
+    with pytest.raises(SettingsError):
+        validate({"memory": {"replay_minutes": 500}})
