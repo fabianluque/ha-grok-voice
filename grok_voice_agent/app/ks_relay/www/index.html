@@ -154,6 +154,8 @@ function kindLabel(e){const k=e.kind||"";
  if(k==="audio_cut")return `cut reply stopped · ${e.audio_s!=null?e.audio_s:"?"} s of audio played`;
  if(k==="response_dropped")return "response after end dropped";
  if(k==="memory_injected")return `memory injected · ${e.summary_items||0} summary, ${e.replay_items||0} replayed`;
+ if(k==="silent_end_confirm")return "end_conversation without speech · asked for a spoken confirmation";
+ if(k==="silent_end_timeout")return "no confirmation in time · ended anyway";
  if(k==="dismiss_phrase")return "user dismissal (thanks / that's all)";
  if(k==="error")return `error ${e.code||""} ${e.message||""}`.trim()+(e.hidden?" (not sent to tablet)":"");
  if(k==="omitted")return e.detail||"further events dropped";

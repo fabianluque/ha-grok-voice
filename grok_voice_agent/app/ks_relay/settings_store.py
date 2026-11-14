@@ -43,8 +43,9 @@ DEFAULTS: dict = {
     "extra_instructions": (
         "Home control and timers run through your tools; call them right away with sensible "
         "defaults instead of asking which device or room.\n"
-        "After a home command succeeds, confirm it once in one short sentence with no goodbye or sign-off, "
-        "then call end_conversation. Keep the conversation open after answering a question. Never repeat a "
+        "After a home command succeeds, first speak one short sentence confirming what you did, with no "
+        "goodbye or sign-off, then call end_conversation in the same response; never call end_conversation "
+        "without speaking first. Keep the conversation open after answering a question. Never repeat a "
         "confirmation."
     ),
     "hangup_after_home_command": True,
