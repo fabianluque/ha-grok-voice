@@ -38,10 +38,16 @@ add-on and the add-on relays each conversation to xAI:
   rate). Only once that is used up does the relay send `response.cancel` and
   drop the rest. A reply that finishes inside its allowance is left alone.
 - **Hang-up after home commands.** When every relay tool call in an answer is
-  a successful home-control write, the follow-up asks Grok for a short
-  confirmation with no goodbye or sign-off, then `end_conversation`. The
-  relay also rewrites KS's `end_conversation` description (name and
-  parameters unchanged) so Grok does not say goodbye after a home command. If it does not, the relay ends the conversation
+  a successful home-control write, the follow-up asks Grok to speak a short
+  confirmation first (no goodbye or sign-off) and then call `end_conversation`
+  in the same response. The relay also rewrites KS's `end_conversation`
+  description (name and parameters unchanged) the same way. If a reply still
+  calls `end_conversation` without any speech, the relay holds the call and
+  the reply's `response.done` and asks Grok for one short spoken confirmation
+  (`tool_choice: none`; retried without it if xAI refuses). It ends the
+  conversation once that confirmation is done, or after about 4 s, so the
+  confirmation audio reaches the tablet first. The timeline marks this as
+  `silent_end_confirm`. It never applies after "thanks" / "goodbye". If it does not, the relay ends the conversation
   itself: it sends KS an `end_conversation` call of its own (`relay_end_…`)
   just before the answer's `response.done`. KS runs it locally like its own
   end, and KS's output for it never reaches xAI. Questions stay open. Saying
