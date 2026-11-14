@@ -43,8 +43,9 @@ DEFAULTS: dict = {
     "extra_instructions": (
         "Home control and timers run through your tools; call them right away with sensible "
         "defaults instead of asking which device or room.\n"
-        "After a home command succeeds, confirm it once in one short sentence and call "
-        "end_conversation. Keep the conversation open after answering a question. Never repeat a confirmation."
+        "After a home command succeeds, confirm it once in one short sentence with no goodbye or sign-off, "
+        "then call end_conversation. Keep the conversation open after answering a question. Never repeat a "
+        "confirmation."
     ),
     "hangup_after_home_command": True,
     "hangup_on_thanks": True,
@@ -58,6 +59,7 @@ DEFAULTS: dict = {
         "scope": "per_tablet",
         "house_window_minutes": 10,
         "strip_ks_history": True,
+        "replay_minutes": 10,
         "summary_model": "grok-4.20-0309-non-reasoning",
         "summary_max_chars": 400,
     },
@@ -223,6 +225,7 @@ def validate(data: object) -> dict:
         "scope": lambda v: _choice(v, "memory.scope", ("per_tablet", "house"), errors),
         "house_window_minutes": lambda v: _int(v, "memory.house_window_minutes", 0, 240, errors),
         "strip_ks_history": lambda v: _bool(v, "memory.strip_ks_history", errors),
+        "replay_minutes": lambda v: _int(v, "memory.replay_minutes", 0, 240, errors),
         "summary_model": lambda v: v.strip() if isinstance(v, str) and _MODEL_RE.match(v.strip()) and v.strip() else errors.append("memory.summary_model is not a model name"),
         "summary_max_chars": lambda v: _int(v, "memory.summary_max_chars", 80, 2000, errors),
     }
