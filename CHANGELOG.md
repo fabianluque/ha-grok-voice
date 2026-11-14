@@ -4,6 +4,13 @@ Versions match `grok_voice_agent/config.yaml`. GitHub Releases list the
 merged pull requests since the previous tag. Issues closed with `Fixes #N`
 in those pull requests are included below when GitHub reports them.
 
+## [0.3.9] - 2026-11-13
+
+- No goodbye after home commands. Kiosk Satellite's `end_conversation` description told Grok to "say a short goodbye in the same response", and the relay passed it through. The relay now replaces that description (name and parameters unchanged) with "End the voice conversation. Call it when the user is done or after a home command. Do not say goodbye after a home command; after thanks/goodbye a brief reply is fine." The hang-up follow-up instruction now reads "Action succeeded. Say only a short confirmation (no goodbye or sign-off), then call end_conversation. Do not repeat anything." The default extra instructions say the same.
+- Better per-tablet memory. If the same tablet's last session ended within the new **replay minutes** setting (`memory.replay_minutes`, default 10, 0 = off; on the panel), its last user / assistant exchanges (up to 6) are replayed as `conversation.item.create` messages right after the session starts, the way the old duplex client did. They never trigger a response, their echoes are not forwarded to the tablet, and hang-up, transcript filtering and the audio allowance are unaffected. Older items stay in the summary block (window still 45 minutes); the replayed session appears there as its tool facts only.
+- Tool facts keep their targets, e.g. `turn_on ok (TV room lights)`: the entity names Home Assistant matched, else the name / area asked for. No other arguments are stored.
+- The recent-context block now tells Grok: "If the user says them/it/that without naming a device, it refers to the most recent device below." Each session logs and marks on the timeline (`memory_injected`) how many summary and replay items it got.
+
 ## [0.3.8] - 2026-11-13
 
 Fixes tablets hearing only a blip of each reply after 0.3.7.
