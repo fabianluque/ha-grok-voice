@@ -692,6 +692,7 @@ def test_panel_page_is_served_on_relay_path():
     assert b"hangup_after_home_command" in root.body and b"flush_tablet_audio_on_cut" in root.body
     assert b"transcript_cut" in root.body and b"audio_cut" in root.body
     assert b"replay_minutes" in root.body and b"memory_injected" in root.body
+    assert b"silent_end_confirm" in root.body
 
     class Sock:
         request = Request("/relay/ws", Headers())
@@ -1847,12 +1848,13 @@ def test_end_conversation_description_and_hangup_wording_say_no_goodbye():
     end = next(t for t in out["tools"] if t.get("name") == "end_conversation")
     original = next(t for t in KS_SESSION["tools"] if t.get("name") == "end_conversation")
     assert end["description"] == END_CONVERSATION_DESCRIPTION
-    assert "Do not say goodbye after a home command" in end["description"]
+    assert "first say a short confirmation of what was done (no goodbye)" in end["description"]
     assert end["type"] == "function" and end["parameters"] == original["parameters"]
     assert "description" not in original  # KS's tool is not modified in place
     assert next(t for t in out["tools"] if t["type"] == "web_search") == {"type": "web_search"}
-    assert "no goodbye or sign-off" in HANGUP_INSTRUCTION and "end_conversation" in HANGUP_INSTRUCTION
+    assert "No goodbye or sign-off" in HANGUP_INSTRUCTION and "Never call end_conversation without speaking first" in HANGUP_INSTRUCTION
     assert "no goodbye or sign-off" in DEFAULTS["extra_instructions"]
+    assert "speak" in DEFAULTS["extra_instructions"]
 
 
 def test_tool_facts_keep_targets_but_no_other_arguments():
@@ -1972,3 +1974,169 @@ def test_replay_minutes_setting():
     assert validate({"memory": {"replay_minutes": 0}})["memory"]["replay_minutes"] == 0
     with pytest.raises(SettingsError):
         validate({"memory": {"replay_minutes": 500}})
+
+
+# 0.3.10: speak first, and a spoken confirmation for a silent end_conversation ----
+from app.ks_relay import relay as relay_module  # noqa: E402
+from app.ks_relay.relay import CONFIRM_INSTRUCTION  # noqa: E402
+
+
+class _SendKs(_Ks):
+    def __init__(self):
+        self.sent = []
+
+    async def send(self, raw):
+        self.sent.append(json.loads(raw))
+
+
+def _confirm_creates(session):
+    return [m for m in session.upstream.sent if m["type"] == "response.create" and CONFIRM_INSTRUCTION in json.dumps(m)]
+
+
+def _ends(events):
+    return [m for m in events if m["type"] == "response.function_call_arguments.done" and m["name"] == "end_conversation"]
+
+
+def test_silent_end_gets_a_spoken_confirmation_before_ks_hangs_up(tmp_path):
+    session = _relay_session(tmp_path)
+
+    async def run():
+        await _home_command(session)
+        silent = await _feed(session, _created("r2"), *_calls("r2", "end_conversation", call_id="c2", item_id="f2"), _done("r2"))
+        await _settle()
+        confirm = await _feed(session, _created("r3"), *[_audio_delta("r3", 0.3, "a3") for _ in range(3)],
+                              _text_delta("r3", "Kitchen lights are on.", "a3"),
+                              {"type": "response.output_audio_transcript.done", "response_id": "r3", "item_id": "a3",
+                               "transcript": "Kitchen lights are on."},
+                              _done("r3"))
+        later = await _feed(session, _created("r4"), _audio_delta("r4", 0.3, "a4"), _done("r4"))
+        return silent, confirm, later
+
+    silent, confirm, later = asyncio.run(run())
+    assert [m["type"] for m in silent if m["type"] != "response.output_item.added"] == ["response.created"]  # call and done held
+    creates = _confirm_creates(session)
+    assert len(creates) == 1
+    assert creates[0]["response"]["tool_choice"] == "none" and creates[0]["response"]["instructions"].startswith("Be brief.")
+    assert creates[0]["event_id"].startswith("relay_")
+    kinds = [m["type"] for m in confirm]
+    assert kinds.count("response.output_audio.delta") == 3
+    assert kinds[-2:] == ["response.function_call_arguments.done", "response.done"]
+    last_audio = max(i for i, k in enumerate(kinds) if k == "response.output_audio.delta")
+    assert last_audio < kinds.index("response.function_call_arguments.done")
+    assert len(_ends(silent + confirm)) == 1 and _ends(confirm)[0]["call_id"].startswith(RELAY_END_PREFIX)
+    assert later == []  # post-end responses are still dropped
+    tl = session.context.status.live[session.status_id]["timeline"]
+    assert sum(e["kind"] == "silent_end_confirm" for e in tl) == 1
+    assert next(e for e in tl if e["kind"] == "end_conversation" and e.get("reason") == "silent_end")["by"] == "relay"
+
+
+def test_speech_plus_end_conversation_is_unchanged(tmp_path):
+    session = _relay_session(tmp_path)
+
+    async def run():
+        spoken = await _feed(session, _created("r1"), *_said("r1", "Lights are off."), *_calls("r1", "end_conversation"), _done("r1"))
+        after = _relay_session(tmp_path / "after")
+        late_speech = await _feed(after, _created("r1"), *_calls("r1", "end_conversation"), *_said("r1", "Lights are off."), _done("r1"))
+        return spoken, after, late_speech
+
+    spoken, after, late_speech = asyncio.run(run())
+    assert [e["call_id"] for e in _ends(spoken)] == ["c1"]
+    assert [m["type"] for m in spoken][-1] == "response.done"
+    assert _confirm_creates(session) == [] and session.ended
+    kinds = [m["type"] for m in late_speech]
+    assert [e["call_id"] for e in _ends(late_speech)] == ["c1"]  # held until it spoke, then released before done
+    assert kinds[-2:] == ["response.function_call_arguments.done", "response.done"]
+    assert _confirm_creates(after) == []
+    tl = session.context.status.live[session.status_id]["timeline"]
+    assert not any(e["kind"] == "silent_end_confirm" for e in tl)
+
+
+def test_silent_end_times_out_without_a_confirmation(tmp_path, monkeypatch):
+    monkeypatch.setattr(relay_module, "SILENT_END_TIMEOUT", 0.05)
+    session = _relay_session(tmp_path)
+    session.ks = _SendKs()
+
+    async def run():
+        await _feed(session, _created("r1"), *_calls("r1", "end_conversation"), _done("r1"))
+        await asyncio.sleep(0.15)
+        late = await _feed(session, _created("r2"), _audio_delta("r2", 0.3), _done("r2"))
+        return late
+
+    late = asyncio.run(run())
+    assert len(_confirm_creates(session)) == 1
+    assert [m["type"] for m in session.ks.sent] == ["response.function_call_arguments.done", "response.done"]
+    assert session.ks.sent[0]["call_id"].startswith(RELAY_END_PREFIX)
+    assert late == []  # a confirmation that starts after the end is cancelled
+    assert any(m["type"] == "response.cancel" for m in session.upstream.sent)
+    tl = session.context.status.live[session.status_id]["timeline"]
+    assert any(e["kind"] == "silent_end_timeout" for e in tl)
+
+
+def test_dismissal_end_is_not_held(tmp_path):
+    session = _relay_session(tmp_path)
+
+    async def before():
+        return await _feed(session, {"type": "input_audio_buffer.speech_stopped"},
+                           {"type": "conversation.item.input_audio_transcription.completed", "transcript": "thanks, that's all"},
+                           _created("r1"), *_calls("r1", "end_conversation"), _done("r1"))
+
+    out = asyncio.run(before())
+    assert [e["call_id"] for e in _ends(out)] == ["c1"] and _confirm_creates(session) == []
+
+    late = _relay_session(tmp_path / "late")
+
+    async def transcript_after_call():
+        return await _feed(late, {"type": "input_audio_buffer.speech_stopped"}, _created("r1"), *_calls("r1", "end_conversation"),
+                           {"type": "conversation.item.input_audio_transcription.completed", "transcript": "goodbye"}, _done("r1"))
+
+    out = asyncio.run(transcript_after_call())
+    assert [e["call_id"] for e in _ends(out)] == ["c1"] and [m["type"] for m in out][-1] == "response.done"
+    assert _confirm_creates(late) == []
+
+
+def test_confirmation_retries_without_tool_choice_then_gives_up_cleanly(tmp_path):
+    session = _relay_session(tmp_path)
+    session.ks = _SendKs()
+
+    async def run():
+        await _feed(session, _created("r1"), *_calls("r1", "end_conversation"), _done("r1"))
+        await _settle()
+        first = _confirm_creates(session)[-1]
+        await _feed(session, {"type": "error", "error": {"code": "invalid_value", "message": "tool_choice", "event_id": first["event_id"]}})
+        second = _confirm_creates(session)[-1]
+        await _feed(session, {"type": "error", "error": {"code": "invalid_value", "message": "nope", "event_id": second["event_id"]}})
+        return first, second
+
+    first, second = asyncio.run(run())
+    assert first["response"]["tool_choice"] == "none" and "tool_choice" not in second["response"]
+    assert [m["type"] for m in session.ks.sent] == ["response.function_call_arguments.done", "response.done"]
+    assert session.ended and session.silent_end is None
+
+
+def test_confirmation_that_ends_itself_does_not_double_hang_up(tmp_path):
+    session = _relay_session(tmp_path)
+
+    async def run():
+        out = await _feed(session, _created("r1"), *_calls("r1", "end_conversation"), _done("r1"))
+        await _settle()
+        out += await _feed(session, _created("r2"), *_said("r2", "Done.", "a2"), *_calls("r2", "end_conversation", call_id="c2", item_id="f2"), _done("r2"))
+        return out
+
+    out = asyncio.run(run())
+    assert [e["call_id"] for e in _ends(out)] == ["c2"]
+    assert [m["type"] for m in out][-1] == "response.done"
+
+
+def test_relay_tool_plus_silent_end_confirms_after_the_tool_output(tmp_path):
+    session = _relay_session(tmp_path)
+
+    async def run():
+        out = await _feed(session, _created("r1"), *_calls("r1", "turn_off", '{"name":"porch light"}'),
+                          *_calls("r1", "end_conversation", call_id="c2", item_id="f2"), _done("r1"))
+        await _settle()
+        return out
+
+    out = asyncio.run(run())
+    assert _ends(out) == []
+    assert [m["type"] for m in session.upstream.sent] == ["conversation.item.create", "response.create"]
+    assert CONFIRM_INSTRUCTION in session.upstream.sent[1]["response"]["instructions"]

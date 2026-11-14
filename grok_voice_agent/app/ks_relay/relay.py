@@ -87,13 +87,19 @@ CLOCK_REFRESH_SECONDS = 600.0
 RELAY_EVENT_PREFIX = "relay_"
 RELAY_END_PREFIX = "relay_end_"
 HANGUP_INSTRUCTION = (
-    "Action succeeded. Say only a short confirmation (no goodbye or sign-off), then call end_conversation. "
-    "Do not repeat anything."
+    "Action succeeded. First say a short spoken confirmation of what you did, for example 'TV room lights are "
+    "off.' No goodbye or sign-off. Then call end_conversation in the same response. Never call end_conversation "
+    "without speaking first."
 )
 END_CONVERSATION_DESCRIPTION = (
-    "End the voice conversation. Call it when the user is done or after a home command. Do not say goodbye "
-    "after a home command; after thanks/goodbye a brief reply is fine."
+    "End the voice conversation. After a home command, first say a short confirmation of what was done (no "
+    "goodbye) in the same response, then call this. After thanks/goodbye a brief reply is fine."
 )
+CONFIRM_INSTRUCTION = (
+    "Say one short sentence confirming what was just done, for example 'TV room lights are off.' "
+    "No goodbye or sign-off. Do not call any tools."
+)
+SILENT_END_TIMEOUT = 4.0
 _AUDIO_DELTAS = frozenset({"response.output_audio.delta", "response.audio.delta"})
 # delta type -> (done type, text field of the done event)
 _TEXT_DELTAS = {
@@ -260,6 +266,11 @@ def rewrite_session(session: dict, cfg: dict, tools: list[dict], *, extra_instru
     return out
 
 
+def _spoke(entry: dict) -> bool:
+    """The reply has produced audio or assistant text so far."""
+    return entry["audio_s"] > 0 or bool(entry["filter"].sent) or bool(entry["text"])
+
+
 def _text_message(item: dict) -> bool:
     """A message item with only text content: the relay's replayed memory, never live audio."""
     content = item.get("content")
@@ -282,6 +293,8 @@ def _new_entry() -> dict:
         "audio_s": 0.0,  # this reply's audio forwarded to KS
         "stopped": False,  # allowance spent: cancelled at xAI, later audio dropped
         "done_sent": False,  # KS already has this reply's transcript done
+        "held_end": None,  # end_conversation call held while the reply has not spoken yet
+        "confirm": False,  # the relay's spoken confirmation for a silent end_conversation
         "text": "",
         "filter": TranscriptFilter(),
     }
@@ -322,6 +335,12 @@ class RelaySession:
         self.last_done_at = 0.0
         self.last_text = ""
         self._relay_seq = 0
+        self.last_user_closing = False  # the latest user turn was "thanks" / "goodbye"
+        self.pending_confirm = False
+        self.confirm_tool_choice = True
+        self.confirm_event_id = ""
+        self.silent_end: dict | None = None
+        self._silent_timer: asyncio.Task | None = None  # {"at": monotonic} while a confirmation is outstanding
         self._replay: list[dict] = []  # memory items to send xAI right after the first session.update
         self._replay_done = False
         self.our_call_ids: set[str] = set()
@@ -632,6 +651,7 @@ class RelaySession:
             if text.strip():
                 self.mark("transcript", role="user", text=sanitize(text, self._secrets(), MAX_TRANSCRIPT))
                 if is_closing_utterance(text):
+                    self.last_user_closing = True
                     end = self._on_dismiss()
                     if end is not None:
                         return [True, end]
@@ -667,6 +687,7 @@ class RelaySession:
         if kind == "input_audio_buffer.speech_started":
             self._touch()
             self.dismiss_pending = False
+            self.last_user_closing = False
             self.mark("speech_started")
             return True
         if kind == "input_audio_buffer.speech_stopped":
@@ -739,6 +760,8 @@ class RelaySession:
             self.pending_create_from_relay = False
             entry["hangup"] = followup and self.pending_hangup
             self.pending_hangup = False
+            entry["confirm"] = self.pending_confirm
+            self.pending_confirm = False
             if self.ended:
                 entry["drop"] = True
                 self.mark("response_dropped", response_id=entry["id"] or None)
@@ -764,7 +787,13 @@ class RelaySession:
             )
             if ours or race:
                 log.info("[%s] xAI error kept from KS (%s): %s", self.label, "race" if race else "relay event", code)
-                if race:
+                confirm_failed = self.pending_confirm and not race and event_id == self.confirm_event_id
+                if confirm_failed and self.confirm_tool_choice:
+                    self.confirm_tool_choice = False  # xAI may not take tool_choice: ask once more without it
+                    await self._request_confirmation()
+                elif confirm_failed:
+                    await self._ks_send_all(self._release_silent_end())
+                elif race:
                     self.pending_create_from_relay = False
                     self.pending_hangup = False
                 elif self.held_done is not None:
@@ -798,8 +827,17 @@ class RelaySession:
             if not self._ours(name):
                 if name == END_CONVERSATION:
                     entry["ks"] = entry["end"] = True
-                    self.ended = True
                     self.end_reason = "end_conversation"
+                    if (
+                        self.active_response
+                        and not _spoke(entry)
+                        and not self.last_user_closing
+                        and self.silent_end is None
+                        and not entry["confirm"]
+                    ):
+                        entry["held_end"] = event  # forwarded once the reply speaks, else after a confirmation
+                        return False
+                    self.ended = True
                     self.mark("end_conversation")
                 elif self._tablet_call(name):
                     entry["ks"] = True
@@ -834,9 +872,19 @@ class RelaySession:
             self.active_response = False
             self.current = None
             self.last_text = entry["text"] or entry["filter"].sent
+            before: list = []
+            if entry["held_end"] is not None:
+                if not _spoke(entry) and not self.last_user_closing:
+                    return self._silent_end(entry, event)
+                before = [entry["held_end"]]  # it spoke after the call (or the user said goodbye): KS ends now
+                entry["held_end"] = None
+                self.ended = True
+                self.mark("end_conversation")
+            if entry["confirm"] and self.silent_end is not None:
+                return [*self._release_silent_end(entry["id"]), True]
             if not entry["ours"]:
                 end = self._relay_end(entry)
-                return [end, True] if end is not None else True
+                return [*before, end, True] if end is not None else [*before, True] if before else True
             response = event.get("response") or {}
             output = [
                 o
@@ -846,7 +894,7 @@ class RelaySession:
             cleaned = {**event, "response": {**response, "output": output}}
             asyncio.create_task(self._answer(entry))
             if entry["ks"]:
-                return cleaned  # KS has its own call (end_conversation) in this answer
+                return [*before, cleaned] if before else cleaned  # KS has its own call (end_conversation)
             self.held_done = cleaned
             self.held_since = time.monotonic()
             return False
@@ -1042,6 +1090,9 @@ class RelaySession:
             if ev is not None:
                 ev["result_t"] = self.ms()
             self._touch()
+        if entry.get("silent"):
+            await self._request_confirmation()  # tool outputs are in: confirm them, then end
+            return
         if entry["end"]:
             return  # KS ends the conversation; no spoken follow-up
         if entry["ks"]:
@@ -1060,6 +1111,64 @@ class RelaySession:
         held, self.held_done = self.held_done, None
         if held is not None:
             await self._ks_send(held)
+
+    def _silent_end(self, entry: dict, event: dict):
+        """A reply that only called end_conversation: keep KS waiting, ask for a spoken confirmation first."""
+        response = event.get("response") or {}
+        output = [
+            o
+            for o in response.get("output") or []
+            if not (isinstance(o, dict) and (str(o.get("id")) in self.hidden_items or self._ours(o.get("name"))))
+        ]
+        entry["held_end"] = None
+        entry["silent"] = True
+        self.held_done = {**event, "response": {**response, "output": output}}
+        self.held_since = time.monotonic()
+        self.silent_end = {"at": time.monotonic()}
+        self.confirm_tool_choice = True
+        self._silent_timer = asyncio.create_task(self._silent_end_timeout(self.silent_end))
+        log.info("[%s] end_conversation without speech; asking for a spoken confirmation first", self.label)
+        self.mark("silent_end_confirm", response_id=entry["id"] or None)
+        if entry["ours"]:
+            asyncio.create_task(self._answer(entry))
+        else:
+            asyncio.create_task(self._request_confirmation())
+        return False
+
+    async def _request_confirmation(self) -> None:
+        if self.silent_end is None or self.upstream is None:
+            return
+        response: dict = {"instructions": f"{self.session_instructions}\n\n{CONFIRM_INSTRUCTION}".strip()}
+        if self.confirm_tool_choice:
+            response["tool_choice"] = "none"
+        self.pending_confirm = True
+        self.confirm_event_id = await self._send_up({"type": "response.create", "response": response})
+
+    def _release_silent_end(self, response_id: str = "") -> list[dict]:
+        """The relay's end_conversation for KS (then the held response.done, if KS still waits on it)."""
+        if self.silent_end is None:
+            return []
+        self.silent_end = None
+        if self._silent_timer is not None and self._silent_timer is not asyncio.current_task():
+            self._silent_timer.cancel()
+        self._silent_timer = None
+        self.pending_confirm = False
+        out = [] if self.ended else [self._end_call(response_id, "silent_end")]
+        held, self.held_done = self.held_done, None
+        if held is not None:
+            out.append(held)
+        return out
+
+    async def _ks_send_all(self, events: list[dict]) -> None:
+        for event in events:
+            await self._ks_send(event)
+
+    async def _silent_end_timeout(self, token: dict) -> None:
+        await asyncio.sleep(SILENT_END_TIMEOUT)
+        if self.silent_end is token:
+            log.info("[%s] no confirmation in %.0fs; ending anyway", self.label, SILENT_END_TIMEOUT)
+            self.mark("silent_end_timeout")
+            await self._ks_send_all(self._release_silent_end())
 
     def _check_held(self) -> None:
         if self.held_done is not None and time.monotonic() - self.held_since > HELD_DONE_LIMIT:

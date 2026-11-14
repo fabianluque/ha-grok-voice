@@ -4,6 +4,13 @@ Versions match `grok_voice_agent/config.yaml`. GitHub Releases list the
 merged pull requests since the previous tag. Issues closed with `Fixes #N`
 in those pull requests are included below when GitHub reports them.
 
+## [0.3.10] - 2026-11-14
+
+Fixes home commands ending with no spoken confirmation after 0.3.9: Grok's follow-up contained only `end_conversation`, with no text and 0 s of audio.
+
+- Speak-first wording. The hang-up follow-up instruction is now "Action succeeded. First say a short spoken confirmation of what you did, for example 'TV room lights are off.' No goodbye or sign-off. Then call end_conversation in the same response. Never call end_conversation without speaking first." The rewritten `end_conversation` description and the default extra instructions say the same.
+- Silent-hangup safety net. If a reply calls `end_conversation` with no assistant message and no audio, the relay holds the call and the reply's `response.done`, then sends `response.create` asking for one short confirmation sentence of what was just done (no goodbye, `tool_choice: none`, retried once without `tool_choice` if xAI rejects it). The confirmation's audio and text reach the tablet through the usual transcript filter and audio allowance. When it is done, or after about 4 s, the relay ends the conversation with its own `end_conversation` call (`relay_end_…`), so Kiosk Satellite hangs up after the confirmation audio is queued. It does not apply when the reply already spoke (even after the call) or after a "thanks" / "goodbye". It never hangs up twice, and the post-end cancel does not touch the confirmation the relay asked for. Logged and marked on the timeline as `silent_end_confirm` (`silent_end_timeout` if it times out).
+
 ## [0.3.9] - 2026-11-13
 
 - No goodbye after home commands. Kiosk Satellite's `end_conversation` description told Grok to "say a short goodbye in the same response", and the relay passed it through. The relay now replaces that description (name and parameters unchanged) with "End the voice conversation. Call it when the user is done or after a home command. Do not say goodbye after a home command; after thanks/goodbye a brief reply is fine." The hang-up follow-up instruction now reads "Action succeeded. Say only a short confirmation (no goodbye or sign-off), then call end_conversation. Do not repeat anything." The default extra instructions say the same.
