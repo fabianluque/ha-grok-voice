@@ -38,8 +38,10 @@ add-on and the add-on relays each conversation to xAI:
   rate). Only once that is used up does the relay send `response.cancel` and
   drop the rest. A reply that finishes inside its allowance is left alone.
 - **Hang-up after home commands.** When every relay tool call in an answer is
-  a successful home-control write, the follow-up asks Grok to confirm once and
-  call `end_conversation`. If it does not, the relay ends the conversation
+  a successful home-control write, the follow-up asks Grok for a short
+  confirmation with no goodbye or sign-off, then `end_conversation`. The
+  relay also rewrites KS's `end_conversation` description (name and
+  parameters unchanged) so Grok does not say goodbye after a home command. If it does not, the relay ends the conversation
   itself: it sends KS an `end_conversation` call of its own (`relay_end_…`)
   just before the answer's `response.done`. KS runs it locally like its own
   end, and KS's output for it never reaches xAI. Questions stay open. Saying
@@ -58,7 +60,15 @@ add-on and the add-on relays each conversation to xAI:
   promoted to one direct tool (media is direct by default).
 - **Short-term memory.** After each session (never while the tablet waits) a fast
   xAI text model writes 2-3 lines; the next session gets a "Recent context"
-  block (latest summaries in the window, tool calls as name plus ok/failed).
+  block (latest summaries in the window, tool calls as name plus ok/failed and
+  the device or area names they acted on, e.g. `turn_on ok (TV room lights)`;
+  no other arguments). The block tells Grok that "them / it / that" without a
+  device means the most recent device listed. If the same tablet's last
+  session ended within **replay minutes** (default 10), its last exchanges (up
+  to 6 user / assistant lines) are also replayed as conversation items right
+  after the session starts, so "turn them off" works in a new session. Replayed
+  items never trigger a reply, and their echoes are not sent to the tablet.
+  Each session's timeline shows how many summary and replayed items it got.
   Empty summaries are not stored. If summarizing fails, trimmed exchanges are
   kept. Stored in `/data`.
 - **The xAI key stays in the add-on.** Tablets hold only a shared secret. The xAI
@@ -126,9 +136,10 @@ the Settings tab without restarting the add-on.
   families are direct or off, and
   memory: enabled, mode (summary / raw / off), window minutes (45), max items
   (5), scope (per_tablet / house), other rooms' last-N-minutes window (10, per
-  tablet scope), summary model (`grok-4.20-0309-non-reasoning`), summary max
+  tablet scope), replay minutes (10, 0 = off), summary model
+  (`grok-4.20-0309-non-reasoning`), summary max
   chars (400), and dropping KS's own history block. Memory tool lines are the
-  tool name (or `skill dashboard.set`) plus ok/failed; empty summaries are not
+  tool name (or `skill dashboard.set`) plus ok/failed and target names; empty summaries are not
   stored, and older bloated rows are compacted when injected.
 - **Skills:** toggles, index line, help, actions with backend pickers (HA
   scripts and services), args (required, aliases, coerce), direct vs behind the

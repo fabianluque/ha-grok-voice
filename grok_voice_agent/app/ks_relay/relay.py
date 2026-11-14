@@ -87,7 +87,12 @@ CLOCK_REFRESH_SECONDS = 600.0
 RELAY_EVENT_PREFIX = "relay_"
 RELAY_END_PREFIX = "relay_end_"
 HANGUP_INSTRUCTION = (
-    "Action succeeded. Confirm once in one short sentence, then call end_conversation. Do not repeat anything."
+    "Action succeeded. Say only a short confirmation (no goodbye or sign-off), then call end_conversation. "
+    "Do not repeat anything."
+)
+END_CONVERSATION_DESCRIPTION = (
+    "End the voice conversation. Call it when the user is done or after a home command. Do not say goodbye "
+    "after a home command; after thanks/goodbye a brief reply is fine."
 )
 _AUDIO_DELTAS = frozenset({"response.output_audio.delta", "response.audio.delta"})
 # delta type -> (done type, text field of the done event)
@@ -242,7 +247,7 @@ def rewrite_session(session: dict, cfg: dict, tools: list[dict], *, extra_instru
     else:
         out.pop("reasoning", None)
     passthrough = [
-        tool
+        {**tool, "description": END_CONVERSATION_DESCRIPTION} if tool.get("name") == END_CONVERSATION else tool
         for tool in out.get("tools") or []
         if isinstance(tool, dict) and (tool.get("type") != "function" or tool.get("name") == END_CONVERSATION)
     ]
@@ -253,6 +258,14 @@ def rewrite_session(session: dict, cfg: dict, tools: list[dict], *, extra_instru
     added = "\n".join(line for line in (cfg.get("extra_instructions") or "", extra_instructions) if line)
     out["instructions"] = f"{instructions}\n\n{added}".strip() if added else instructions
     return out
+
+
+def _text_message(item: dict) -> bool:
+    """A message item with only text content: the relay's replayed memory, never live audio."""
+    content = item.get("content")
+    if item.get("type") != "message" or not isinstance(content, list) or not content:
+        return False
+    return all(isinstance(part, dict) and part.get("type") in ("input_text", "text") for part in content)
 
 
 def _new_entry() -> dict:
@@ -309,6 +322,8 @@ class RelaySession:
         self.last_done_at = 0.0
         self.last_text = ""
         self._relay_seq = 0
+        self._replay: list[dict] = []  # memory items to send xAI right after the first session.update
+        self._replay_done = False
         self.our_call_ids: set[str] = set()
         self.instructions_base: str | None = None
         self.clock_text = ""
@@ -454,6 +469,11 @@ class RelaySession:
                 continue
             upstream = self.upstream or await upstream_task
             await upstream.send(raw)
+            if kind == "session.update" and self._replay:
+                # Context items only: no response.create, so nothing is said until the user speaks.
+                replay, self._replay, self._replay_done = self._replay, [], True
+                for event in replay:
+                    await self._send_up(event, upstream)
 
     def _relay_end_output(self, message: dict) -> bool:
         item = message.get("item") if isinstance(message.get("item"), dict) else {}
@@ -499,9 +519,14 @@ class RelaySession:
         if self.memory is not None and memory_cfg.active:
             if memory_cfg.strip_ks_history:
                 session = {**session, "instructions": strip_ks_history(instructions)}
-            block = self.memory.context_block(memory_key, memory_cfg, self.ha.cache.time_zone)
+            replayed = None
+            if not self._replay_done:
+                replayed, self._replay = self.memory.replay(memory_key, memory_cfg)
+            block, summary_items = self.memory.context(memory_key, memory_cfg, self.ha.cache.time_zone, replayed=replayed)
             if block:
                 extra.append(block)
+            log.info("[%s] memory: %d summary items, %d replayed items", self.label, summary_items, len(self._replay))
+            self.mark("memory_injected", summary_items=summary_items, replay_items=len(self._replay))
         if tablet and tablet.area_name and not area:
             extra.append(f"The device is in the {tablet.area_name} area. When the user doesn't name an area, use this one.")
         self.clock_at = time.monotonic()
@@ -549,10 +574,10 @@ class RelaySession:
         self._relay_seq += 1
         return f"{RELAY_EVENT_PREFIX}{self._relay_seq}"
 
-    async def _send_up(self, event: dict) -> str:
+    async def _send_up(self, event: dict, upstream=None) -> str:
         """Send a relay-originated event to xAI, tagged so its errors are recognized as ours."""
         event_id = self._relay_id()
-        await self.upstream.send(json.dumps({**event, "event_id": event_id}))
+        await (upstream or self.upstream).send(json.dumps({**event, "event_id": event_id}))
         return event_id
 
     # xAI -> KS ------------------------------------------------------------
@@ -750,6 +775,8 @@ class RelaySession:
             return True
 
         item = event.get("item") if isinstance(event.get("item"), dict) else None
+        if kind.startswith("conversation.item.") and item and _text_message(item):
+            return False  # echo of a replayed memory item; KS only sends audio
         entry = current if current is not None else _new_entry()
         self.current = entry
         if kind == "response.output_item.added" and item:
