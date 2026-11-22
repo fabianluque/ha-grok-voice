@@ -30,6 +30,7 @@ TOOL_FAMILIES = {
     "timers": "Timers on the tablet",
     "todo": "To-do and shopping lists",
     "state": "State lookup (is the garage open, temperature, ...)",
+    "calendar": "Calendar events (what's for dinner, what's on the calendar)",
 }
 FAMILY_VALUES = ("direct", "off")
 
