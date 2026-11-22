@@ -1,6 +1,7 @@
 """KS relay tools: retry once without the tablet's room when nothing matched in it."""
 
 import asyncio
+import json
 
 from app.ks_relay.ha import HaCache, Tablet
 from app.ks_relay.tools import AREA_FALLBACK_TOOLS, HOME_WRITE_TOOLS, RelayTools
@@ -112,3 +113,138 @@ def test_get_state_and_timers_do_not_use_the_write_fallback():
     tools, ha = _tools(lambda name, data: False)
     asyncio.run(tools.execute("timer", {"action": "start", "minutes": 5}))
     assert len(ha.intents) == 1
+
+
+# calendar -----------------------------------------------------------------
+from datetime import datetime  # noqa: E402
+from zoneinfo import ZoneInfo  # noqa: E402
+
+from app.ks_relay.dates import annotate_dates  # noqa: E402
+from app.ks_relay.settings_store import DEFAULTS, TOOL_FAMILIES, validate  # noqa: E402
+from app.ks_relay.skills import RESERVED  # noqa: E402
+from app.ks_relay.tools import FAMILY_OF, calendar_window, run_tool, tool_specs  # noqa: E402
+
+ZONE = ZoneInfo("America/New_York")
+NOW = datetime(2026, 11, 21, 15, 0, tzinfo=ZONE)
+
+
+class CalendarHa:
+    """calendar.get_events with a canned response per entity."""
+
+    def __init__(self, events=None, exposed=None):
+        friendly = {
+            "calendar.family": "Family",
+            "calendar.weekly_menu": "Weekly Menu",
+            "calendar.school": "School",
+            "calendar.private": "Private",
+        }
+        self.cache = HaCache(
+            exposed=frozenset(exposed if exposed is not None else {"calendar.family", "calendar.weekly_menu", "calendar.school", "light.porch"}),
+            states={e: {"attributes": {"friendly_name": n}} for e, n in friendly.items()},
+            time_zone="America/New_York",
+        )
+        self.events = events or {}
+        self.services = []
+
+    async def call_service(self, domain, service, data, **kwargs):
+        self.services.append((domain, service, dict(data), kwargs.get("target"), kwargs.get("return_response")))
+        return {e: {"events": self.events.get(e, [])} for e in (kwargs.get("target") or {}).get("entity_id", [])}
+
+
+def _calendar(args, **ha_kwargs):
+    ha = CalendarHa(**ha_kwargs)
+    result = asyncio.run(RelayTools(ha).execute("calendar", args))
+    return result, ha
+
+
+def test_calendar_family_is_on_by_default_and_can_be_turned_off():
+    assert FAMILY_OF["calendar"] == "calendar" and "calendar" in TOOL_FAMILIES
+    assert DEFAULTS["tools"]["calendar"] == "direct"
+    assert "calendar" in {s["name"] for s in tool_specs()}
+    assert "calendar" in {s["name"] for s in tool_specs(validate({})["tools"])}
+    off = validate({"tools": {"calendar": "off"}})["tools"]
+    assert off["calendar"] == "off" and off["state"] == "direct"
+    assert "calendar" not in {s["name"] for s in tool_specs(off)}
+    assert "calendar" in RESERVED
+    spec = next(s for s in tool_specs() if s["name"] == "calendar")
+    assert "what's for dinner" in spec["description"] and "what's on the calendar" in spec["description"]
+
+
+def test_calendar_uses_only_exposed_calendars():
+    result, ha = _calendar({})
+    assert result["ok"] is True
+    domain, service, data, target, wants = ha.services[0]
+    assert (domain, service, wants) == ("calendar", "get_events", True)
+    assert target == {"entity_id": ["calendar.family", "calendar.school", "calendar.weekly_menu"]}
+    assert set(data) == {"start_date_time", "end_date_time"}
+    result, ha = _calendar({"name": "private"})
+    assert result == {"ok": False, "error": "no exposed calendar matches"} and ha.services == []
+    result, ha = _calendar({}, exposed={"light.porch"})
+    assert result["ok"] is False and ha.services == []
+
+
+def test_calendar_matches_a_named_calendar():
+    _, ha = _calendar({"name": "school"})
+    assert ha.services[0][3] == {"entity_id": ["calendar.school"]}
+    result, ha = _calendar({"name": "soccer"})
+    assert result["ok"] is False and ha.services == []
+
+
+def test_calendar_meal_questions_prefer_meal_calendars():
+    for args in ({"meal": True}, {"name": "dinner"}, {"name": "supper", "day": "tonight"}):
+        _, ha = _calendar(args)
+        assert ha.services[0][3] == {"entity_id": ["calendar.weekly_menu"]}, args
+    _, ha = _calendar({"meal": True}, exposed={"calendar.family", "calendar.school"})
+    assert ha.services[0][3] == {"entity_id": ["calendar.family", "calendar.school"]}
+    _, ha = _calendar({"name": "menu"})
+    assert ha.services[0][3] == {"entity_id": ["calendar.weekly_menu"]}
+
+
+def test_calendar_windows():
+    def window(args):
+        start, end = calendar_window(args, ZONE, NOW)
+        return start.isoformat(), end.isoformat()
+
+    today = ("2026-11-21T00:00:00-05:00", "2026-11-22T00:00:00-05:00")
+    assert window({}) == today
+    assert window({"day": "today"}) == window({"day": "tonight"}) == window({"range": "tonight"}) == today
+    assert window({"day": "tomorrow"}) == ("2026-11-22T00:00:00-05:00", "2026-11-23T00:00:00-05:00")
+    assert window({"range": "yesterday"}) == ("2026-11-20T00:00:00-05:00", "2026-11-21T00:00:00-05:00")
+    assert window({"range": "week"}) == ("2026-11-21T00:00:00-05:00", "2026-11-28T00:00:00-05:00")
+    assert window({"day": "2026-11-25"}) == ("2026-11-25T00:00:00-05:00", "2026-11-26T00:00:00-05:00")
+    assert window({"start": "2026-11-21", "end": "2026-11-23"}) == ("2026-11-21T00:00:00-05:00", "2026-11-24T00:00:00-05:00")
+    assert window({"start": "2026-11-21T18:00:00", "end": "2026-11-21T21:00:00-05:00"}) == (
+        "2026-11-21T18:00:00-05:00",
+        "2026-11-21T21:00:00-05:00",
+    )
+    assert window({"start": "2026-11-21T18:00:00Z"}) == ("2026-11-21T18:00:00+00:00", "2026-11-22T00:00:00-05:00")
+    for bad in ({"start": "2026-11-22", "end": "2026-11-20"}, {"day": "someday"}):
+        try:
+            calendar_window(bad, ZONE, NOW)
+        except ValueError:
+            continue
+        raise AssertionError(bad)
+
+
+def test_calendar_returns_concise_events_with_day_labels():
+    events = {
+        "calendar.weekly_menu": [
+            {"start": "2026-11-22", "end": "2026-11-23", "summary": "Soup", "uid": "x", "rrule": ""},
+            {"start": "2026-11-21T18:00:00-05:00", "end": "2026-11-21T19:00:00-05:00", "summary": "Tacos",
+             "description": "Make extra", "location": "Kitchen"},
+        ]
+    }
+    ha = CalendarHa(events=events)
+    output, ok, _ = asyncio.run(run_tool(RelayTools(ha), "calendar", json.dumps({"meal": True}), 5))
+    result = json.loads(output)
+    assert ok and result["calendars"] == ["Weekly Menu"]
+    assert result["events"] == [
+        {"calendar": "Weekly Menu", "summary": "Tacos", "start": "2026-11-21T18:00:00-05:00",
+         "end": "2026-11-21T19:00:00-05:00", "location": "Kitchen", "description": "Make extra"},
+        {"calendar": "Weekly Menu", "summary": "Soup", "start": "2026-11-22", "end": "2026-11-23"},
+    ]
+    labeled = annotate_dates(output, "America/New_York", now=NOW)
+    assert "2026-11-21T18:00:00-05:00 (local Saturday 2026-11-21 6:00 PM, today)" in labeled
+    assert '"2026-11-22 (Sunday, tomorrow)"' in labeled
+    empty, _ = _calendar({"day": "tomorrow"})
+    assert empty["ok"] is True and empty["events"] == [] and empty["say"]

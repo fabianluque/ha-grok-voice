@@ -13,6 +13,8 @@ import copy
 import json
 import logging
 import re
+from datetime import date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 from app.ks_relay.ha import HaLink, Tablet
 from app.ks_relay.skills import SKILL_TOOL, key, resolve
@@ -48,7 +50,11 @@ FAMILY_OF = {
     "timer": "timers",
     "todo": "todo",
     "get_state": "state",
+    "calendar": "calendar",
 }
+_MEAL_WORDS = ("dinner", "meal", "menu", "supper", "lunch", "breakfast")
+_DAYS = ["today", "tonight", "tomorrow", "yesterday", "week"]
+_MAX_EVENTS = 30
 
 
 def tool_specs(families: dict | None = None) -> list[dict]:
@@ -135,6 +141,19 @@ def tool_specs(families: dict | None = None) -> list[dict]:
             "get_state",
             "Current state of devices and sensors (on/off, temperature, open, locked, ...).",
             {**_TARGET, "domain": {"type": "string"}},
+        ),
+        _fn(
+            "calendar",
+            "Events on the home's calendars. Use for \"what's for dinner\" (set meal) and \"what's on the calendar\". "
+            "Defaults to today.",
+            {
+                "name": {"type": "string", "description": "Calendar name. Omit for all calendars."},
+                "meal": {"type": "boolean", "description": "Dinner, meal or menu question."},
+                "range": {"type": "string", "enum": _DAYS},
+                "day": {"type": "string", "description": "today, tonight, tomorrow, yesterday or an ISO date."},
+                "start": {"type": "string", "description": "ISO date or datetime."},
+                "end": {"type": "string", "description": "ISO date (included) or datetime."},
+            },
         ),
     ]
     specs = [
@@ -439,6 +458,62 @@ class RelayTools:
             return {"ok": False, "error": "nothing exposed matches"}
         return {"ok": True, "entities": rows}
 
+    def _calendars(self, args: dict) -> list[str]:
+        """Exposed calendars by name; meal questions prefer dinner / menu / ... calendars."""
+        name = args.get("name")
+        meal = bool(args.get("meal")) or _is_meal(name)
+        if name:
+            found = self._match({"name": name}, "calendar")
+            if found or not meal:
+                return found
+        everything = self._match({}, "calendar")
+        if not meal:
+            return everything
+        meals = [e for e in everything if _is_meal(e.split(".", 1)[1]) or _is_meal(self._friendly(e))]
+        return meals or ([] if name else everything)
+
+    async def _t_calendar(self, args):
+        zone = ZoneInfo(self.ha.cache.time_zone or "UTC")
+        try:
+            start, end = calendar_window(args, zone)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        entities = self._calendars(args)
+        if not entities:
+            return {"ok": False, "error": "no exposed calendar matches"}
+        window = {"start": start.isoformat(), "end": end.isoformat()}
+        if self.dry_run:
+            await asyncio.sleep(self.dry_run_delay)
+            return {"ok": True, "dry_run": True, "calendars": [self._friendly(e) for e in entities], **window}
+        response = await self.ha.call_service(
+            "calendar",
+            "get_events",
+            {"start_date_time": window["start"], "end_date_time": window["end"]},
+            target={"entity_id": entities},
+            return_response=True,
+        )
+        events = []
+        for entity_id in entities:
+            found = ((response or {}).get(entity_id) or {}).get("events") or []
+            for event in found:
+                if not isinstance(event, dict):
+                    continue
+                row = {
+                    "calendar": self._friendly(entity_id),
+                    "summary": str(event.get("summary") or ""),
+                    "start": str(event.get("start") or ""),
+                    "end": str(event.get("end") or ""),
+                }
+                for extra in ("location", "description"):
+                    if event.get(extra):
+                        row[extra] = str(event[extra])[:200]
+                events.append(row)
+        events.sort(key=lambda row: _event_sort_key(row["start"], zone))
+        out = {"ok": True, **window, "calendars": [self._friendly(e) for e in entities], "events": events[:_MAX_EVENTS]}
+        if not events:
+            out["say"] = "Nothing on the calendar for that time."
+        return out
+
     # skills -----------------------------------------------------------------
     async def run_skill(self, name, action, args) -> dict:
         skill, chosen, data = resolve(self.skills, name, action, args or {})
@@ -549,6 +624,59 @@ class RelayTools:
 
 def _words(text: object) -> str:
     return re.sub(r"[^a-z0-9]+", " ", str(text or "").lower()).strip()
+
+
+def _is_meal(text: object) -> bool:
+    words = _words(text)
+    return any(word in words for word in _MEAL_WORDS)
+
+
+def _parse_when(text: object, zone: ZoneInfo) -> tuple[datetime, bool]:
+    """(aware datetime, date_only); naive values are local time."""
+    raw = str(text or "").strip()
+    try:
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
+            return datetime.combine(date.fromisoformat(raw), time(), zone), True
+        when = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        raise ValueError(f"unreadable date {raw!r}") from None
+    return (when.replace(tzinfo=zone) if when.tzinfo is None else when), False
+
+
+def _midnight(day: date, zone: ZoneInfo) -> datetime:
+    return datetime.combine(day, time(), zone)
+
+
+def calendar_window(args: dict, zone: ZoneInfo, now: datetime | None = None) -> tuple[datetime, datetime]:
+    """[start, end) for the calendar tool: ISO start/end, else day/range, else the local day."""
+    today = (now or datetime.now(zone)).astimezone(zone).date()
+    if args.get("start"):
+        start, start_date_only = _parse_when(args["start"], zone)
+        if args.get("end"):
+            end, end_date_only = _parse_when(args["end"], zone)
+            if end_date_only:
+                end = _midnight(end.date() + timedelta(days=1), zone)
+        else:
+            end = _midnight(start.astimezone(zone).date() + timedelta(days=1), zone)
+        if end <= start:
+            raise ValueError("end must be after start")
+        return start, end
+    word = _words(args.get("range") or args.get("day") or "today")
+    offsets = {"today": 0, "tonight": 0, "tomorrow": 1, "yesterday": -1}
+    if word == "week":
+        return _midnight(today, zone), _midnight(today + timedelta(days=7), zone)
+    if word in offsets:
+        day = today + timedelta(days=offsets[word])
+    else:
+        day = _parse_when(args.get("range") or args.get("day"), zone)[0].astimezone(zone).date()
+    return _midnight(day, zone), _midnight(day + timedelta(days=1), zone)
+
+
+def _event_sort_key(text: str, zone: ZoneInfo) -> float:
+    try:
+        return _parse_when(text, zone)[0].timestamp()
+    except ValueError:
+        return float("inf")
 
 
 def _failed(result: object) -> bool:

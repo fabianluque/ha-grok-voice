@@ -32,8 +32,8 @@ flowchart LR
 
 ## Features
 
-- **Session rewrite:** reasoning effort (none / high / default), end of speech (xAI default, KS's 500 ms, or a custom value), date and time injection (refreshed after midnight or ten minutes), extra instructions.
-- **Built-in tools:** on/off, lights, covers and garage doors, locks, climate, fans, timers on the tablet, to-do lists and state lookup, run through Home Assistant intents. Only entities exposed to Assist are reachable; the tablet's device and room are used as defaults.
+- **Session rewrite:** reasoning effort (none / high / default), end of speech (xAI default, KS's 500 ms, or a custom value; KS's manual turns with `turn_detection: null` are always kept), date and time injection (refreshed after midnight or ten minutes), extra instructions.
+- **Built-in tools:** on/off, lights, covers and garage doors, locks, climate, fans, timers on the tablet, to-do lists, state lookup and calendar events ("what's for dinner", "what's on the calendar"), run through Home Assistant intents and services. Only entities exposed to Assist are reachable; the tablet's device and room are used as defaults.
 - **Skills with progressive disclosure:** one `skill` tool whose description is a one-line index per skill; `action=help` returns the full help and actions. Actions map to Home Assistant scripts, any service, a relay handler (media) or Home Assistant's own `script.skill`. Any skill can be promoted to a direct tool. Import from `script.skill` or from a JSON file.
 - **Short-term memory:** per tablet (or house-wide), summarized by a fast xAI text model after each session, with tool calls kept verbatim and raw exchanges as the fallback.
 - **Settings panel with live reload:** the Home Assistant sidebar opens on the relay panel (Status / Settings / Skills / Tablets). Changes apply to the next session without a restart; per-tablet overrides. The old browser mic UI is the **Test** tab.

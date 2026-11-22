@@ -38,7 +38,7 @@ SKILL_TOOL = "skill"
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 _TARGET_RE = re.compile(r"^[a-z_]+\.[a-z0-9_]+$")
 RESERVED = {"skill", "end_conversation", "turn_on", "turn_off", "set_light", "open_close", "lock", "climate",
-            "fan_speed", "timer", "todo", "get_state"}
+            "fan_speed", "timer", "todo", "get_state", "calendar"}
 
 
 def key(text: object) -> str:

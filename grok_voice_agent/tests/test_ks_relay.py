@@ -78,6 +78,17 @@ def test_rewrite_vad_and_reasoning_modes():
     assert custom["turn_detection"] == {"type": "server_vad", "silence_duration_ms": 200}
 
 
+def test_rewrite_keeps_explicit_null_turn_detection_in_every_vad_mode():
+    manual = {**KS_SESSION, "turn_detection": None}
+    for mode in ("unset", "kiosk", "custom"):
+        out = rewrite_session(manual, _cfg(vad={"mode": mode, "silence_ms": 200}), [])
+        assert "turn_detection" in out and out["turn_detection"] is None, mode
+    missing = {k: v for k, v in KS_SESSION.items() if k != "turn_detection"}
+    assert rewrite_session(missing, _cfg(), [])["turn_detection"] == {"type": "server_vad"}
+    kiosk = rewrite_session(KS_SESSION, _cfg(vad={"mode": "kiosk", "silence_ms": 0}), [])
+    assert kiosk["turn_detection"] == KS_SESSION["turn_detection"]
+
+
 def test_bearer_check_is_exact_and_fails_closed():
     assert bearer_ok("Bearer s3cret", "s3cret")
     assert not bearer_ok("Bearer nope", "s3cret")

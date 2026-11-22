@@ -4,6 +4,11 @@ Versions match `grok_voice_agent/config.yaml`. GitHub Releases list the
 merged pull requests since the previous tag. Issues closed with `Fixes #N`
 in those pull requests are included below when GitHub reports them.
 
+## [0.3.11] - 2026-11-22
+
+- Calendar tool. New built-in `calendar` tool (family **Calendar events**, on by default, can be turned off on the Settings tab or per tablet). It calls Home Assistant `calendar.get_events` on the `calendar.*` entities exposed to Assist and returns each event's calendar, summary, ISO start / end, and location / description when present. A named calendar is matched like other tool names. For dinner or meal questions it prefers exposed calendars whose entity id or name contains dinner, meal, menu, supper, lunch or breakfast. The window is ISO `start` / `end` (a date-only end includes that day), or `day` / `range` (today, tonight = today, tomorrow, yesterday, week), defaulting to the local day. Day labels on tool results then mark event dates as today / tomorrow. `calendar` is now a reserved skill name.
+- Manual turns are kept. When Kiosk Satellite sends `turn_detection: null` (Ground Control trimming commits the turn itself), the relay now keeps it in every VAD mode instead of forcing `server_vad`, which waited for trailing silence and never answered a trimmed turn. The per-tablet `vad.mode = kiosk` override is no longer needed for trimming. Other VAD behavior is unchanged.
+
 ## [0.3.10] - 2026-11-14
 
 Fixes home commands ending with no spoken confirmation after 0.3.9: Grok's follow-up contained only `end_conversation`, with no text and 0 s of audio.

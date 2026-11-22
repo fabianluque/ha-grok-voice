@@ -239,9 +239,11 @@ def bearer_ok(header: str | None, secret: str) -> bool:
 def rewrite_session(session: dict, cfg: dict, tools: list[dict], *, extra_instructions: str = "") -> dict:
     """KS's session.update session -> the one sent to xAI, per the panel settings ``cfg``."""
     out = dict(session or {})
+    # An explicit null is a manual turn (KS commits trimmed audio itself); server VAD would wait for silence.
+    manual = "turn_detection" in out and out["turn_detection"] is None
     detection = dict(out.get("turn_detection") or {"type": "server_vad"})
     vad = cfg.get("vad") or {"mode": "unset"}
-    if detection.get("type") in (None, "server_vad") and vad.get("mode") != "kiosk":
+    if not manual and detection.get("type") in (None, "server_vad") and vad.get("mode") != "kiosk":
         kept = {k: v for k, v in detection.items() if k in ("type", "idle_timeout_ms")}
         kept["type"] = "server_vad"
         if vad.get("mode") == "custom":
