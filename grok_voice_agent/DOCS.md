@@ -15,11 +15,13 @@ add-on and the add-on relays each conversation to xAI:
   `prefix_padding_ms` are dropped (xAI's default end of speech), and the local
   date and time are added with explicit rules (refreshed past midnight or after
   10 minutes), so no date tool round trip is needed. "Call GetDateTime"
-  sentences are removed. See [Dates](#dates).
+  sentences are removed. See [Dates](#dates). An explicit `turn_detection: null`
+  from KS (manual turns, e.g. Ground Control trimming) is kept in every VAD
+  mode, so trimmed turns no longer need a per-tablet `vad.mode = kiosk`.
 - **Small tool set, run here.** Instead of Home Assistant's whole MCP list
   (~58 tools, ~54 KB) the model gets ~10 short built-in tools (on/off, lights,
   covers/garage, locks, climate, fans, timers on the tablet, to-do lists, state
-  lookup) plus skills. Built-ins run against Home Assistant intents
+  lookup, calendar) plus skills. Built-ins run against Home Assistant intents
   (`/api/intent/handle`: exposed entities only, the tablet's device for timers,
   its room as the default area). KS only hears the answer; KS's own
   `end_conversation` still reaches the tablet. A home command (on/off,
@@ -27,6 +29,12 @@ add-on and the add-on relays each conversation to xAI:
   tablet's own room is retried once without that room ("open the left garage"
   from the kitchen). An area the user named that is not the tablet's room is
   never dropped, and the retry needs a device or list name.
+- **Calendar.** The `calendar` tool ("what's for dinner", "what's on the
+  calendar") calls `calendar.get_events` on calendars exposed to Assist, for
+  ISO `start` / `end` or `day` / `range` (today, tonight, tomorrow, yesterday,
+  week; default the local day). Meal questions prefer calendars whose id or
+  name contains dinner, meal, menu, supper, lunch or breakfast. Event dates get
+  today / tomorrow labels (see [Dates](#dates)).
 - **Clean, single answers.** Assistant transcripts forwarded to the tablet are
   stripped of internal markup. End-of-turn markers (`<turn_end>`,
   `<end_of_turn>`) and other tags are removed silently. Only a `<system…>`
